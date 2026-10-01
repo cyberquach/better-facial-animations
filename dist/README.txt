@@ -14,11 +14,13 @@ Requirements
 Settings
   Data/SKSE/Plugins/BetterFacialAnimations.ini, or in game through SKSE Menu Framework.
 Log
+  Off by default. Turn on Logging (menu Debug section or [Debug] Logging=1), then see
   Documents/My Games/Skyrim Special Edition/SKSE/BetterFacialAnimations.log
 
 Upgrading from A2F Live
   This mod was called A2F Live. Uninstall it first (Data/SKSE/Plugins/A2FLive.dll, A2FLive.ini and the A2FLive
-  folder); while A2FLive.dll is present this plugin stays off and says so in its log. Settings are not carried over.
+  folder); while A2FLive.dll is present this plugin stays off (and says so in its log when Logging is on).
+  Settings are not carried over.
 
 Contents of this folder
   onnxruntime.dll, onnxruntime_providers_shared.dll   ONNX Runtime 1.24.4, DirectML build (MIT)

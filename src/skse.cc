@@ -16,13 +16,14 @@ namespace skse {
 namespace {
 
 FILE* log_file;
+volatile bool log_on;
 uint64_t image_base;
 std::vector<std::pair<uint64_t, uint64_t>> ids;  // id -> offset, sorted by id
 
 }  // namespace
 
 void Log(const char* fmt, ...) {
-  if (!log_file) return;
+  if (!log_on || !log_file) return;
   va_list a;
   va_start(a, fmt);
   vfprintf(log_file, fmt, a);
@@ -31,17 +32,20 @@ void Log(const char* fmt, ...) {
   fflush(log_file);
 }
 
-void OpenLog() {
+bool SetLogging(bool on) {
+  log_on = on;
+  if (!on || log_file) return false;
   wchar_t* docs = nullptr;
   wchar_t path[MAX_PATH];
   if (SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &docs) != S_OK)
-    return;
+    return false;
   _snwprintf(path, MAX_PATH,
              L"%ls\\My Games\\Skyrim Special "
              L"Edition\\SKSE\\BetterFacialAnimations.log",
              docs);
   CoTaskMemFree(docs);
   log_file = _wfopen(path, L"w");
+  return log_file != nullptr;
 }
 
 // versionlib format 2 (CommonLibSSE-NG REL/ID.h).

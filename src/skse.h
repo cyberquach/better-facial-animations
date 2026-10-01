@@ -46,9 +46,10 @@ struct SKSEMessagingInterface {
 constexpr uint32_t kInterfaceMessaging = 5;
 constexpr uint32_t kMessageDataLoaded = 8;
 
-// Log file in My Games\Skyrim Special Edition\SKSE; Log is a no-op until
-// OpenLog succeeds.
-void OpenLog();
+// Log file in My Games\Skyrim Special Edition\SKSE, created (truncated) the
+// first time logging is turned on; Log is a no-op while it is off. True when
+// this call created the file.
+bool SetLogging(bool on);
 void Log(const char* fmt, ...);
 
 // Address Library (versionlib format 2). LoadAddressLibrary also records the

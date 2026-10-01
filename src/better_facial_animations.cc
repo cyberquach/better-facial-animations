@@ -145,7 +145,8 @@ struct Config {  // fixed after load
   std::wstring model;
 };
 struct Tune {  // menu
-  bool enabled = true, prefetch = true, direct_expression = true;
+  bool enabled = true, prefetch = true, direct_expression = true,
+       logging = false;
   float time_offset = 0, blend_in = 0.15f;
   float direct_scale[direct::kNumRegions] = {1, 1, 1, 1, 1, 1};
 };
@@ -160,7 +161,7 @@ volatile bool ready;  // A2FDirect.bin loaded and the morph hook in place
 
 // Every ini key / menu item: a slider (value, lo..hi) or, with flag set, a
 // checkbox, in an ini section / menu group. Table order = menu order.
-enum class Sec { kGeneral, kPlayback, kDirect };
+enum class Sec { kGeneral, kPlayback, kDirect, kDebug };
 struct Param {
   const char* key;
   float* value;
@@ -203,15 +204,30 @@ const Param kParams[] = {
     {"DirectExpression", nullptr, 0, 0, "Engine expression",
      "Also play the dialogue emotion expression morph on top.", Sec::kDirect,
      &tune.direct_expression},
+    {"Logging", nullptr, 0, 0, "Logging",
+     "Write BetterFacialAnimations.log (My Games/Skyrim Special "
+     "Edition/SKSE). Turn on to report a problem; startup is only logged "
+     "when it is on at launch.",
+     Sec::kDebug, &tune.logging},
 };
 const char* Section(const Param& p) {
-  static const char* const kNames[] = {"General", "Playback", "Direct"};
+  static const char* const kNames[] = {"General", "Playback", "Direct",
+                                       "Debug"};
   return kNames[static_cast<int>(p.sec)];
 }
 // Menu defaults; the Direct scales come from A2FDirect.bin (loaded).
 void ResetTune() {
+  bool logging = tune.logging;  // a diagnostic switch, not a tuning value
   tune = Tune();
+  tune.logging = logging;
   std::copy_n(model.default_scale, direct::kNumRegions, tune.direct_scale);
+}
+
+// Turns the log on / off as tune.logging says; a new log starts with the
+// version.
+void ApplyLogging() {
+  if (skse::SetLogging(tune.logging))
+    Log("Better Facial Animations %s", kVersion);
 }
 
 // Called at load (General) and again by the worker once the Direct scales'
@@ -239,6 +255,7 @@ void LoadIni() {
     GetPrivateProfileStringA(Section(p), p.key, d, b, sizeof b, kIni);
     *p.value = static_cast<float>(atof(b));
   }
+  ApplyLogging();
 }
 void SaveIni() {
   char b[64];
@@ -502,7 +519,7 @@ void Process(const Job& j) {
       cache.erase(v[i].second);
   }
   ReleaseSRWLockExclusive(&lock);
-  if (++logged <= config.log_lines) {
+  if (tune.logging && ++logged <= config.log_lines) {
     if (line) {
       Log("gen %s %c emo %d/%d: %.2f s audio, %u frames in %.0f ms (net "
           "%.0f, post %.0f)",
@@ -809,7 +826,8 @@ int Apply(uint8_t* fg) {
     bool tail = p.direct_tail > 0;
     if (tail) --p.direct_tail;
     if (done && !tail) {
-      if (p.logged && InterlockedIncrement(&logged_ends) <= config.log_lines)
+      if (p.logged && tune.logging &&
+          InterlockedIncrement(&logged_ends) <= config.log_lines)
         Log("end %s: at %.2f s, %u Direct frames, deformed %u, peak head %.3f "
             "mouth %.3f eyes %.3f",
             p.name.c_str(), p.last_t, p.direct_frames, p.direct_adds, p.peak[0],
@@ -841,7 +859,8 @@ int Apply(uint8_t* fg) {
   std::string name = first ? p.name : std::string();
   float ready_at = p.ready_at;
   ReleaseSRWLockExclusive(&lock);
-  if (first && InterlockedIncrement(&logged_plays) <= config.log_lines)
+  if (first && tune.logging &&
+      InterlockedIncrement(&logged_plays) <= config.log_lines)
     Log("play %s: %u frames, %s clock, ready at %.2f s", name.c_str(),
         line->frames, act ? "lip" : "wall", ready_at);
   PlayFrame(fg, *line, t, mix);
@@ -1136,7 +1155,8 @@ void RenderMenu() {
   ig.SeparatorText("Status");
   if (!ready)
     ig.Text(
-        "Not running: see BetterFacialAnimations.log (A2FDirect.bin missing?)");
+        "Not running: turn on Logging, restart the game and see "
+        "BetterFacialAnimations.log (A2FDirect.bin missing?)");
   ig.Text("Model: %s", st.net_info.c_str());
   ig.Text("Lines generated: %u (%u failed / no audio), cached %zu, queued %zu",
           st.lines, st.failed, cached, queued);
@@ -1145,7 +1165,8 @@ void RenderMenu() {
             st.audio_sec / std::max(st.gen_sec, 1e-6), st.last_ms, st.late);
   if (!st.last_error.empty())
     ig.Text("Last skipped: %s", st.last_error.c_str());
-  static const char* const kHeaders[] = {nullptr, "Playback", "Direct"};
+  static const char* const kHeaders[] = {nullptr, "Playback", "Direct",
+                                         "Debug"};
   Sec cur = Sec::kGeneral;
   for (const auto& p : kParams) {
     if (p.sec != cur) ig.SeparatorText(kHeaders[static_cast<int>(cur = p.sec)]);
@@ -1155,6 +1176,7 @@ void RenderMenu() {
     ReleaseSRWLockExclusive(&settings_lock);
     if (ig.IsItemHovered(0)) ig.SetTooltip("%s", p.tip);
   }
+  ApplyLogging();
   ig.SeparatorText("");
   if (ig.Button("Save to BetterFacialAnimations.ini", ImVec2{0, 0})) {
     AcquireSRWLockShared(&settings_lock);
@@ -1227,9 +1249,8 @@ void OnMessage(skse::SKSEMessage* m) {
 
 extern "C" __declspec(dllexport) bool SKSEPlugin_Load(
     const skse::SKSEInterface* iface) {
-  skse::OpenLog();
-  Log("Better Facial Animations %s: runtime %08X", kVersion,
-      iface->runtimeVersion);
+  LoadIni();  // turns the log on when Logging=1
+  Log("runtime %08X", iface->runtimeVersion);
   // The same mod under its old name: both would deform the same faces.
   if (GetFileAttributesW(L"Data\\SKSE\\Plugins\\A2FLive.dll") !=
       INVALID_FILE_ATTRIBUTES) {
@@ -1246,7 +1267,6 @@ extern "C" __declspec(dllexport) bool SKSEPlugin_Load(
     Log("address ids not found");
     return false;
   }
-  LoadIni();
   if (!HookCalls("speak", kIdSpeakVoiceLine, kSpeakCallers,
                  reinterpret_cast<void*>(&SpeakHook)))
     return false;
