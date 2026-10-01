@@ -4,10 +4,10 @@ Real-time NVIDIA Audio2Face-3D (v2.3 Mark) lip-sync for Skyrim SE 1.6.1170, as a
 
 When an actor with a FaceGen head speaks, the plugin runs the voice file through the Audio2Face network on the GPU (ONNX Runtime + DirectML). It retargets the result onto the vanilla phoneme, modifier and expression morphs, which play in the head's FaceGen update. There is an optional settings page through SKSE Menu Framework.
 
-- `src/A2FLive.cpp`: hooks, worker thread, cache, playback, ini and settings page
+- `src/a2f_live.cc`: hooks, worker thread, cache, playback, ini and settings page
 - `src/live_core.*`: audio decoding, Audio2Face SDK pipeline (windows, emotion, skin animator), retarget solve
 - `src/ort_net.*`: ONNX Runtime C API wrapper (loaded at runtime)
-- `src/skse.h`: SKSE ABI, log, Address Library, engine layout
+- `src/skse.*`: SKSE ABI, log, Address Library, engine layout
 - `dist/`: ini, retarget data (`A2FLive.dat`), player readme, notices, model license
 
 ## Building

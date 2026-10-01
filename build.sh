@@ -12,10 +12,11 @@ MODEL=${MODEL:-models/mark/network_fp16.onnx}
 
 mkdir -p build
 CXX="x86_64-w64-mingw32-g++ -std=c++17 -O2"
-$CXX -Wall -Wno-unknown-pragmas -I$FFMPEG/include -c src/A2FLive.cpp -o build/A2FLive.o &&
-$CXX -w -I$FFMPEG/include -c src/live_core.cpp -o build/live_core.o &&
-$CXX -w -I$ORT/build/native/include -c src/ort_net.cpp -o build/ort_net.o &&
-$CXX -shared -s build/A2FLive.o build/live_core.o build/ort_net.o -o build/A2FLive.dll \
+$CXX -Wall -c src/a2f_live.cc -o build/a2f_live.o &&
+$CXX -Wall -c src/skse.cc -o build/skse.o &&
+$CXX -w -I$FFMPEG/include -c src/live_core.cc -o build/live_core.o &&
+$CXX -w -I$ORT/build/native/include -c src/ort_net.cc -o build/ort_net.o &&
+$CXX -shared -s build/a2f_live.o build/skse.o build/live_core.o build/ort_net.o -o build/A2FLive.dll \
     -L$FFMPEG/lib -lavformat -lavcodec -lswresample -lavutil -lbcrypt -lshell32 -lole32 -luuid -static -static-libgcc -static-libstdc++ || exit 1
 
 PKG=build/mod; P=$PKG/SKSE/Plugins; L=$P/A2FLive/licenses
@@ -36,7 +37,7 @@ install)
     [ -n "$2" ] || { echo "usage: $0 install <dir>"; exit 1; }
     mkdir -p "$2" && cp -r $PKG/. "$2/" && echo "installed to $2" ;;
 release)
-    V=$(sed -n 's/^#define A2FLIVE_VERSION "\(.*\)"/\1/p' src/A2FLive.cpp); R=$PWD/release; mkdir -p $R
+    V=$(sed -n 's/^constexpr char kVersion\[\] = "\(.*\)";/\1/p' src/a2f_live.cc); R=$PWD/release; mkdir -p $R
     rm -f "$R/A2F Live-$V.7z" "$R/A2F Live - Source-$V.zip"
     (cd $PKG && 7z a -t7z -mx=9 "$R/A2F Live-$V.7z" SKSE >/dev/null) &&
     git archive --prefix="A2FLive-$V-src/" -o "$R/A2F Live - Source-$V.zip" HEAD &&
