@@ -29,7 +29,7 @@ using skse::Log;
 
 namespace {
 
-constexpr char kVersion[] = "1.1.0";
+constexpr char kVersion[] = "1.2.0";
 
 // "major.minor.patch" -> SKSE's packed plugin version.
 constexpr uint32_t PackVersion(const char* s) {
@@ -133,10 +133,9 @@ struct Config {  // fixed after load
   std::wstring model;
 };
 struct Tune {  // menu
-  bool enabled = true, prefetch = true, direct = false;
+  bool enabled = true, prefetch = true, direct = true, direct_expression = true;
   float time_offset = 0, blend_in = 0.15f, mouth = 1, brows = 1, expression = 1;
-  float direct_scale[direct::kNumRegions] = {0.5f, 0.3f, 0.4f,
-                                             1.3f, 1.3f, 1.3f};
+  float direct_scale[direct::kNumRegions] = {1, 1, 1, 1, 1, 1};
 };
 // A line ready later than this after its start is blended in.
 constexpr float kLateStart = 0.1f;
@@ -258,9 +257,14 @@ const Param kParams[] = {
     {"DirectMouth", &tune.direct_scale[direct::kMouth], 0, 2, "Mouth",
      "Direct: lip and mouth skin deformation.", Sec::kDirect},
     {"DirectJaw", &tune.direct_scale[direct::kJaw], 0, 2, "Jaw & teeth",
-     "Direct: lower jaw / teeth motion (follows the lower lip).", Sec::kDirect},
+     "Direct: jaw, teeth and gums (Skyrim's own mouth shapes fitted to the "
+     "lips and chin).",
+     Sec::kDirect},
     {"DirectTongue", &tune.direct_scale[direct::kTongue], 0, 2, "Tongue",
      "Direct: tongue deformation.", Sec::kDirect},
+    {"DirectExpression", nullptr, 0, 0, "Engine expression",
+     "Direct: also play the dialogue emotion expression morph on top.",
+     Sec::kDirect, &tune.direct_expression},
 };
 const char* Section(const Param& p) {
   static const char* const kNames[] = {"General", "Playback", "Generation",
@@ -541,11 +545,10 @@ void Process(const Job& j) {
       a2f::Settings s = gen;
       ReleaseSRWLockShared(&settings_lock);
       a2f::DirectProj proj = model.Proj(j.female);
-      if (j.direct) {     // emotion = value / 100, constant: no floor, gain,
-        s.a2f_floor = 0;  // cap or onset envelope
+      if (j.direct) {     // emotion = value / 100: no floor, gain or cap
+        s.a2f_floor = 0;  // (Generate holds it constant over the line)
         s.a2f_gain = 1;
         s.a2f_cap = 1;
-        s.onset = 1;
       }
       line = std::make_shared<a2f::Line>();
       audio_sec = pcm.size() / static_cast<double>(a2f::kSampleRate);
@@ -827,8 +830,9 @@ inline float Mix(float engine, float ours, float mix) {
 
 // Write the line's frame at lip time t (s) into the final phoneme / modifier /
 // expression keyframes; mix < 1 blends from the engine's values. With Direct
-// the mesh carries the mouth and the emotion: phonemes and expression are
-// zeroed (crossfaded by the mouth scale below 1).
+// the mesh carries the mouth, brows and eyes: phonemes are zeroed (crossfaded
+// by the mouth scale below 1), modifiers too, and the expression plays only
+// with "Engine expression".
 void PlayFrame(uint8_t* fg, const a2f::Line& line, float t, float mix,
                bool direct) {
   auto* phon = reinterpret_cast<skse::KeyframeMultiple*>(fg + skse::kFgPhon3);
@@ -838,6 +842,7 @@ void PlayFrame(uint8_t* fg, const a2f::Line& line, float t, float mix,
   if (f < 0) f = 0;
   float morph =
       direct ? std::fmax(0.f, 1 - tune.direct_scale[direct::kMouth]) : 1.f;
+  float expr = direct && !tune.direct_expression ? morph : 1.f;
   uint32_t i0 = static_cast<uint32_t>(f);
   float a = f - static_cast<float>(i0);
   bool past = i0 + 1 >= line.frames;
@@ -863,7 +868,7 @@ void PlayFrame(uint8_t* fg, const a2f::Line& line, float t, float mix,
   }
   if (mod->values && mod->count >= 14) {
     for (int i = 0; i < a2f::kNumMod; ++i) {
-      float v = sample(a2f::kNumMouth + i, tune.brows);
+      float v = direct ? 0.f : sample(a2f::kNumMouth + i, tune.brows);
       int e = kModEngine[i];
       // keep the engine's procedural blink
       mod->values[e] =
@@ -873,11 +878,10 @@ void PlayFrame(uint8_t* fg, const a2f::Line& line, float t, float mix,
   }
   if (ex->values && ex->count >= 7) {
     for (uint32_t i = 0; i < 7; ++i)
-      ex->values[i] =
-          Mix(ex->values[i],
-              i == line.expr ? sample(a2f::kNumSolve, tune.expression * morph)
-                             : 0.f,
-              mix);
+      ex->values[i] = Mix(
+          ex->values[i],
+          i == line.expr ? sample(a2f::kNumSolve, tune.expression * expr) : 0.f,
+          mix);
     ex->is_updated = true;
   }
 }
@@ -1003,6 +1007,7 @@ direct::Part Classify(const char* name) {
   std::string n = name;
   for (auto& c : n) c = static_cast<char>(tolower(static_cast<uint8_t>(c)));
   if (n.find("mouth") != std::string::npos) return direct::Part::kMouth;
+  if (n.find("eyes") != std::string::npos) return direct::Part::kEyes;
   for (const char* w : {"head", "brows", "beard"})
     if (n.find(w) != std::string::npos) return direct::Part::kHead;
   return direct::Part::kNone;
@@ -1058,8 +1063,9 @@ DWORD WINAPI Mapper(void*) {
     map_queue.pop_front();
     ReleaseSRWLockExclusive(&map_lock);
     const direct::SexModel& sm = model.sex[j.female ? 0 : 1];
-    const direct::RefMesh& ref =
-        j.part == direct::Part::kHead ? sm.head : sm.mouth;
+    const direct::RefMesh& ref = j.part == direct::Part::kHead    ? sm.head
+                                 : j.part == direct::Part::kMouth ? sm.mouth
+                                                                  : sm.eyes;
     std::vector<uint8_t> labels;
     if (!j.bigaah.empty()) {
       direct::LipLabels(j.base.data(), j.bigaah.data(), j.nv, labels);
@@ -1111,8 +1117,10 @@ std::shared_ptr<const direct::Mapping> FindMapping(uint8_t* shape, bool female,
     }
   char key[48];
   snprintf(key, sizeof key, "%c/%s/%u/%016llx", female ? 'f' : 'm',
-           part == direct::Part::kHead ? "head" : "mouth", nv,
-           static_cast<unsigned long long>(h));
+           part == direct::Part::kHead    ? "head"
+           : part == direct::Part::kMouth ? "mouth"
+                                          : "eyes",
+           nv, static_cast<unsigned long long>(h));
   AcquireSRWLockShared(&map_lock);
   auto it = mappings.find(key);
   bool known = it != mappings.end();
@@ -1160,10 +1168,8 @@ void AddDirect(uint8_t* node) {
   if (!line || frame < 0) return;
   const direct::SexModel& sm = model.sex[female ? 0 : 1];
   direct::Track track{line->direct.data(), line->frames, line->direct_dim, &sm};
-  float scales[direct::kNumRegions];
-  std::copy_n(tune.direct_scale, direct::kNumRegions, scales);
-  thread_local std::vector<float> deltas[2];
-  bool have[2] = {};
+  thread_local direct::Deltas deltas;
+  bool have = false;
   uint8_t** kids = *reinterpret_cast<uint8_t***>(node + kNodeChildren);
   uint16_t n = *reinterpret_cast<uint16_t*>(node + kNodeNumChildren);
   for (uint16_t i = 0; kids && i < n; ++i) {
@@ -1176,15 +1182,15 @@ void AddDirect(uint8_t* node) {
     if (*reinterpret_cast<uint32_t*>(shape + kDynDataSize) != nv * 16) continue;
     auto m = FindMapping(shape, female, part, nv);
     if (!m) continue;
-    int k = static_cast<int>(part);
-    if (!have[k]) {
-      direct::Evaluate(track, frame, part, scales, deltas[k]);
+    if (!have) {
+      direct::Evaluate(track, frame, tune.direct_scale, deltas);
       if (mix < 1)
-        for (float& d : deltas[k]) d *= mix;
-      have[k] = true;
+        for (auto& d : deltas.part)
+          for (float& v : d) v *= mix;
+      have = true;
     }
     float* data = lock_dyn(shape);
-    direct::AddDeltas(*m, deltas[k], data);
+    direct::AddDeltas(*m, deltas.part[static_cast<int>(part)], data);
     unlock_dyn(shape);
   }
 }

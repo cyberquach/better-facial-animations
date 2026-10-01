@@ -510,7 +510,9 @@ bool Generate(const Data& d, Net& net, const Settings& s, const float* pcm,
   // --- network: audio windows + [implicit, explicit] emotion per frame ---
   float emo10[kNumMod];
   ExplicitEmotion(emotion, value, s, emo10);
-  auto keys = EnvelopeKeys(static_cast<double>(n) / kSampleRate, s);
+  // Direct: constant over the line (the expression curve keeps its envelope)
+  auto keys = direct ? std::vector<std::pair<int64_t, float>>{{0, 1.f}}
+                     : EnvelopeKeys(static_cast<double>(n) / kSampleRate, s);
   const float* implicit = d.arrays.at("implicit").values.data();
   int batch = std::max(1, net.Batch());
   std::vector<float> x(static_cast<size_t>(batch) * kWindow),

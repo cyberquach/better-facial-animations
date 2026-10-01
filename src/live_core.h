@@ -106,7 +106,8 @@ struct Timing {
 };
 
 // emotion: Skyrim emotion type (0..7) and value (0..100). female selects the
-// head the curves are solved for. direct, when given, also fills out.direct.
+// head the curves are solved for. direct, when given, also fills out.direct
+// and holds the network's emotion constant over the line.
 bool Generate(const Data& d, Net& net, const Settings& s, const float* pcm,
               size_t n, int emotion, int value, bool female, Line& out,
               std::string& err, Timing* timing = nullptr,

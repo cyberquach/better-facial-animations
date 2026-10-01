@@ -23,7 +23,6 @@ inline V3 operator+(V3 a, V3 b) { return {a.x + b.x, a.y + b.y, a.z + b.z}; }
 inline V3 operator*(V3 a, float s) { return {a.x * s, a.y * s, a.z * s}; }
 inline float Dot(V3 a, V3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 inline float Len(V3 a) { return std::sqrt(Dot(a, a)); }
-inline V3 Unit(V3 a) { return a * (1 / std::max(Len(a), 1e-6f)); }
 
 float Half(uint16_t h) {
   uint32_t s = static_cast<uint32_t>(h >> 15) << 31, e = (h >> 10) & 0x1F,
@@ -69,11 +68,16 @@ struct Reader {
     v.resize(n);
     for (size_t i = 0; i < n && ok; ++i) v[i] = Get<T>();
   }
+  void Skip(size_t n) {
+    if (left < n) ok = false;
+    n = std::min(n, left);
+    p += n, left -= n;
+  }
   void Halves(std::vector<float>& v, size_t n) {
     v.resize(n);
     for (size_t i = 0; i < n && ok; ++i) v[i] = Half(Get<uint16_t>());
   }
-  bool Mesh(RefMesh& m) {
+  bool Mesh(RefMesh& m, bool labels = true) {
     uint32_t nv = Get<uint32_t>(), nt = Get<uint32_t>();
     if (!ok || !nv || nv > 65535) return false;
     m.nv = nv;
@@ -81,7 +85,7 @@ struct Reader {
     std::vector<uint16_t> t;
     Vec(t, static_cast<size_t>(nt) * 3);
     m.tris.assign(t.begin(), t.end());
-    Vec(m.labels, nv);
+    if (labels) Vec(m.labels, nv);
     for (uint32_t i : m.tris)
       if (i >= nv) return false;
     return ok;
@@ -236,13 +240,13 @@ bool Model::Load(const std::wstring& path, std::string& err) {
   err = "bad file";
   if (got < 12 || memcmp(d.data(), "A2FD", 4)) return false;
   r.p += 4, r.left -= 4;
-  uint32_t version = r.Get<uint32_t>();  // 2 adds region weights + scales
-  if (version < 1 || version > 2 || r.Get<uint32_t>() != 2) return false;
+  // version 3: eyes part, mouth rig
+  if (r.Get<uint32_t>() != 3 || r.Get<uint32_t>() != 2) return false;
   for (int s = 0; s < 2; ++s) {
     if (r.Get<uint8_t>() != s) return false;
     SexModel& m = sex[s];
     if (!r.Mesh(m.head) || !r.Mesh(m.mouth)) return false;
-    r.Vec(m.jaw_w, m.mouth.nv);
+    r.Skip(m.mouth.nv);  // jaw_w (old rigid jaw, unused)
     m.k = r.Get<uint32_t>();
     m.nm = r.Get<uint32_t>();
     if (!r.ok || !m.k || m.k > 1024 || m.nm > m.head.nv) return false;
@@ -253,21 +257,29 @@ bool Model::Load(const std::wstring& path, std::string& err) {
     if (!r.ok || nt > m.mouth.nv) return false;
     r.Vec(m.tongue_idx, nt);
     r.Halves(m.tongue_basis, static_cast<size_t>(a2f::kNumTongue) * nt * 3);
-    uint32_t nl = r.Get<uint32_t>();
-    if (!r.ok || nl > m.head.nv) return false;
-    std::vector<uint16_t> lip;
-    r.Vec(lip, nl);
-    for (float& v : m.lip_big) v = r.Get<float>();
-    float rot[9];
-    for (float& v : rot) v = r.Get<float>();
-    for (float& v : m.t_big) v = r.Get<float>();
-    std::vector<uint8_t> rw(static_cast<size_t>(m.head.nv) * 4, 0);
-    if (version >= 2) {
-      r.Vec(rw, rw.size());
-    } else {  // no weights: all skin counts as mouth
-      for (uint32_t i = 0; i < m.head.nv; ++i) rw[i * 4 + kMouth] = 255;
-    }
+    uint32_t nl = r.Get<uint32_t>();  // old rigid jaw: lip idx, 15 floats
+    r.Skip(static_cast<size_t>(nl) * 2 + 15 * 4);
+    std::vector<uint8_t> rw;
+    r.Vec(rw, static_cast<size_t>(m.head.nv) * 4);
+    if (!r.Mesh(m.eyes, false)) return false;
+    m.eye_k = r.Get<uint32_t>();
+    if (!r.ok || !m.eye_k || m.eye_k > 16) return false;
+    r.Vec(m.eye_idx, static_cast<size_t>(m.eyes.nv) * m.eye_k);
+    r.Vec(m.eye_w, m.eye_idx.size());
+    const uint32_t np = m.rig_p = r.Get<uint32_t>();
+    if (!r.ok || !np || np > 16) return false;
+    r.Skip(static_cast<size_t>(np) * 16);  // names
+    uint32_t nr = r.Get<uint32_t>();
+    std::vector<uint16_t> rows;
+    std::vector<float> a;  // p x nr x 3
+    r.Vec(rows, nr);
+    r.Halves(a, static_cast<size_t>(np) * nr * 3);
+    r.Halves(m.rig_mouth, static_cast<size_t>(np) * m.mouth.nv * 3);
     if (!r.ok) return false;
+    for (uint16_t i : rows)
+      if (i >= m.head.nv) return false;
+    for (uint16_t i : m.eye_idx)
+      if (i >= m.head.nv) return false;
     for (uint16_t i : m.midx)
       if (i >= m.head.nv) return false;
     for (uint16_t i : m.tongue_idx)
@@ -277,42 +289,122 @@ bool Model::Load(const std::wstring& path, std::string& err) {
     for (uint32_t i = 0; i < m.nm; ++i)
       for (int c = 0; c < 4; ++c)
         m.region_w[i * 4 + c] = rw[m.midx[i] * 4 + c] / 255.f;
-    // lip rows -> mean basis row; rotation matrix -> axis-angle
+    // rig normal equations: A^T A and A^T basis (rows outside the basis
+    // have no skin delta)
     std::vector<int32_t> row(m.head.nv, -1);
     for (uint32_t i = 0; i < m.nm; ++i) row[m.midx[i]] = static_cast<int>(i);
-    m.lip_mean.assign(static_cast<size_t>(m.k) * 3, 0.f);
-    uint32_t used = 0;
-    for (uint16_t v : lip) {
-      if (row[v] < 0) continue;
-      ++used;
-      for (uint32_t k = 0; k < m.k; ++k)
-        for (int c = 0; c < 3; ++c)
-          m.lip_mean[k * 3 + c] +=
-              m.basis[(static_cast<size_t>(k) * m.nm + row[v]) * 3 + c];
+    const size_t n3 = static_cast<size_t>(nr) * 3;
+    m.rig_ata.assign(static_cast<size_t>(np) * np, 0.f);
+    m.rig_atb.assign(static_cast<size_t>(np) * m.k, 0.f);
+    for (uint32_t p = 0; p < np; ++p) {
+      const float* ap = &a[p * n3];
+      for (uint32_t q = 0; q < np; ++q) {
+        double d = 0;
+        for (size_t i = 0; i < n3; ++i) d += ap[i] * a[q * n3 + i];
+        m.rig_ata[p * np + q] = static_cast<float>(d);
+      }
+      for (uint32_t k = 0; k < m.k; ++k) {
+        double d = 0;
+        for (uint32_t i = 0; i < nr; ++i) {
+          if (row[rows[i]] < 0) continue;
+          const float* b =
+              &m.basis[(static_cast<size_t>(k) * m.nm + row[rows[i]]) * 3];
+          for (int c = 0; c < 3; ++c) d += ap[i * 3 + c] * b[c];
+        }
+        m.rig_atb[p * m.k + k] = static_cast<float>(d);
+      }
     }
-    for (float& v : m.lip_mean) v /= std::max(used, 1u);
-    float cs = std::clamp((rot[0] + rot[4] + rot[8] - 1) / 2, -1.f, 1.f);
-    m.angle = std::acos(cs);
-    V3 ax = Unit({rot[7] - rot[5], rot[2] - rot[6], rot[3] - rot[1]});
-    m.axis[0] = ax.x, m.axis[1] = ax.y, m.axis[2] = ax.z;
   }
   r.Vec(rest, a2f::kNumRaw);
-  for (float& v : default_scale) v = version >= 2 ? r.Get<float>() : 1.f;
+  for (float& v : default_scale) v = r.Get<float>();
   if (!r.ok) return false;
   err.clear();
   return true;
 }
+
+namespace {
+// Bounded least squares min |A w - d|, 0 <= w <= 1, on the normal equations
+// (A^T A, A^T d), active set (BVLS): once the free variables' exact solution
+// is inside the box, free the bound variable that most wants to move inwards;
+// a step that would leave the box stops at the first bound.
+void RigSolve(const SexModel& m, const float* c, float* out) {
+  const int np = static_cast<int>(m.rig_p);
+  double atd[16], w[16] = {}, x[16], l[16 * 16];
+  for (int p = 0; p < np; ++p) {
+    atd[p] = 0;
+    for (uint32_t k = 0; k < m.k; ++k) atd[p] += m.rig_atb[p * m.k + k] * c[k];
+  }
+  auto ata = [&](int p, int q) { return m.rig_ata[p * np + q]; };
+  bool free[16] = {}, inside = true;
+  for (int it = 0; it < 8 * np; ++it) {
+    if (inside) {
+      int best = -1;
+      double most = 1e-9;
+      for (int p = 0; p < np; ++p) {
+        if (free[p]) continue;
+        double g = -atd[p];
+        for (int q = 0; q < np; ++q) g += ata(p, q) * w[q];
+        if (w[p] >= 1) g = -g;
+        if (-g > most) most = -g, best = p;
+      }
+      if (best < 0) break;
+      free[best] = true;
+    }
+    // x_F: A^T A_FF x_F = atd_F - A^T A_FB w_B (Cholesky, in place)
+    int f[16], nf = 0;
+    for (int p = 0; p < np; ++p)
+      if (free[p]) f[nf++] = p;
+    for (int i = 0; i < nf; ++i) {
+      x[i] = atd[f[i]];
+      for (int q = 0; q < np; ++q)
+        if (!free[q]) x[i] -= ata(f[i], q) * w[q];
+      for (int j = 0; j <= i; ++j) {
+        double v = ata(f[i], f[j]);
+        for (int k = 0; k < j; ++k) v -= l[i * 16 + k] * l[j * 16 + k];
+        l[i * 16 + j] =
+            i == j ? std::sqrt(std::max(v, 1e-12)) : v / l[j * 16 + j];
+      }
+    }
+    for (int i = 0; i < nf; ++i) {
+      for (int k = 0; k < i; ++k) x[i] -= l[i * 16 + k] * x[k];
+      x[i] /= l[i * 16 + i];
+    }
+    for (int i = nf - 1; i >= 0; --i) {
+      for (int k = i + 1; k < nf; ++k) x[i] -= l[k * 16 + i] * x[k];
+      x[i] /= l[i * 16 + i];
+    }
+    // step towards x_F, stopping at the first bound it crosses
+    double t = 1;
+    int hit = -1;
+    for (int i = 0; i < nf; ++i) {
+      double d = x[i] - w[f[i]], lim = d < 0 ? -w[f[i]] / d : (1 - w[f[i]]) / d;
+      if ((x[i] < 0 || x[i] > 1) && lim < t) t = lim, hit = i;
+    }
+    for (int i = 0; i < nf; ++i)
+      w[f[i]] = std::clamp(w[f[i]] + t * (x[i] - w[f[i]]), 0.0, 1.0);
+    inside = hit < 0;
+    if (!inside) {
+      w[f[hit]] = x[hit] < 0 ? 0 : 1;
+      free[f[hit]] = false;
+    }
+  }
+  for (int p = 0; p < np; ++p) out[p] = static_cast<float>(w[p]);
+}
+}  // namespace
 
 a2f::DirectProj Model::Proj(bool female) const {
   const SexModel& m = sex[female ? 0 : 1];
   return {m.proj.data(), rest.data(), m.k};
 }
 
-void Evaluate(const Track& tr, float frame, Part part, const float* scales,
-              std::vector<float>& out) {
+void Evaluate(const Track& tr, float frame, const float* scales, Deltas& dl) {
   const SexModel& m = *tr.model;
-  const RefMesh& ref = part == Part::kHead ? m.head : m.mouth;
-  out.assign(static_cast<size_t>(ref.nv) * 3, 0.f);
+  std::vector<float>& head = dl.part[static_cast<int>(Part::kHead)];
+  std::vector<float>& out = dl.part[static_cast<int>(Part::kMouth)];
+  std::vector<float>& eyes = dl.part[static_cast<int>(Part::kEyes)];
+  head.assign(static_cast<size_t>(m.head.nv) * 3, 0.f);
+  out.assign(static_cast<size_t>(m.mouth.nv) * 3, 0.f);
+  eyes.assign(static_cast<size_t>(m.eyes.nv) * 3, 0.f);
   if (!tr.frames || tr.dim != m.k + a2f::kNumTongue) return;
   if (frame < 0) frame = 0;
   uint32_t i0 = static_cast<uint32_t>(frame);
@@ -331,20 +423,25 @@ void Evaluate(const Track& tr, float frame, Part part, const float* scales,
   for (uint32_t k = 0; k < tr.dim; ++k)
     c[k] = ((1 - a) * c0[k] + a * c1[k]) * g;
 
-  if (part == Part::kHead) {
-    std::vector<float> s(m.nm, 0.f);
-    for (uint32_t i = 0; i < m.nm; ++i)
-      for (int r = 0; r < 4; ++r) s[i] += scales[r] * m.region_w[i * 4 + r];
-    for (uint32_t k = 0; k < m.k; ++k) {
-      if (c[k] == 0) continue;
-      const float* b = &m.basis[static_cast<size_t>(k) * m.nm * 3];
-      for (uint32_t i = 0; i < m.nm; ++i) {
-        float* o = &out[m.midx[i] * 3];
-        for (int j = 0; j < 3; ++j) o[j] += c[k] * s[i] * b[i * 3 + j];
-      }
+  // head skin, region scaled
+  std::vector<float> s(m.nm, 0.f);
+  for (uint32_t i = 0; i < m.nm; ++i)
+    for (int r = 0; r < 4; ++r) s[i] += scales[r] * m.region_w[i * 4 + r];
+  for (uint32_t k = 0; k < m.k; ++k) {
+    if (c[k] == 0) continue;
+    const float* b = &m.basis[static_cast<size_t>(k) * m.nm * 3];
+    for (uint32_t i = 0; i < m.nm; ++i) {
+      float* o = &head[m.midx[i] * 3];
+      for (int j = 0; j < 3; ++j) o[j] += c[k] * s[i] * b[i * 3 + j];
     }
-    return;
   }
+  // eyes follow the scaled head
+  for (uint32_t v = 0; v < m.eyes.nv; ++v)
+    for (uint32_t j = 0; j < m.eye_k; ++j) {
+      size_t e = static_cast<size_t>(v) * m.eye_k + j;
+      const float* h = &head[m.eye_idx[e] * 3];
+      for (int cc = 0; cc < 3; ++cc) eyes[v * 3 + cc] += m.eye_w[e] * h[cc];
+    }
   // tongue
   const uint32_t nt = static_cast<uint32_t>(m.tongue_idx.size());
   for (int k = 0; k < a2f::kNumTongue; ++k) {
@@ -355,27 +452,17 @@ void Evaluate(const Track& tr, float frame, Part part, const float* scales,
       for (int j = 0; j < 3; ++j) o[j] += ck * b[i * 3 + j];
     }
   }
-  // lower jaw: BigAah's rigid lower-teeth motion scaled by how far the lower
-  // lip has dropped (rotation, x/z) and retracted (y) relative to BigAah
-  V3 lip{0, 0, 0};
-  for (uint32_t k = 0; k < m.k; ++k) lip = lip + At(&m.lip_mean[k * 3]) * c[k];
-  // opening / retraction ratios from the unscaled lip, then the jaw scale
-  float alpha = std::fmax(lip.z / m.lip_big[2], 0.f);
-  float beta = std::fmax(lip.y / m.lip_big[1], alpha) * scales[kJaw];
-  alpha *= scales[kJaw];
-  if (alpha <= 0 && beta <= 0) return;
-  float th = alpha * m.angle, sn = std::sin(th), cs = std::cos(th);
-  V3 ax = At(m.axis),
-     t{m.t_big[0] * alpha, m.t_big[1] * beta, m.t_big[2] * alpha};
-  for (uint32_t v = 0; v < m.mouth.nv; ++v) {
-    if (!m.jaw_w[v]) continue;
-    V3 p = At(&m.mouth.verts[v * 3]);
-    // Rodrigues
-    V3 cross{ax.y * p.z - ax.z * p.y, ax.z * p.x - ax.x * p.z,
-             ax.x * p.y - ax.y * p.x};
-    V3 q = p * cs + cross * sn + ax * (Dot(ax, p) * (1 - cs)) + t;
-    V3 d = (q - p) * (m.jaw_w[v] / 255.f);
-    out[v * 3] += d.x, out[v * 3 + 1] += d.y, out[v * 3 + 2] += d.z;
+  // mouth rig at both frames, interpolated like the coefficients
+  const uint32_t np = m.rig_p;
+  float w0[16], w1[16];
+  RigSolve(m, c0, w0);
+  RigSolve(m, c1, w1);
+  const size_t nm3 = static_cast<size_t>(m.mouth.nv) * 3;
+  for (uint32_t p = 0; p < np; ++p) {
+    float w = ((1 - a) * w0[p] + a * w1[p]) * g * scales[kJaw];
+    if (w <= 0) continue;
+    const float* d = &m.rig_mouth[p * nm3];
+    for (size_t i = 0; i < nm3; ++i) out[i] += w * d[i];
   }
 }
 

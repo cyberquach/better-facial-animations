@@ -13,7 +13,8 @@
 
 namespace direct {
 
-enum class Part { kHead, kMouth, kNone };
+enum class Part { kHead, kMouth, kEyes, kNone };
+constexpr int kNumParts = 3;
 
 // Deformation scales: the head skin by smooth per-vertex region weights
 // (kBrows..kMouth), the jaw motion and the tongue by one factor each.
@@ -29,7 +30,7 @@ struct RefMesh {
 };
 
 struct SexModel {
-  RefMesh head, mouth;
+  RefMesh head, mouth, eyes;  // eyes: no labels
   // skin: delta_head[midx[i]] = g sum_k coef[k] basis[k][i]
   uint32_t k = 0, nm = 0;
   std::vector<uint16_t> midx;
@@ -39,11 +40,18 @@ struct SexModel {
   // tongue: delta_mouth[tongue_idx[i]] = g sum_j c[j] tongue_basis[j][i]
   std::vector<uint16_t> tongue_idx;
   std::vector<float> tongue_basis;  // kNumTongue x n x 3
-  // jaw: the lower lip's mean delta relative to BigAah's scales BigAah's
-  // rigid lower-teeth motion (axis-angle, translation) on the mouth verts
-  std::vector<float> lip_mean;  // k x 3: mean basis row over the lip verts
-  float lip_big[3], axis[3], angle, t_big[3];
-  std::vector<uint8_t> jaw_w;  // mouth nv, 0..255
+  // mouth (teeth, gums, tongue base): the race's own phoneme morphs with
+  // w = argmin |A w - delta_head[rows]|, 0 <= w <= 1, fitted to the unscaled
+  // skin; delta_mouth = scale_jaw sum_p w[p] rig_mouth[p]
+  uint32_t rig_p = 0;
+  std::vector<float> rig_ata;    // p x p: A^T A
+  std::vector<float> rig_atb;    // p x k: A^T basis on the rows
+  std::vector<float> rig_mouth;  // p x mouth nv x 3
+  // eyes (lashes / lid line) follow the scaled head delta:
+  // delta_eyes[v] = sum_j eye_w[v][j] delta_head[eye_idx[v][j]]
+  uint32_t eye_k = 0;
+  std::vector<uint16_t> eye_idx;  // eyes nv x eye_k
+  std::vector<float> eye_w;
 };
 
 // A2FDirect.bin.
@@ -62,11 +70,15 @@ struct Track {
   const SexModel* model;
 };
 
-// Deltas (float3 per reference vertex) of the part at a fractional frame,
+// Deltas (float3 per reference vertex) of every part at a fractional frame,
 // interpolated and eased out past the end like the morph curves, scaled per
-// region (scales[kNumRegions]).
-void Evaluate(const Track& track, float frame, Part part, const float* scales,
-              std::vector<float>& ref_deltas);
+// region (scales[kNumRegions]). The eyes follow the scaled head delta; the
+// mouth rig is fitted to the unscaled one and scaled by kJaw.
+struct Deltas {
+  std::vector<float> part[kNumParts];  // by Part
+};
+void Evaluate(const Track& track, float frame, const float* scales,
+              Deltas& out);
 
 // Lip labels (0 skin, 1 upper lip, 2 lower lip) of a head mesh from its own
 // BigAah morph deltas, the rule the reference labels were made with.
