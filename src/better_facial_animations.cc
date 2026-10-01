@@ -978,6 +978,10 @@ DWORD WINAPI Mapper(void*) {
     const direct::RefMesh& ref = j.part == direct::Part::kHead    ? sm.head
                                  : j.part == direct::Part::kMouth ? sm.mouth
                                                                   : sm.eyes;
+    float frame[3];
+    direct::FrameOffset(ref, j.base.data(), j.nv, frame);
+    for (uint32_t i = 0; i < j.nv; ++i)
+      for (int c = 0; c < 3; ++c) j.base[i * 3 + c] += frame[c];
     std::vector<uint8_t> labels;
     std::vector<float> moved;
     float off[3] = {};
@@ -1004,9 +1008,10 @@ DWORD WINAPI Mapper(void*) {
                          labels.empty() ? nullptr : labels.data(), *m,
                          moved.empty() ? nullptr : moved.data());
     Log("direct map %s: %u verts, %s, dist mean %.3f max %.3f, %u snapped, "
-        "lip offset %.2f %.2f %.2f, %s labels, %.1f ms",
+        "frame %.2f %.2f %.2f, upper lip %.2f %.2f %.2f, %s labels, %.1f ms",
         j.key.c_str(), j.nv, m->identity ? "identity" : "resampled",
-        m->mean_dist, m->max_dist, m->snapped, off[0], off[1], off[2],
+        m->mean_dist, m->max_dist, m->snapped, frame[0], frame[1], frame[2],
+        off[0], off[1], off[2],
         labels.empty()     ? "no"
         : j.bigaah.empty() ? "nearest"
                            : "BigAah",
