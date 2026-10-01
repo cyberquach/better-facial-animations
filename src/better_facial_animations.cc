@@ -896,6 +896,7 @@ struct MapJob {
   bool female;
   direct::Part part;
   uint32_t nv;
+  bool lips;                        // the head skin: align the lips
   std::vector<float> base, bigaah;  // nv x 3; bigaah may be empty
 };
 SRWLOCK map_lock = SRWLOCK_INIT;
@@ -913,6 +914,15 @@ direct::Part Classify(const char* name) {
   for (const char* w : {"head", "brows", "beard"})
     if (n.find(w) != std::string::npos) return direct::Part::kHead;
   return direct::Part::kNone;
+}
+
+// The head skin itself (not brows / beard), whose lips the mapping aligns.
+bool IsHeadSkin(const char* name) {
+  std::string n = name;
+  for (auto& c : n) c = static_cast<char>(tolower(static_cast<uint8_t>(c)));
+  return n.find("head") != std::string::npos &&
+         n.find("brow") == std::string::npos &&
+         n.find("beard") == std::string::npos;
 }
 
 // Base (pre-morph) vertices of a face shape: its "FOD" extra data.
@@ -969,8 +979,11 @@ DWORD WINAPI Mapper(void*) {
                                  : j.part == direct::Part::kMouth ? sm.mouth
                                                                   : sm.eyes;
     std::vector<uint8_t> labels;
+    std::vector<float> moved;
+    float off[3] = {};
     if (!j.bigaah.empty()) {
-      direct::LipLabels(j.base.data(), j.bigaah.data(), j.nv, labels);
+      direct::LipLabels(ref, j.base.data(), j.bigaah.data(), j.nv, j.lips,
+                        labels, moved, off);
     } else if (j.part == direct::Part::kMouth) {  // teeth / tongue: nearest
       labels.resize(j.nv);
       for (uint32_t i = 0; i < j.nv; ++i) {
@@ -988,11 +1001,12 @@ DWORD WINAPI Mapper(void*) {
     double t = Now();
     auto m = std::make_shared<direct::Mapping>();
     direct::BuildMapping(ref, j.base.data(), j.nv,
-                         labels.empty() ? nullptr : labels.data(), *m);
+                         labels.empty() ? nullptr : labels.data(), *m,
+                         moved.empty() ? nullptr : moved.data());
     Log("direct map %s: %u verts, %s, dist mean %.3f max %.3f, %u snapped, "
-        "%s labels, %.1f ms",
+        "lip offset %.2f %.2f %.2f, %s labels, %.1f ms",
         j.key.c_str(), j.nv, m->identity ? "identity" : "resampled",
-        m->mean_dist, m->max_dist, m->snapped,
+        m->mean_dist, m->max_dist, m->snapped, off[0], off[1], off[2],
         labels.empty()     ? "no"
         : j.bigaah.empty() ? "nearest"
                            : "BigAah",
@@ -1006,7 +1020,7 @@ DWORD WINAPI Mapper(void*) {
 // The shape's mapping, or null (queued to the mapper on first sight).
 std::shared_ptr<const direct::Mapping> FindMapping(uint8_t* shape, bool female,
                                                    direct::Part part,
-                                                   uint32_t nv) {
+                                                   uint32_t nv, bool lips) {
   uint32_t nb = 0;
   const float* base = BaseVerts(shape, nb);
   if (!base || nb != nv) return nullptr;
@@ -1029,7 +1043,8 @@ std::shared_ptr<const direct::Mapping> FindMapping(uint8_t* shape, bool female,
   std::shared_ptr<const direct::Mapping> m = known ? it->second : nullptr;
   ReleaseSRWLockShared(&map_lock);
   if (known) return m;
-  MapJob j{key, female, part, nv, std::vector<float>(base, base + nv * 3), {}};
+  MapJob j{key, female, part, nv, lips,
+           std::vector<float>(base, base + nv * 3), {}};
   if (part == direct::Part::kHead) BigAah(shape, nv, j.bigaah);
   AcquireSRWLockExclusive(&map_lock);
   if (mappings.emplace(key, nullptr).second) {
@@ -1085,7 +1100,7 @@ void AddDirect(uint8_t* node) {
     if (part == direct::Part::kNone) continue;
     uint32_t nv = *reinterpret_cast<uint16_t*>(shape + kDynNumVerts);
     if (*reinterpret_cast<uint32_t*>(shape + kDynDataSize) != nv * 16) continue;
-    auto m = FindMapping(shape, female, part, nv);
+    auto m = FindMapping(shape, female, part, nv, IsHeadSkin(name));
     if (!m) continue;
     if (!have) {
       direct::Evaluate(track, frame, tune.direct_scale, deltas);

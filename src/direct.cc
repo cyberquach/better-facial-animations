@@ -466,25 +466,77 @@ void Evaluate(const Track& tr, float frame, const float* scales, Deltas& dl) {
   }
 }
 
-void LipLabels(const float* verts, const float* bigaah, uint32_t nv,
-               std::vector<uint8_t>& labels) {
+void LipLabels(const RefMesh& ref, const float* verts, const float* bigaah,
+               uint32_t nv, bool align, std::vector<uint8_t>& labels,
+               std::vector<float>& moved, float offset[3]) {
+  constexpr float kMargin = 0.5f, kFade = 2.f, kMinShift = 0.3f;
   labels.assign(nv, 0);
-  float drop = 0;
-  auto zone = [&](uint32_t i) {
-    const float* v = &verts[i * 3];
-    return std::fabs(v[0]) < 2.6f && v[1] > 6.5f && v[2] > -3.5f && v[2] < 0.5f;
+  moved.clear();
+  offset[0] = offset[1] = offset[2] = 0;
+  if (ref.labels.size() != ref.nv) return;
+  // the reference lips: box and centroid
+  V3 lo{INFINITY, INFINITY, INFINITY}, hi = lo * -1, rc{0, 0, 0};
+  uint32_t n = 0;
+  for (uint32_t i = 0; i < ref.nv; ++i) {
+    if (!ref.labels[i]) continue;
+    V3 p = At(&ref.verts[i * 3]);
+    lo = {std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z)};
+    hi = {std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
+    rc = rc + p, ++n;
+  }
+  if (!n) return;
+  rc = rc * (1.f / n);
+  // labels inside the box grown by margin, at target + off; returns the
+  // centroid of the labelled vertices (+ off), rc if none
+  V3 off{0, 0, 0};
+  auto label = [&](float margin) {
+    auto zone = [&](uint32_t i) {
+      V3 p = At(&verts[i * 3]) + off;
+      return p.x >= lo.x - margin && p.x <= hi.x + margin &&
+             p.y >= lo.y - margin && p.y <= hi.y + margin &&
+             p.z >= lo.z - margin && p.z <= hi.z + margin;
+    };
+    float drop = 0;
+    for (uint32_t i = 0; i < nv; ++i)
+      if (zone(i)) drop = std::max(drop, -bigaah[i * 3 + 2]);
+    V3 c{0, 0, 0};
+    n = 0;
+    for (uint32_t i = 0; i < nv; ++i) {
+      labels[i] = 0;
+      if (!zone(i)) continue;
+      float dz = bigaah[i * 3 + 2];
+      labels[i] = dz < -0.25f * drop ? 2 : dz > -0.12f * drop ? 1 : 0;
+      if (labels[i]) c = c + At(&verts[i * 3]), ++n;
+    }
+    return n ? c * (1.f / n) + off : rc;
   };
-  for (uint32_t i = 0; i < nv; ++i)
-    if (zone(i)) drop = std::max(drop, -bigaah[i * 3 + 2]);
+  // move the box until the lips it holds centre like the reference's
+  for (int it = 0; align && it < 10; ++it) {
+    V3 d = rc - label(0);
+    off = off + d;
+    if (Len(d) < 0.01f) break;
+  }
+  // smaller shifts are within what vertex density alone moves the centroid
+  // by (0.15 for the High Poly Head, which lies on the reference)
+  if (Len(off) < kMinShift) off = {0, 0, 0};
+  label(kMargin);
+  if (!align || !Len(off)) return;
+  offset[0] = off.x, offset[1] = off.y, offset[2] = off.z;
+  // the target with the shift, faded out over kFade outside the box
+  moved.resize(static_cast<size_t>(nv) * 3);
   for (uint32_t i = 0; i < nv; ++i) {
-    if (!zone(i)) continue;
-    float dz = bigaah[i * 3 + 2];
-    labels[i] = dz < -0.25f * drop ? 2 : dz > -0.12f * drop ? 1 : 0;
+    V3 p = At(&verts[i * 3]), q = p + off;
+    V3 out{std::max({lo.x - q.x, q.x - hi.x, 0.f}),
+           std::max({lo.y - q.y, q.y - hi.y, 0.f}),
+           std::max({lo.z - q.z, q.z - hi.z, 0.f})};
+    V3 r = p + off * std::max(0.f, 1 - Len(out) / kFade);
+    moved[i * 3] = r.x, moved[i * 3 + 1] = r.y, moved[i * 3 + 2] = r.z;
   }
 }
 
 void BuildMapping(const RefMesh& ref, const float* target, uint32_t nv,
-                  const uint8_t* target_labels, Mapping& out) {
+                  const uint8_t* target_labels, Mapping& out,
+                  const float* moved) {
   out = Mapping();
   out.nv = nv;
   if (nv == ref.nv) {
@@ -524,8 +576,9 @@ void BuildMapping(const RefMesh& ref, const float* target, uint32_t nv,
   std::vector<uint32_t> near, stamp(nt, 0);
   uint32_t gen = 0;
   double sum = 0;
+  if (!moved) moved = target;
   for (uint32_t i = 0; i < nv; ++i) {
-    V3 p = At(&target[i * 3]);
+    V3 p = At(&moved[i * 3]);
     grid.Collect(p, 0, near);
     if (near.empty()) continue;  // off the grid: no deltas
     auto nearest = [&](uint8_t label) {
