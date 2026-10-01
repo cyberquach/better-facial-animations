@@ -6,10 +6,8 @@
 namespace a2f {
 
 struct OrtOptions {
-    bool gpu = true;     // DirectML; false = CPU (no VRAM at all, ~0.4x realtime)
-    int device = 0;      // DXGI adapter index
-    int batch = 2;       // frames per run; fixed shape (the last batch of a line is padded). 2 = least VRAM
-    int cpuThreads = 2;  // CPU execution provider threads
+    bool gpu = true;  // DirectML (adapter 0); false = CPU, 2 threads (no VRAM at all, ~0.4x realtime)
+    int batch = 2;    // frames per run; fixed shape (the last batch of a line is padded). 2 = least VRAM
 };
 
 // dllDir: folder holding onnxruntime.dll / DirectML.dll. info receives a one-line description for the log.

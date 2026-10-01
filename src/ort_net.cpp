@@ -69,21 +69,20 @@ std::unique_ptr<Net> CreateOrtNet(const std::wstring& dllDir, const std::wstring
         const OrtDmlApi* dml = nullptr;
         ok = Check(g_api->DisableMemPattern(so), err, "mem pattern") && Check(g_api->SetSessionExecutionMode(so, ORT_SEQUENTIAL), err, "mode") &&
              Check(g_api->GetExecutionProviderApi("DML", ORT_API_VERSION, (const void**)&dml), err, "DML api") &&
-             Check(dml->SessionOptionsAppendExecutionProvider_DML(so, o.device), err, "DirectML");
+             Check(dml->SessionOptionsAppendExecutionProvider_DML(so, 0), err, "DirectML");
         // DML's arena rounds allocations up to powers of two: off saves ~16-32 MB at small batches
         if (ok) ok = Check(g_api->AddSessionConfigEntry(so, "ep.dml.disable_memory_arena", "1"), err, "arena");
         // the batch is always the same: let DirectML plan one static shape (also 4x faster at batch 1-2)
         for (const char* dim : {"input_dynamic_axes_1", "emotion_dynamic_axes_1"})
             if (ok) ok = Check(g_api->AddFreeDimensionOverrideByName(so, dim, net->batch), err, "batch override");
     } else if (ok) {
-        ok = Check(g_api->SetIntraOpNumThreads(so, o.cpuThreads), err, "threads") && Check(g_api->SetInterOpNumThreads(so, 1), err, "threads");
+        ok = Check(g_api->SetIntraOpNumThreads(so, 2), err, "threads") && Check(g_api->SetInterOpNumThreads(so, 1), err, "threads");
     }
     if (ok) ok = Check(g_api->CreateSession(g_env, model.c_str(), so, &net->sess), err, "session");
     if (ok) ok = Check(g_api->CreateCpuMemoryInfo(OrtArenaAllocator, OrtMemTypeDefault, &net->mem), err, "memory info");
     if (so) g_api->ReleaseSessionOptions(so);
     if (!ok) return nullptr;
-    info = "onnxruntime " + g_version + (o.gpu ? ", DirectML device " + std::to_string(o.device) : ", CPU " + std::to_string(o.cpuThreads) + " threads") +
-           ", batch " + std::to_string(net->batch);
+    info = "onnxruntime " + g_version + (o.gpu ? ", DirectML device 0" : ", CPU 2 threads") + ", batch " + std::to_string(net->batch);
     return net;
 }
 

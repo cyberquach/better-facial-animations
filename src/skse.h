@@ -1,4 +1,4 @@
-// SKSE ABI, log, Address Library, engine layout (AE 1.6.1170) and writing a frame of morph curves into a FaceGen head.
+// SKSE ABI, log, Address Library and engine layout (AE 1.6.1170).
 #pragma once
 #include <windows.h>
 #include <shlobj.h>
@@ -6,7 +6,6 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdarg>
-#include <cmath>
 #include <vector>
 #include <algorithm>
 
@@ -35,10 +34,10 @@ static void Log(const char* fmt, ...) {
     if (!g_log) return;
     va_list a; va_start(a, fmt); vfprintf(g_log, fmt, a); va_end(a); fputc('\n', g_log); fflush(g_log);
 }
-static void OpenLog(const wchar_t* name) {
+static void OpenLog() {
     wchar_t* docs = nullptr; wchar_t path[MAX_PATH];
     if (SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &docs) != S_OK) return;
-    _snwprintf(path, MAX_PATH, L"%ls\\My Games\\Skyrim Special Edition\\SKSE\\%ls", docs, name);
+    _snwprintf(path, MAX_PATH, L"%ls\\My Games\\Skyrim Special Edition\\SKSE\\A2FLive.log", docs);
     CoTaskMemFree(docs); g_log = _wfopen(path, L"w");
 }
 
@@ -81,12 +80,10 @@ static u64 Addr(u64 id) {
 }
 
 // ---------------- engine layout (AE 1.6.1170) ----------------
-constexpr u64 ID_GenerateFromPath = 69979;
 constexpr u32 FG_EXPR3 = 0xC0, FG_MOD3 = 0x100, FG_PHON3 = 0x140, FG_PHON1_TIMER = 0x12C, FG_LOCK = 0x220, FG_DIALOGUE = 0x228;
 struct KeyframeMultiple { void* vtbl; u32 type; float timer; float* values; u32 count; bool isUpdated; };
 struct ResID { u32 file; u32 ext; u32 dir; };
 static inline u64 KeyOf(const ResID& r) { return ((u64)r.dir << 32) | r.file; }
-using GenerateFromPath_t = void (*)(ResID*, const char*);
 
 struct SpinLock {  // RE::BSSpinLock
     volatile LONG owner, count;
@@ -110,49 +107,4 @@ static const ResID* ActiveLine(u8* fg) {
     u32 ctrl = *(u32*)((u8*)entry + 0x0C);
     if ((((ctrl & 0x70000000u) + 0xD0000000u) & 0xEFFFFFFFu) != 0) return nullptr;  // lip resource not loaded
     return (const ResID*)entry;
-}
-
-// ---------------- frame playback ----------------
-// line channels: 16 phonemes, 10 modifiers, 1 expression
-constexpr int CH_PHON = 0, N_PHON = 16, CH_MOD = 16, CH_EXPR = 26;
-// line modifier order -> engine modifier index (BlinkL/R, BrowDownL/R, BrowInL/R, BrowUpL/R, SquintL/R)
-constexpr int MOD_ENGINE[10] = { 0, 1, 2, 3, 4, 5, 6, 7, 12, 13 };
-
-static inline float Sample(const u8* fr0, const u8* fr1, float a, int ch) {
-    return ((1 - a) * fr0[ch] + a * fr1[ch]) * (1.0f / 255.0f);
-}
-static inline float Mix(float engine, float ours, float mix) { return mix >= 1.f ? ours : engine + (ours - engine) * mix; }
-
-// Write a line's frame at lip time t (s) into the final phoneme / modifier / expression keyframes.
-// data: uint8[frames][nch]; expr: engine expression index (>= 7: none); mix < 1 blends from the engine's values.
-static void PlayFrame(u8* fg, const u8* data, u32 frames, u32 nch, u32 fps, u32 expr, float t, float sMouth, float sMod, float sExpr, float mix) {
-    auto* phon = (KeyframeMultiple*)(fg + FG_PHON3);
-    auto* mod = (KeyframeMultiple*)(fg + FG_MOD3);
-    auto* ex = (KeyframeMultiple*)(fg + FG_EXPR3);
-    float f = t * (float)fps; if (f < 0) f = 0;
-    u32 i0 = (u32)f; float a = f - (float)i0;
-    bool past = i0 + 1 >= frames;
-    const u8* fr0 = data + (size_t)(past ? frames - 1 : i0) * nch;
-    const u8* fr1 = past ? fr0 : fr0 + nch;
-    float fade = past ? std::fmax(0.f, 1.f - (f - (float)(frames - 1)) / 3.f) : 1.f;  // ease out over 0.1 s
-
-    if (phon->values && phon->count >= N_PHON) {
-        for (int i = 0; i < N_PHON; ++i) phon->values[i] = Mix(phon->values[i], std::fmin(1.f, Sample(fr0, fr1, a, CH_PHON + i) * sMouth * fade), mix);
-        phon->isUpdated = true;
-    }
-    if (mod->values && mod->count >= 14) {
-        for (int i = 0; i < 10; ++i) {
-            float v = std::fmin(1.f, Sample(fr0, fr1, a, CH_MOD + i) * sMod * fade);
-            int e = MOD_ENGINE[i];
-            mod->values[e] = (e <= 1) ? std::fmax(mod->values[e], v) : Mix(mod->values[e], v, mix);  // keep the engine's procedural blink
-        }
-        mod->isUpdated = true;
-    }
-    if (ex->values && ex->count >= 7) {
-        for (int i = 0; i < 7; ++i) {
-            float v = (u32)i == expr ? std::fmin(1.f, Sample(fr0, fr1, a, CH_EXPR) * sExpr * fade) : 0.f;
-            ex->values[i] = Mix(ex->values[i], v, mix);
-        }
-        ex->isUpdated = true;
-    }
 }

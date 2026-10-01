@@ -7,8 +7,8 @@ When an actor with a FaceGen head speaks, the plugin runs the voice file through
 - `src/A2FLive.cpp`: hooks, worker thread, cache, playback, ini and settings page
 - `src/live_core.*`: audio decoding, Audio2Face SDK pipeline (windows, emotion, skin animator), retarget solve
 - `src/ort_net.*`: ONNX Runtime C API wrapper (loaded at runtime)
-- `src/skse.h`: SKSE ABI, Address Library, engine layout, frame playback
-- `dist/`: ini, retarget data (`A2FLive.dat`), readme, notices, Nexus page
+- `src/skse.h`: SKSE ABI, log, Address Library, engine layout
+- `dist/`: ini, retarget data (`A2FLive.dat`), player readme, notices, model license
 
 ## Building
 
@@ -26,8 +26,6 @@ Commands:
 - `./build.sh` builds into `build/mod`.
 - `./build.sh install <dir>` also copies the result into a mod folder.
 - `./build.sh release` also writes the release archives to `release/`.
-
-To relink against a different FFmpeg build, point `FFMPEG` at it and rebuild.
 
 ## License
 
