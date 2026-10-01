@@ -37,7 +37,9 @@ void OpenLog() {
   if (SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &docs) != S_OK)
     return;
   _snwprintf(path, MAX_PATH,
-             L"%ls\\My Games\\Skyrim Special Edition\\SKSE\\A2FLive.log", docs);
+             L"%ls\\My Games\\Skyrim Special "
+             L"Edition\\SKSE\\BetterFacialAnimations.log",
+             docs);
   CoTaskMemFree(docs);
   log_file = _wfopen(path, L"w");
 }

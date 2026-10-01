@@ -1,9 +1,9 @@
-// A2FLive: Audio2Face lip-sync generated in the game for every voiced line of
-// every NPC with a FaceGen head. The speak / response hooks queue a line; a
-// worker thread reads the voice file through the engine's resource system,
-// decodes it and runs the network (live_core.cc); the face hook plays the line
-// and the morph hook adds its A2F Direct vertex deltas (direct.cc) to the
-// head's face meshes.
+// Better Facial Animations: Audio2Face lip-sync generated in the game for every
+// voiced line of every NPC with a FaceGen head. The speak / response hooks
+// queue a line; a worker thread reads the voice file through the engine's
+// resource system, decodes it and runs the network (live_core.cc); the face
+// hook plays the line and the morph hook adds its A2F Direct vertex deltas
+// (direct.cc) to the head's face meshes.
 #include <windows.h>
 
 #include <algorithm>
@@ -51,8 +51,15 @@ extern "C" {
 __declspec(dllexport) extern skse::SKSEPluginVersionData SKSEPlugin_Version;
 }
 skse::SKSEPluginVersionData SKSEPlugin_Version = {
-    1, PackVersion(kVersion),          "A2FLive", "Cyberquach", "", 0,
-    0, {0x01064920 /* 1.6.1170 */, 0}, 0};
+    1,
+    PackVersion(kVersion),
+    "BetterFacialAnimations",
+    "Cyberquach",
+    "",
+    0,
+    0,
+    {0x01064920 /* 1.6.1170 */, 0},
+    0};
 
 namespace {
 
@@ -125,9 +132,9 @@ using ApplyMorphFn = void (*)(void* morph_data, int type, int index,
                               uint8_t* shape, float value);
 using GenerateFromPathFn = void (*)(skse::ResId*, const char*);
 
-constexpr char kIni[] = "Data\\SKSE\\Plugins\\A2FLive.ini";
-constexpr wchar_t kIniW[] = L"Data\\SKSE\\Plugins\\A2FLive.ini";
-constexpr wchar_t kPluginDir[] = L"Data\\SKSE\\Plugins\\A2FLive";
+constexpr char kIni[] = "Data\\SKSE\\Plugins\\BetterFacialAnimations.ini";
+constexpr wchar_t kIniW[] = L"Data\\SKSE\\Plugins\\BetterFacialAnimations.ini";
+constexpr wchar_t kPluginDir[] = L"Data\\SKSE\\Plugins\\BetterFacialAnimations";
 constexpr char kAddressLibrary[] =
     "Data\\SKSE\\Plugins\\versionlib-1-6-1170-0.bin";
 
@@ -1127,7 +1134,9 @@ void RenderMenu() {
   size_t cached = cache.size(), queued = queue.size();
   ReleaseSRWLockShared(&lock);
   ig.SeparatorText("Status");
-  if (!ready) ig.Text("Not running: see A2FLive.log (A2FDirect.bin missing?)");
+  if (!ready)
+    ig.Text(
+        "Not running: see BetterFacialAnimations.log (A2FDirect.bin missing?)");
   ig.Text("Model: %s", st.net_info.c_str());
   ig.Text("Lines generated: %u (%u failed / no audio), cached %zu, queued %zu",
           st.lines, st.failed, cached, queued);
@@ -1147,7 +1156,7 @@ void RenderMenu() {
     if (ig.IsItemHovered(0)) ig.SetTooltip("%s", p.tip);
   }
   ig.SeparatorText("");
-  if (ig.Button("Save to A2FLive.ini", ImVec2{0, 0})) {
+  if (ig.Button("Save to BetterFacialAnimations.ini", ImVec2{0, 0})) {
     AcquireSRWLockShared(&settings_lock);
     SaveIni();
     ReleaseSRWLockShared(&settings_lock);
@@ -1182,7 +1191,8 @@ bool Import(HMODULE m, const char* name, Fn& fn) {
 void RegisterMenu() {
   HMODULE m = GetModuleHandleA("SKSEMenuFramework.dll");
   if (!m) {
-    Log("SKSE Menu Framework not installed: settings via A2FLive.ini only");
+    Log("SKSE Menu Framework not installed: settings via "
+        "BetterFacialAnimations.ini only");
     return;
   }
   void (*add)(const char*, void (*)());
@@ -1197,7 +1207,7 @@ void RegisterMenu() {
     Log("SKSE Menu Framework: missing exports, no menu page");
     return;
   }
-  add("A2F Live/Settings", RenderMenu);
+  add("Better Facial Animations/Settings", RenderMenu);
   Log("menu page registered (SKSE Menu Framework)");
 }
 
@@ -1218,7 +1228,15 @@ void OnMessage(skse::SKSEMessage* m) {
 extern "C" __declspec(dllexport) bool SKSEPlugin_Load(
     const skse::SKSEInterface* iface) {
   skse::OpenLog();
-  Log("A2FLive %s: runtime %08X", kVersion, iface->runtimeVersion);
+  Log("Better Facial Animations %s: runtime %08X", kVersion,
+      iface->runtimeVersion);
+  // The same mod under its old name: both would deform the same faces.
+  if (GetFileAttributesW(L"Data\\SKSE\\Plugins\\A2FLive.dll") !=
+      INVALID_FILE_ATTRIBUTES) {
+    Log("A2FLive.dll (the old name of this mod) is installed too: remove it "
+        "and its A2FLive folder and ini");
+    return false;
+  }
   if (!skse::LoadAddressLibrary(kAddressLibrary)) {
     Log("address library missing/unreadable");
     return false;

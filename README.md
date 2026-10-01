@@ -1,10 +1,10 @@
-# A2F Live
+# Better Facial Animations
 
 Real-time NVIDIA Audio2Face-3D (v2.3 Mark) lip-sync for Skyrim SE 1.6.1170, as an SKSE plugin.
 
 When an actor with a FaceGen head speaks, the plugin runs the voice file through the Audio2Face network on the GPU (ONNX Runtime + DirectML). The result deforms the head's face meshes directly (A2F Direct): per-vertex deltas from reference meshes, resampled onto any head topology, with the jaw, teeth and gums on Skyrim's own mouth shapes. The line's emotion also plays as the engine expression morph. There is an optional settings page through SKSE Menu Framework.
 
-- `src/a2f_live.cc`: hooks, worker thread, cache, playback, ini and settings page
+- `src/better_facial_animations.cc`: hooks, worker thread, cache, playback, ini and settings page
 - `src/live_core.*`: audio decoding, Audio2Face network windows and emotion, Direct coefficients, expression curve
 - `src/direct.*`: A2FDirect.bin, mesh mapping, per-frame vertex deltas and the mouth rig
 - `src/ort_net.*`: ONNX Runtime C API wrapper (loaded at runtime)

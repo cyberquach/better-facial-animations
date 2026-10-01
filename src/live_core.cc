@@ -1,5 +1,5 @@
-// A2FLive core: decode, network windows, A2F Direct coefficients, expression
-// curve.
+// Better Facial Animations core: decode, network windows, A2F Direct
+// coefficients, expression curve.
 #include "live_core.h"
 
 #include <algorithm>

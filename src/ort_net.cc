@@ -105,8 +105,9 @@ std::unique_ptr<Net> CreateOrtNet(const std::wstring& dll_dir,
       api = nullptr;
       return nullptr;
     }
-    if (!Check(api->CreateEnv(ORT_LOGGING_LEVEL_ERROR, "A2FLive", &env), err,
-               "env"))
+    if (!Check(api->CreateEnv(ORT_LOGGING_LEVEL_ERROR, "BetterFacialAnimations",
+                              &env),
+               err, "env"))
       return nullptr;
     version = base()->GetVersionString();
   }
