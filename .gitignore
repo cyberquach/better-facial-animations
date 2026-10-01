@@ -1,0 +1,8 @@
+# only the mod is tracked
+/*
+!/src/
+!/dist/
+!/build.sh
+!/README.md
+!/LICENSE
+!/.gitignore
