@@ -24,4 +24,5 @@ Contents of this folder
   A2FDirect.bin                                        Direct mode face basis, region weights and mouth rig
 BetterFacialAnimations.dll statically links FFmpeg 8.0.1 (LGPL 2.1): wmav1/wmav2/pcm decoders, xwma/wav demuxers, swresample.
 Better Facial Animations is free software under the GNU GPL v3 (licenses/BetterFacialAnimations-GPL-3.0.txt).
+Additional term under GPL v3 section 7(b): any copy or modified version must keep the attribution "Based on Better Facial Animations by Cyberquach" in its documentation and on any page it is distributed from.
 Source code: the optional file "Better Facial Animations - Source" on the Nexus Mods page.

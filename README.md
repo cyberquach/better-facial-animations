@@ -30,7 +30,11 @@ Commands:
 
 ## License
 
-GNU General Public License v3.0; see [LICENSE](LICENSE). Bundled third-party components keep their own licenses, which are included in the release archive:
+GNU General Public License v3.0; see [LICENSE](LICENSE).
+
+Additional term under GPL v3 section 7(b): any copy or modified version must keep the attribution "Based on Better Facial Animations by Cyberquach" in its documentation and on any page it is distributed from.
+
+Bundled third-party components keep their own licenses, which are included in the release archive:
 
 - FFmpeg: LGPL 2.1+
 - ONNX Runtime: MIT
