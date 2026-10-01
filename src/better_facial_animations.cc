@@ -107,11 +107,16 @@ constexpr uint32_t kFgDirty = 0x218;  // byte: run the face update next frame
 constexpr uint32_t kActorProcess = 0xF8;
 constexpr uint32_t kProcessHigh = 0x10;
 constexpr uint32_t kHighVoiceHandle = 0x2FC;
+constexpr uint32_t kFormId = 0x14;
 constexpr uint32_t kFormType = 0x1A;
 constexpr uint32_t kRefrBase = 0x40;
 constexpr uint32_t kNpcFlags = 0x38;
 constexpr uint32_t kActorRace = 0x1F8;
 constexpr uint32_t kRaceFlags = 0x108;
+// Skyrim.esm ArgonianRace / ArgonianRaceVampire: their snout doesn't match the
+// human-trained model, so they keep vanilla lip-sync.
+constexpr uint32_t kArgonianRace = 0x00013740;
+constexpr uint32_t kArgonianRaceVampire = 0x0008883A;
 constexpr uint8_t kFtNpc = 0x2B;
 constexpr uint8_t kFtActor = 0x3E;
 constexpr uint32_t kVfGetFaceGenAnimationData = 0x63;
@@ -338,7 +343,8 @@ bool VoiceStem(const char* voice, std::string& stem) {
   return !stem.empty();
 }
 
-// Actor with a FaceGen head (people; animals and creatures have none) -> sex.
+// Actor with a FaceGen head (people; animals and creatures have none),
+// except Argonians -> sex.
 bool SpeakerOk(uint8_t* ref, bool& female) {
   if (!ref || ref[kFormType] != kFtActor) return false;
   uint8_t* base = *reinterpret_cast<uint8_t**>(ref + kRefrBase);
@@ -346,6 +352,8 @@ bool SpeakerOk(uint8_t* ref, bool& female) {
   if (!base || base[kFormType] != kFtNpc || !race ||
       !(*reinterpret_cast<uint32_t*>(race + kRaceFlags) & 2))
     return false;
+  uint32_t race_id = *reinterpret_cast<uint32_t*>(race + kFormId);
+  if (race_id == kArgonianRace || race_id == kArgonianRaceVampire) return false;
   female = *reinterpret_cast<uint32_t*>(base + kNpcFlags) & 1;
   return true;
 }
