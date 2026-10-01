@@ -1,4 +1,4 @@
-A2F Live 1.0.0 - real-time Audio2Face lip-sync for Skyrim
+A2F Live 1.0.1 - real-time Audio2Face lip-sync for Skyrim
 
 Every voiced line spoken by an NPC with a FaceGen head (all playable races; creatures and animals are skipped)
 is run through NVIDIA Audio2Face-3D v2.3 (Mark) on your GPU and played on the vanilla phoneme, modifier and

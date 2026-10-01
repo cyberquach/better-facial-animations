@@ -81,8 +81,7 @@ static u64 Addr(u64 id) {
 }
 
 // ---------------- engine layout (AE 1.6.1170) ----------------
-constexpr u64 ID_VTBL_BSFaceGenNiNode = 200333, ID_GenerateFromPath = 69979;
-constexpr u32 NODE_ANIMDATA = 0x150;
+constexpr u64 ID_GenerateFromPath = 69979;
 constexpr u32 FG_EXPR3 = 0xC0, FG_MOD3 = 0x100, FG_PHON3 = 0x140, FG_PHON1_TIMER = 0x12C, FG_LOCK = 0x220, FG_DIALOGUE = 0x228;
 struct KeyframeMultiple { void* vtbl; u32 type; float timer; float* values; u32 count; bool isUpdated; };
 struct ResID { u32 file; u32 ext; u32 dir; };
@@ -156,24 +155,4 @@ static void PlayFrame(u8* fg, const u8* data, u32 frames, u32 nch, u32 fps, u32 
         }
         ex->isUpdated = true;
     }
-}
-
-// ---------------- hook install ----------------
-using UpdateDownwardPass_t = void (*)(void*, void*, u32);
-// Swap BSFaceGenNiNode::UpdateDownwardPass (vtable slot 0x2C) for hook; returns the original or nullptr.
-static UpdateDownwardPass_t HookFaceGenUpdate(UpdateDownwardPass_t hook) {
-    u64 vt = Addr(ID_VTBL_BSFaceGenNiNode);
-    if (!vt || !Addr(ID_GenerateFromPath)) { Log("address ids not found; not hooking"); return nullptr; }
-    auto** slot = (void**)(vt + 0x2C * 8);
-    auto* nt = (IMAGE_NT_HEADERS*)(g_base + ((IMAGE_DOS_HEADER*)g_base)->e_lfanew);
-    u64 target = (u64)*slot;
-    if (target < g_base || target >= g_base + nt->OptionalHeader.SizeOfImage) {
-        Log("vtable slot points outside SkyrimSE.exe (%llx); wrong game version or another plugin hooked it? not hooking", target);
-        return nullptr;
-    }
-    DWORD old; VirtualProtect(slot, 8, PAGE_EXECUTE_READWRITE, &old);
-    auto orig = (UpdateDownwardPass_t)*slot; *slot = (void*)hook;
-    VirtualProtect(slot, 8, old, &old);
-    Log("hooked BSFaceGenNiNode vtable %llx slot 0x2C (orig %p, rva %llx)", vt, (void*)orig, (u64)orig - g_base);
-    return orig;
 }

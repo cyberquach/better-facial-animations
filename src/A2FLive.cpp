@@ -12,15 +12,17 @@
 #include <unordered_map>
 
 extern "C" { __declspec(dllexport) extern SKSEPluginVersionData SKSEPlugin_Version; }
-#define A2FLIVE_VERSION "1.0.0"
+#define A2FLIVE_VERSION "1.0.1"
 SKSEPluginVersionData SKSEPlugin_Version = {
-    1, 0x01000000 /* 1.0.0 */, "A2FLive", "Cyberquach", "", 0, 0, { 0x01064920 /* 1.6.1170 */, 0 }, 0 };
+    1, 0x01000010 /* 1.0.1 */, "A2FLive", "Cyberquach", "", 0, 0, { 0x01064920 /* 1.6.1170 */, 0 }, 0 };
 
 // ---------------- engine (AE 1.6.1170) ----------------
 constexpr u64 ID_SpeakVoiceLine = 37542, ID_DialogueResponseCtor = 35249;
 constexpr u64 SPEAK_CALLERS[] = { 39772, 37541, 44673, 22864 };     // play-response, UpdateInDialogue, 44673, console SpeakSound
 constexpr u64 RESPONSE_CALLERS[] = { 35220, 35254, 35256 };         // DialogueItem ctor, MenuTopicManager x2
 constexpr u64 ID_StreamCtor = 71014, ID_StreamDtor = 71016;          // BSResourceNiBinaryStream
+constexpr u64 ID_FaceAnimUpdate = 26598;                            // BSFaceGenAnimationData::Update(fg, dt, bool)
+constexpr u64 FACE_CALLERS[] = { 26998 };                            // BSFaceGenNiNode: update keyframes, apply morphs
 constexpr u64 ID_SoundIsPlaying = 67620;                             // bool(BSSoundHandle*)
 constexpr u32 ACTOR_PROCESS = 0xF8, PROCESS_HIGH = 0x10, HIGH_VOICE_HANDLE = 0x2FC;
 constexpr u32 FORM_TYPE = 0x1A, REFR_BASE = 0x40, NPC_FLAGS = 0x38, ACTOR_RACE = 0x1F8, RACE_FLAGS = 0x108;
@@ -37,6 +39,7 @@ struct Tune { bool enabled = true, prefetch = true; float timeOffset = 0, blendI
 constexpr float LATE_START = 0.1f;      // a line ready later than this after its start is blended in
 static Cfg g_cfg;
 static Tune g_tune;                     // scalars; read by the playback hooks without a lock
+static bool g_bypass;                   // menu-only A/B switch, never saved: show the engine's lip-sync
 static a2f::Settings g_gen;             // generation settings; the worker snapshots them under g_setLock
 static volatile LONG g_genVersion = 1;  // bumped when g_gen changes: cached lines are regenerated
 static SRWLOCK g_setLock = SRWLOCK_INIT;
@@ -332,13 +335,14 @@ __attribute__((noinline)) static u8* ResponseHook(u8* self, void* topic, void* i
     return r;
 }
 
-static UpdateDownwardPass_t g_origUpdate;
+using AnimUpdate_t = bool (*)(u8* fg, float dt, u64 flag);
+static AnimUpdate_t g_animUpdateFn;
 static volatile LONG g_loggedPlays;
 
-static void Apply(u8* fg) {
+static bool Apply(u8* fg) {
     AcquireSRWLockExclusive(&g_lock);
     auto it = g_playing.find(fg);
-    if (it == g_playing.end()) { ReleaseSRWLockExclusive(&g_lock); return; }
+    if (it == g_playing.end()) { ReleaseSRWLockExclusive(&g_lock); return false; }
     Playing& p = it->second;
     const ResID* act = ActiveLine(fg);
     float t = (float)(Now() - p.t0); bool done = t > 120;
@@ -350,8 +354,8 @@ static void Apply(u8* fg) {
         if (p.e->state == FAILED) done = true;
         else if (p.e->state == READY) { line = p.e->line; if (t > line->frames / (float)a2f::FPS + 0.3f) done = true; }
     }
-    if (done) { g_playing.erase(it); g_nPlaying = (LONG)g_playing.size(); ReleaseSRWLockExclusive(&g_lock); return; }
-    if (!line) { ReleaseSRWLockExclusive(&g_lock); return; }  // still generating: vanilla lip-sync meanwhile
+    if (done) { g_playing.erase(it); g_nPlaying = (LONG)g_playing.size(); ReleaseSRWLockExclusive(&g_lock); return false; }
+    if (!line) { ReleaseSRWLockExclusive(&g_lock); return false; }  // still generating: vanilla lip-sync meanwhile
     if (p.readyAt < 0) { p.readyAt = t; if (t > LATE_START) ++g_stats.late; }
     float mix = p.readyAt <= LATE_START ? 1.f : std::clamp((t - p.readyAt) / std::max(g_tune.blendIn, 1e-3f), 0.f, 1.f);
     bool first = !p.logged; p.logged = true;
@@ -362,15 +366,19 @@ static void Apply(u8* fg) {
         Log("play %s: %u frames, %s clock, ready at %.2f s", name.c_str(), line->frames, act ? "lip" : "wall", ready);
     PlayFrame(fg, line->data.data(), line->frames, a2f::NCH, a2f::FPS, line->expr, t + g_tune.timeOffset,
                 g_tune.mouth, g_tune.brows, g_tune.expression, mix);
+    return true;
 }
 
-static void UpdateHook(void* node, void* updateData, u32 arg) {
-    u8* fg = *(u8**)((u8*)node + NODE_ANIMDATA);
-    if (fg && g_nPlaying) {
+// Runs where the head's morphs are applied (ID 26998), right after the engine recomputes the face keyframes
+// (ID 26598) -- writing earlier would be overwritten. Returns "changed" so the morphs are re-applied.
+__attribute__((noinline)) static bool AnimUpdateHook(u8* fg, float dt, u64 flag) {
+    auto orig = (AnimUpdate_t)SiteOrig(__builtin_return_address(0), (void*)g_animUpdateFn);
+    bool changed = orig(fg, dt, flag);
+    if (fg && g_nPlaying && !g_bypass) {
         auto* lock = (SpinLock*)(fg + FG_LOCK);
-        lock->lock(); Apply(fg); lock->unlock();
+        lock->lock(); changed |= Apply(fg); lock->unlock();
     }
-    g_origUpdate(node, updateData, arg);
+    return changed;
 }
 
 // Call-site hooks: every `call rel32` to the callee inside the caller functions is redirected through a thunk. Each
@@ -451,6 +459,8 @@ static void RenderMenu() {
     ig.Text("Lines generated: %u (%u failed / no audio), cached %zu, queued %zu", st.lines, st.failed, cached, queued);
     if (st.lines) ig.Text("Speed: %.0fx realtime, last line %.0f ms; started late: %u", st.audioSec / std::max(st.genSec, 1e-6), st.lastMs, st.late);
     if (!st.lastError.empty()) ig.Text("Last skipped: %s", st.lastError.c_str());
+    ig.Checkbox("Vanilla lip-sync (temporary A/B switch)", &g_bypass);
+    if (ig.IsItemHovered(0)) ig.SetTooltip("%s", "Show the game's own lip-sync instead, instantly. A2F keeps generating, so switching back is instant. Not saved.");
     for (auto& b : g_bools) {
         AcquireSRWLockExclusive(&g_setLock); bool c = ig.Checkbox(b.label, b.v); ReleaseSRWLockExclusive(&g_setLock);
         if (ig.IsItemHovered(0)) ig.SetTooltip("%s", b.tip);
@@ -502,8 +512,6 @@ static void RegisterMenu() {
 static void OnMessage(SKSEMessage* m) {
     if (m->type != kMessage_DataLoaded) return;
     RetakeSites();
-    g_origUpdate = HookFaceGenUpdate(&UpdateHook);
-    if (!g_origUpdate) return;
     RegisterMenu();
     HANDLE h = CreateThread(nullptr, 0, Worker, nullptr, 0, nullptr);
     if (h) { SetThreadPriority(h, THREAD_PRIORITY_BELOW_NORMAL); CloseHandle(h); }
@@ -520,6 +528,8 @@ extern "C" __declspec(dllexport) bool SKSEPlugin_Load(const SKSEInterface* skse)
     g_speakFn = (Speak_t)Addr(ID_SpeakVoiceLine); g_responseFn = (ResponseCtor_t)Addr(ID_DialogueResponseCtor);
     if (!HookCalls("speak", ID_SpeakVoiceLine, SPEAK_CALLERS, std::size(SPEAK_CALLERS), (void*)&SpeakHook)) return false;
     HookCalls("response", ID_DialogueResponseCtor, RESPONSE_CALLERS, std::size(RESPONSE_CALLERS), (void*)&ResponseHook);
+    g_animUpdateFn = (AnimUpdate_t)Addr(ID_FaceAnimUpdate);
+    if (!HookCalls("face", ID_FaceAnimUpdate, FACE_CALLERS, std::size(FACE_CALLERS), (void*)&AnimUpdateHook)) return false;
     auto* msg = (SKSEMessagingInterface*)skse->QueryInterface(kInterface_Messaging);
     if (!msg || !msg->RegisterListener(skse->GetPluginHandle(), "SKSE", OnMessage)) { Log("no messaging interface"); return false; }
     return true;
