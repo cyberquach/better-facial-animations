@@ -20,7 +20,6 @@ Contents of this folder
   onnxruntime.dll, onnxruntime_providers_shared.dll   ONNX Runtime 1.24.4, DirectML build (MIT)
   DirectML.dll                                         Microsoft DirectML 1.15.4 (licenses/DirectML-LICENSE.txt)
   network_fp16.onnx                                    Audio2Face-3D v2.3 Mark, FP16 (NOTICE.txt)
-  A2FLive.dat                                          morph retarget data and default tuning
   A2FDirect.bin                                        Direct mode face basis, region weights and mouth rig
 A2FLive.dll statically links FFmpeg 8.0.1 (LGPL 2.1): wmav1/wmav2/pcm decoders, xwma/wav demuxers, swresample.
 A2F Live is free software under the GNU GPL v3 (licenses/A2FLive-GPL-3.0.txt).

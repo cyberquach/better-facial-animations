@@ -24,7 +24,7 @@ PKG=build/mod; P=$PKG/SKSE/Plugins; L=$P/A2FLive/licenses
 rm -rf $PKG; mkdir -p $L
 cp build/A2FLive.dll dist/A2FLive.ini $P/
 cp $ORT/runtimes/win-x64/native/onnxruntime.dll $ORT/runtimes/win-x64/native/onnxruntime_providers_shared.dll \
-   $DML/bin/x64-win/DirectML.dll $MODEL dist/A2FLive.dat dist/A2FDirect.bin dist/README.txt dist/NOTICE.txt $P/A2FLive/ || exit 1
+   $DML/bin/x64-win/DirectML.dll $MODEL dist/A2FDirect.bin dist/README.txt dist/NOTICE.txt $P/A2FLive/ || exit 1
 cp LICENSE $L/A2FLive-GPL-3.0.txt
 cp $FFMPEG/COPYING.LGPLv2.1 $L/FFmpeg-LGPL-2.1.txt
 cp $ORT/LICENSE $L/onnxruntime-LICENSE.txt

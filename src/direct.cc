@@ -413,7 +413,7 @@ void Evaluate(const Track& tr, float frame, const float* scales, Deltas& dl) {
   const float* c0 =
       tr.coeffs + static_cast<size_t>(past ? tr.frames - 1 : i0) * tr.dim;
   const float* c1 = past ? c0 : c0 + tr.dim;
-  // ease out over 0.1 s, like the morph curves
+  // ease out over 0.1 s
   float g =
       past ? std::fmax(0.f,
                        1.f - (frame - static_cast<float>(tr.frames - 1)) / 3.f)

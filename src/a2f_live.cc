@@ -1,8 +1,9 @@
 // A2FLive: Audio2Face lip-sync generated in the game for every voiced line of
 // every NPC with a FaceGen head. The speak / response hooks queue a line; a
 // worker thread reads the voice file through the engine's resource system,
-// decodes it and runs the network + solve (live_core.cc); the face hook plays
-// the curves in the head's FaceGen update.
+// decodes it and runs the network (live_core.cc); the face hook plays the line
+// and the morph hook adds its A2F Direct vertex deltas (direct.cc) to the
+// head's face meshes.
 #include <windows.h>
 
 #include <algorithm>
@@ -137,8 +138,8 @@ struct Config {  // fixed after load
   std::wstring model;
 };
 struct Tune {  // menu
-  bool enabled = true, prefetch = true, direct = true, direct_expression = true;
-  float time_offset = 0, blend_in = 0.15f, mouth = 1, brows = 1, expression = 1;
+  bool enabled = true, prefetch = true, direct_expression = true;
+  float time_offset = 0, blend_in = 0.15f;
   float direct_scale[direct::kNumRegions] = {1, 1, 1, 1, 1, 1};
 };
 // A line ready later than this after its start is blended in.
@@ -146,13 +147,9 @@ constexpr float kLateStart = 0.1f;
 Config config;
 Tune tune;                 // scalars; read by the playback hooks without a lock
 volatile bool net_loaded;  // lines keep generating while disabled (instant A/B)
-a2f::Settings gen;         // generation settings; the worker snapshots them
-volatile LONG gen_version = 1;  // bumped when gen changes: lines regenerate
-SRWLOCK settings_lock = SRWLOCK_INIT;  // guards gen
-a2f::Data data;
-volatile bool ready;  // data file loaded
+SRWLOCK settings_lock = SRWLOCK_INIT;  // menu edits vs. saving
 direct::Model model;
-volatile bool direct_ok;  // A2FDirect.bin loaded and the morph hook in place
+volatile bool ready;  // A2FDirect.bin loaded and the morph hook in place
 
 // Every ini key / menu item: a slider (value, lo..hi) or, with flag set, a
 // checkbox, in an ini section / menu group. Table order = menu order.
@@ -204,15 +201,14 @@ const char* Section(const Param& p) {
   static const char* const kNames[] = {"General", "Playback", "Direct"};
   return kNames[static_cast<int>(p.sec)];
 }
-// Menu defaults; the Direct scales come from A2FDirect.bin.
+// Menu defaults; the Direct scales come from A2FDirect.bin (loaded).
 void ResetTune() {
   tune = Tune();
-  if (direct_ok)
-    std::copy_n(model.default_scale, direct::kNumRegions, tune.direct_scale);
+  std::copy_n(model.default_scale, direct::kNumRegions, tune.direct_scale);
 }
 
-// Called at load (General) and again by the worker once the data file's
-// defaults are in gen (overlay the ini on them).
+// Called at load (General) and again by the worker once the Direct scales'
+// defaults are known (the ini overlays them).
 void LoadIni() {
   config.gpu = GetPrivateProfileIntA("General", "GPU", 1, kIni) != 0;
   config.batch = std::max(
@@ -236,16 +232,6 @@ void LoadIni() {
     GetPrivateProfileStringA(Section(p), p.key, d, b, sizeof b, kIni);
     *p.value = static_cast<float>(atof(b));
   }
-  // Optional per-channel overrides: Name=gain offset gamma max cost solve
-  for (int j = 0; j < a2f::kNumSolve; ++j) {
-    if (!GetPrivateProfileStringA("Channels", a2f::kChannelNames[j], "", b,
-                                  sizeof b, kIni))
-      continue;
-    int solve = gen.solve[j];
-    sscanf(b, "%f %f %f %f %f %d", &gen.gain[j], &gen.offset[j], &gen.gamma[j],
-           &gen.max[j], &gen.cost[j], &solve);
-    gen.solve[j] = solve != 0;
-  }
 }
 void SaveIni() {
   char b[64];
@@ -263,7 +249,6 @@ void SaveIni() {
 enum class State { kPending, kReady, kFailed };
 struct Entry {
   State state = State::kPending;
-  LONG version = 0;
   std::shared_ptr<const a2f::Line> line;
   uint64_t last_use = 0;
   std::string error;
@@ -271,7 +256,7 @@ struct Entry {
 struct Job {
   std::string cache_key, path;
   int emo, val;
-  bool female, direct;
+  bool female;
 };
 constexpr int kDirectTail = 3;  // forced resets after the last Direct frame
 struct Playing {
@@ -306,7 +291,6 @@ volatile LONG num_playing;  // playing.size(), so the per-frame hook can skip
                             // the lock
 uint64_t use_clock;
 Stats stats;
-int morph_sites;  // hooked ApplyMorphs call sites (Direct needs one)
 
 double Now() {
   static LARGE_INTEGER f;
@@ -342,25 +326,19 @@ bool SpeakerOk(uint8_t* ref, bool& female) {
   return true;
 }
 
-// Queue a line unless it is cached or in flight with the current settings.
-// Returns its entry.
+// Queue a line unless it is cached or in flight. Returns its entry.
 std::shared_ptr<Entry> Request(const std::string& stem, int emo, int val,
                                bool female, bool urgent) {
   std::string key = stem;
   for (auto& c : key) c = static_cast<char>(tolower(static_cast<uint8_t>(c)));
-  // Direct lines also carry the vertex track and use the plain emotion
-  bool direct = tune.direct && direct_ok;
   char sfx[32];
-  snprintf(sfx, sizeof sfx, "|%c%d|%d%s", female ? 'f' : 'm', emo, val,
-           direct ? "|d" : "");
+  snprintf(sfx, sizeof sfx, "|%c%d|%d", female ? 'f' : 'm', emo, val);
   key += sfx;
-  LONG ver = gen_version;
   AcquireSRWLockExclusive(&lock);
   auto& e = cache[key];
-  if (!e || (e->version != ver && e->state != State::kPending)) {
+  if (!e) {
     e = std::make_shared<Entry>();
-    e->version = ver;
-    Job j{key, stem, emo, val, female, direct};
+    Job j{key, stem, emo, val, female};
     if (urgent) {
       queue.push_front(j);
     } else {
@@ -478,19 +456,10 @@ void Process(const Job& j) {
   } else {
     std::vector<float> pcm;
     if (a2f::DecodeAudio(bytes.data(), bytes.size(), pcm, err) && EnsureNet()) {
-      AcquireSRWLockShared(&settings_lock);
-      a2f::Settings s = gen;
-      ReleaseSRWLockShared(&settings_lock);
-      a2f::DirectProj proj = model.Proj(j.female);
-      if (j.direct) {     // emotion = value / 100: no floor, gain or cap
-        s.a2f_floor = 0;  // (Generate holds it constant over the line)
-        s.a2f_gain = 1;
-        s.a2f_cap = 1;
-      }
       line = std::make_shared<a2f::Line>();
       audio_sec = pcm.size() / static_cast<double>(a2f::kSampleRate);
-      if (!a2f::Generate(data, *net, s, pcm.data(), pcm.size(), j.emo, j.val,
-                         j.female, *line, err, &tm, j.direct ? &proj : nullptr))
+      if (!a2f::Generate(*net, pcm.data(), pcm.size(), j.emo, j.val,
+                         model.Proj(j.female), *line, err, &tm))
         line.reset();
     } else if (err.empty()) {
       err = "network unavailable";
@@ -528,11 +497,10 @@ void Process(const Job& j) {
   ReleaseSRWLockExclusive(&lock);
   if (++logged <= config.log_lines) {
     if (line) {
-      Log("gen %s %c emo %d/%d%s: %.2f s audio, %u frames in %.0f ms (net "
-          "%.0f, solve %.0f)",
-          file.c_str(), j.female ? 'F' : 'M', j.emo, j.val,
-          j.direct ? " direct" : "", audio_sec, line->frames, ms, tm.net * 1e3,
-          tm.solve * 1e3);
+      Log("gen %s %c emo %d/%d: %.2f s audio, %u frames in %.0f ms (net "
+          "%.0f, post %.0f)",
+          file.c_str(), j.female ? 'F' : 'M', j.emo, j.val, audio_sec,
+          line->frames, ms, tm.net * 1e3, tm.post * 1e3);
     } else {
       Log("skip %s: %s", j.path.c_str(), err.c_str());
     }
@@ -541,17 +509,11 @@ void Process(const Job& j) {
 
 DWORD WINAPI Worker(void*) {
   std::string err;
-  if (!data.Load(PluginDir() + L"\\A2FLive.dat", err)) {
-    Log("A2FLive.dat: %s", err.c_str());
+  if (!model.Load(PluginDir() + L"\\A2FDirect.bin", err)) {
+    Log("A2FDirect.bin: %s", err.c_str());
     return 1;
   }
-  if (!model.Load(PluginDir() + L"\\A2FDirect.bin", err)) {
-    Log("A2FDirect.bin: %s (Direct mode unavailable)", err.c_str());
-  } else if (morph_sites) {
-    direct_ok = true;
-  }
   AcquireSRWLockExclusive(&settings_lock);
-  gen = data.defaults;
   ResetTune();
   LoadIni();
   ReleaseSRWLockExclusive(&settings_lock);
@@ -758,67 +720,45 @@ bool VoicePlaying(uint8_t* actor) {
   return !high || !is_playing || is_playing(high + kHighVoiceHandle);
 }
 
-// Line modifier order (BlinkL/R, BrowDownL/R, BrowInL/R, BrowUpL/R,
-// SquintL/R) -> engine modifier index.
-constexpr int kModEngine[a2f::kNumMod] = {0, 1, 2, 3, 4, 5, 6, 7, 12, 13};
+// Engine modifiers the face mesh takes over (brows, squints); the blinks
+// (0, 1) stay with the engine.
+constexpr int kModZeroed[] = {2, 3, 4, 5, 6, 7, 12, 13};
+constexpr uint32_t kNumPhonemes = 16, kNumExpressions = 7;
 inline float Mix(float engine, float ours, float mix) {
   return mix >= 1.f ? ours : engine + (ours - engine) * mix;
 }
 
-// Write the line's frame at lip time t (s) into the final phoneme / modifier /
-// expression keyframes; mix < 1 blends from the engine's values. With Direct
-// the mesh carries the mouth, brows and eyes: phonemes are zeroed (crossfaded
-// by the mouth scale below 1), modifiers too, and the expression plays only
-// with "Engine expression".
-void PlayFrame(uint8_t* fg, const a2f::Line& line, float t, float mix,
-               bool direct) {
+// The mesh carries the mouth, brows and eyes: zeroes the final phoneme and
+// modifier keyframes (but the blinks) and writes the line's expression at
+// lip time t (s) when "Engine expression" is on; mix < 1 blends from the
+// engine's values.
+void PlayFrame(uint8_t* fg, const a2f::Line& line, float t, float mix) {
   auto* phon = reinterpret_cast<skse::KeyframeMultiple*>(fg + skse::kFgPhon3);
   auto* mod = reinterpret_cast<skse::KeyframeMultiple*>(fg + skse::kFgMod3);
   auto* ex = reinterpret_cast<skse::KeyframeMultiple*>(fg + skse::kFgExpr3);
-  float f = (t + tune.time_offset) * static_cast<float>(a2f::kFps);
-  if (f < 0) f = 0;
-  float morph =
-      direct ? std::fmax(0.f, 1 - tune.direct_scale[direct::kMouth]) : 1.f;
-  float expr = direct && !tune.direct_expression ? morph : 1.f;
-  uint32_t i0 = static_cast<uint32_t>(f);
-  float a = f - static_cast<float>(i0);
-  bool past = i0 + 1 >= line.frames;
-  const uint8_t* fr0 =
-      line.data.data() +
-      static_cast<size_t>(past ? line.frames - 1 : i0) * a2f::kNumChannels;
-  const uint8_t* fr1 = past ? fr0 : fr0 + a2f::kNumChannels;
-  // ease out over 0.1 s
-  float fade =
-      past ? std::fmax(0.f,
-                       1.f - (f - static_cast<float>(line.frames - 1)) / 3.f)
-           : 1.f;
-  auto sample = [&](int ch, float scale) {
-    return std::fmin(1.f, ((1 - a) * fr0[ch] + a * fr1[ch]) * (1.0f / 255.0f) *
-                              scale * fade);
-  };
-
-  if (phon->values && phon->count >= a2f::kNumMouth) {
-    for (int i = 0; i < a2f::kNumMouth; ++i)
-      phon->values[i] =
-          Mix(phon->values[i], sample(i, tune.mouth * morph), mix);
+  if (phon->values && phon->count >= kNumPhonemes) {
+    for (uint32_t i = 0; i < kNumPhonemes; ++i)
+      phon->values[i] = Mix(phon->values[i], 0.f, mix);
     phon->is_updated = true;
   }
   if (mod->values && mod->count >= 14) {
-    for (int i = 0; i < a2f::kNumMod; ++i) {
-      float v = direct ? 0.f : sample(a2f::kNumMouth + i, tune.brows);
-      int e = kModEngine[i];
-      // keep the engine's procedural blink
-      mod->values[e] =
-          (e <= 1) ? std::fmax(mod->values[e], v) : Mix(mod->values[e], v, mix);
-    }
+    for (int e : kModZeroed) mod->values[e] = Mix(mod->values[e], 0.f, mix);
     mod->is_updated = true;
   }
-  if (ex->values && ex->count >= 7) {
-    for (uint32_t i = 0; i < 7; ++i)
-      ex->values[i] = Mix(
-          ex->values[i],
-          i == line.expr ? sample(a2f::kNumSolve, tune.expression * expr) : 0.f,
-          mix);
+  if (ex->values && ex->count >= kNumExpressions) {
+    float level = 0;
+    if (tune.direct_expression && !line.expression.empty()) {
+      float f = std::fmax(0.f, (t + tune.time_offset) * a2f::kFps);
+      uint32_t i0 = static_cast<uint32_t>(f), last = line.frames - 1;
+      float a = f - static_cast<float>(i0);
+      // past the end: hold the last frame, easing out over 0.1 s
+      level =
+          i0 >= last
+              ? line.expression[last] * std::fmax(0.f, 1.f - (f - last) / 3.f)
+              : (1 - a) * line.expression[i0] + a * line.expression[i0 + 1];
+    }
+    for (uint32_t i = 0; i < kNumExpressions; ++i)
+      ex->values[i] = Mix(ex->values[i], i == line.expr ? level : 0.f, mix);
     ex->is_updated = true;
   }
 }
@@ -856,10 +796,7 @@ int Apply(uint8_t* fg) {
       if (t > line->frames / static_cast<float>(a2f::kFps) + 0.3f) done = true;
     }
   }
-  bool direct = !done && line && tune.enabled && tune.direct && direct_ok &&
-                line->direct_dim &&
-                line->direct.size() ==
-                    static_cast<size_t>(line->frames) * line->direct_dim;
+  bool direct = !done && line && tune.enabled;
   if (!direct) {
     p.direct_frame = -1;
     bool tail = p.direct_tail > 0;
@@ -874,10 +811,8 @@ int Apply(uint8_t* fg) {
       num_playing = static_cast<LONG>(playing.size());
     }
     // disabled (A/B) or still generating: vanilla lip-sync meanwhile
-    if (done || !line || !tune.enabled) {
-      ReleaseSRWLockExclusive(&lock);
-      return tail ? 2 : 0;
-    }
+    ReleaseSRWLockExclusive(&lock);
+    return tail ? 2 : 0;
   }
   if (p.ready_at < 0) {
     p.ready_at = t;
@@ -889,24 +824,21 @@ int Apply(uint8_t* fg) {
           : std::clamp((t - p.ready_at) / std::max(tune.blend_in, 1e-3f), 0.f,
                        1.f);
   p.last_t = t;
-  if (direct) {
-    ++p.direct_frames;
-    p.direct_frame =
-        std::fmax(0.f, (t + tune.time_offset) * static_cast<float>(a2f::kFps));
-    p.direct_mix = mix;
-    p.direct_tail = kDirectTail;
-  }
-  bool tail = p.direct_tail > 0;
+  ++p.direct_frames;
+  p.direct_frame =
+      std::fmax(0.f, (t + tune.time_offset) * static_cast<float>(a2f::kFps));
+  p.direct_mix = mix;
+  p.direct_tail = kDirectTail;
   bool first = !p.logged;
   p.logged = true;
   std::string name = first ? p.name : std::string();
   float ready_at = p.ready_at;
   ReleaseSRWLockExclusive(&lock);
   if (first && InterlockedIncrement(&logged_plays) <= config.log_lines)
-    Log("play %s: %u frames, %s clock, ready at %.2f s%s", name.c_str(),
-        line->frames, act ? "lip" : "wall", ready_at, direct ? ", direct" : "");
-  PlayFrame(fg, *line, t, mix, direct);
-  return 1 | (tail ? 2 : 0);
+    Log("play %s: %u frames, %s clock, ready at %.2f s", name.c_str(),
+        line->frames, act ? "lip" : "wall", ready_at);
+  PlayFrame(fg, *line, t, mix);
+  return 3;
 }
 
 // Runs where the head's morphs are applied (ID 26998), right after the engine
@@ -1170,7 +1102,7 @@ __attribute__((noinline)) uint64_t ApplyMorphsHook(uint8_t* node,
       SiteOrig(__builtin_return_address(0), kIdApplyMorphs));
   bool reset = force || (*reinterpret_cast<uint16_t*>(node + kNodeFlags) & 1);
   uint64_t r = orig(node, force);
-  if (reset && num_playing && direct_ok) AddDirect(node);
+  if (reset && num_playing && ready) AddDirect(node);
   return r;
 }
 
@@ -1187,8 +1119,6 @@ struct ImGui {  // cimgui export names
   void (*SetTooltip)(const char*, ...);
   bool (*IsItemHovered)(int);
   void (*SameLine)(float, float);
-  void (*BeginDisabled)(bool);
-  void (*EndDisabled)();
 } ig;
 
 void RenderMenu() {
@@ -1197,6 +1127,7 @@ void RenderMenu() {
   size_t cached = cache.size(), queued = queue.size();
   ReleaseSRWLockShared(&lock);
   ig.SeparatorText("Status");
+  if (!ready) ig.Text("Not running: see A2FLive.log (A2FDirect.bin missing?)");
   ig.Text("Model: %s", st.net_info.c_str());
   ig.Text("Lines generated: %u (%u failed / no audio), cached %zu, queued %zu",
           st.lines, st.failed, cached, queued);
@@ -1209,17 +1140,11 @@ void RenderMenu() {
   Sec cur = Sec::kGeneral;
   for (const auto& p : kParams) {
     if (p.sec != cur) ig.SeparatorText(kHeaders[static_cast<int>(cur = p.sec)]);
-    bool off = p.sec == Sec::kDirect && !direct_ok;
-    if (off) ig.BeginDisabled(true);
     AcquireSRWLockExclusive(&settings_lock);
     p.flag ? ig.Checkbox(p.label, p.flag)
            : ig.SliderFloat(p.label, p.value, p.lo, p.hi, "%.3g", 0);
     ReleaseSRWLockExclusive(&settings_lock);
-    if (off) ig.EndDisabled();
-    if (ig.IsItemHovered(off ? 128 /* AllowWhenDisabled */ : 0))
-      ig.SetTooltip("%s", off ? "A2FDirect.bin not found in SKSE/Plugins/"
-                                "A2FLive (or the face hook failed)"
-                              : p.tip);
+    if (ig.IsItemHovered(0)) ig.SetTooltip("%s", p.tip);
   }
   ig.SeparatorText("");
   if (ig.Button("Save to A2FLive.ini", ImVec2{0, 0})) {
@@ -1268,9 +1193,7 @@ void RegisterMenu() {
       !Import(m, "igButton", ig.Button) ||
       !Import(m, "igSetTooltip", ig.SetTooltip) ||
       !Import(m, "igIsItemHovered", ig.IsItemHovered) ||
-      !Import(m, "igSameLine", ig.SameLine) ||
-      !Import(m, "igBeginDisabled", ig.BeginDisabled) ||
-      !Import(m, "igEndDisabled", ig.EndDisabled)) {
+      !Import(m, "igSameLine", ig.SameLine)) {
     Log("SKSE Menu Framework: missing exports, no menu page");
     return;
   }
@@ -1314,10 +1237,11 @@ extern "C" __declspec(dllexport) bool SKSEPlugin_Load(
   if (!HookCalls("face", kIdFaceAnimUpdate, kFaceCallers,
                  reinterpret_cast<void*>(&AnimUpdateHook)))
     return false;
-  if (Addr(kIdMorphData) && Addr(kIdApplyMorph) && Addr(kIdLockDynamic) &&
-      Addr(kIdUnlockDynamic) && Addr(kIdUpdateDynamic))
-    morph_sites = HookCalls("morphs", kIdApplyMorphs, kMorphCallers,
-                            reinterpret_cast<void*>(&ApplyMorphsHook));
+  if (!Addr(kIdMorphData) || !Addr(kIdApplyMorph) || !Addr(kIdLockDynamic) ||
+      !Addr(kIdUnlockDynamic) || !Addr(kIdUpdateDynamic) ||
+      !HookCalls("morphs", kIdApplyMorphs, kMorphCallers,
+                 reinterpret_cast<void*>(&ApplyMorphsHook)))
+    return false;
   auto* msg = static_cast<skse::SKSEMessagingInterface*>(
       iface->QueryInterface(skse::kInterfaceMessaging));
   if (!msg ||

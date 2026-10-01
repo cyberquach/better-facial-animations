@@ -71,7 +71,7 @@ struct Track {
 };
 
 // Deltas (float3 per reference vertex) of every part at a fractional frame,
-// interpolated and eased out past the end like the morph curves, scaled per
+// interpolated and eased out over 0.1 s past the end, scaled per
 // region (scales[kNumRegions]). The eyes follow the scaled head delta; the
 // mouth rig is fitted to the unscaled one and scaled by kJaw.
 struct Deltas {
