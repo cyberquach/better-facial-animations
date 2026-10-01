@@ -1251,13 +1251,6 @@ extern "C" __declspec(dllexport) bool SKSEPlugin_Load(
     const skse::SKSEInterface* iface) {
   LoadIni();  // turns the log on when Logging=1
   Log("runtime %08X", iface->runtimeVersion);
-  // The same mod under its old name: both would deform the same faces.
-  if (GetFileAttributesW(L"Data\\SKSE\\Plugins\\A2FLive.dll") !=
-      INVALID_FILE_ATTRIBUTES) {
-    Log("A2FLive.dll (the old name of this mod) is installed too: remove it "
-        "and its A2FLive folder and ini");
-    return false;
-  }
   if (!skse::LoadAddressLibrary(kAddressLibrary)) {
     Log("address library missing/unreadable");
     return false;
