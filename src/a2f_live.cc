@@ -76,6 +76,10 @@ constexpr uint64_t kIdMorphData = 27020;    // shape -> BSFaceGenMorphDataHead
 constexpr uint64_t kIdApplyMorph = 26926;   // add one morph to a shape
 constexpr uint64_t kIdLockDynamic = 70950;  // BSDynamicTriShape data lock
 constexpr uint64_t kIdUnlockDynamic = 70952;
+// BSDynamicTriShape::UpdateDynamicData(float3*, bool): what the engine's morph
+// kernel writes through; renderers that mirror face meshes (Creation Engine
+// Raytracing) hook it, so Direct writes through it too
+constexpr uint64_t kIdUpdateDynamic = 70954;
 constexpr uint64_t kIdSoundIsPlaying = 67620;    // bool(BSSoundHandle*)
 constexpr uint64_t kIdGenerateFromPath = 69979;  // ResId from "Sound\...\X.lip"
 // BSFaceGenNiNode / BSDynamicTriShape / NiObjectNET
@@ -151,9 +155,8 @@ direct::Model model;
 volatile bool direct_ok;  // A2FDirect.bin loaded and the morph hook in place
 
 // Every ini key / menu item: a slider (value, lo..hi) or, with flag set, a
-// checkbox, in an ini section / menu group. Generation settings apply to
-// newly generated lines. Table order = menu order.
-enum class Sec { kGeneral, kPlayback, kGeneration, kDirect };
+// checkbox, in an ini section / menu group. Table order = menu order.
+enum class Sec { kGeneral, kPlayback, kDirect };
 struct Param {
   const char* key;
   float* value;
@@ -166,28 +169,12 @@ struct Param {
 const Param kParams[] = {
     {"Enabled", nullptr, 0, 0, "Enabled",
      "Play Audio2Face lip-sync. Untick to see the game's own lip-sync "
-     "instantly "
-     "(A/B).",
+     "instantly (A/B).",
      Sec::kGeneral, &tune.enabled},
     {"Prefetch", nullptr, 0, 0, "Prefetch",
      "Start generating when a dialogue response is created, before it is "
      "spoken.",
      Sec::kGeneral, &tune.prefetch},
-    {"EmotionToA2F", nullptr, 0, 0, "Emotion to Audio2Face",
-     "Feed the line's dialogue emotion to the network.", Sec::kGeneration,
-     &gen.emotion_to_a2f},
-    {"Expression", nullptr, 0, 0, "Expression morph",
-     "Drive the Dialogue<Emotion> expression morph.", Sec::kGeneration,
-     &gen.expression_on},
-    {"Tongue", nullptr, 0, 0, "Tongue layer",
-     "Use Audio2Face's tongue to pick DST / Th shapes.", Sec::kGeneration,
-     &gen.tongue_on},
-    {"MouthStrength", &tune.mouth, 0, 2, "Mouth",
-     "Scales the phoneme (mouth) curves at playback.", Sec::kPlayback},
-    {"BrowStrength", &tune.brows, 0, 2, "Brows / blinks",
-     "Scales brow, blink and squint curves at playback.", Sec::kPlayback},
-    {"ExpressionStrength", &tune.expression, 0, 2, "Expression",
-     "Scales the dialogue emotion expression at playback.", Sec::kPlayback},
     {"TimeOffset", &tune.time_offset, -0.3f, 0.3f, "Sync offset (s)",
      "Shifts the animation against the voice. Positive = earlier mouth shapes.",
      Sec::kPlayback},
@@ -195,80 +182,26 @@ const Param kParams[] = {
      "Crossfade from vanilla lip-sync when a line finishes generating after it "
      "started.",
      Sec::kPlayback},
-    {"Strength", &gen.strength, 0.3f, 2.5f, "Solve strength",
-     "How far the Skyrim morphs follow the Audio2Face face.", Sec::kGeneration},
-    {"Smooth", &gen.smooth, 0, 0.8f, "Smoothing",
-     "Temporal smoothing of the morph curves (zero phase).", Sec::kGeneration},
-    {"Ridge", &gen.ridge, 0, 0.2f, "Regularisation",
-     "Penalty on morph weights; higher = fewer, softer shapes.",
-     Sec::kGeneration},
-    {"FeatureWeight", &gen.feature_weight, 0, 100, "Lip feature weight",
-     "Weight of lip opening / width / protrusion matching.", Sec::kGeneration},
-    {"InputStrength", &gen.input_strength, 0.5f, 2, "Audio gain",
-     "Audio level fed to the network (Audio2Face input strength).",
-     Sec::kGeneration},
-    {"SkinStrength", &gen.skin_strength, 0.3f, 2, "A2F skin strength",
-     "Audio2Face skin animation strength.", Sec::kGeneration},
-    {"LowerFaceStrength", &gen.lower_face_strength, 0.3f, 2.5f,
-     "A2F lower face", "Audio2Face mouth / jaw strength.", Sec::kGeneration},
-    {"UpperFaceStrength", &gen.upper_face_strength, 0, 2, "A2F upper face",
-     "Audio2Face brow / eye strength.", Sec::kGeneration},
-    {"LowerFaceSmoothing", &gen.lower_smoothing, 0, 0.05f,
-     "A2F lower smoothing", "Audio2Face lower face smoothing half-life (s).",
-     Sec::kGeneration},
-    {"UpperFaceSmoothing", &gen.upper_smoothing, 0, 0.05f,
-     "A2F upper smoothing", "Audio2Face upper face smoothing half-life (s).",
-     Sec::kGeneration},
-    {"TongueStrength", &gen.tongue_strength, 0, 3, "A2F tongue",
-     "Audio2Face tongue strength (drives the tongue phonemes).",
-     Sec::kGeneration},
-    {"TongueShare", &gen.tongue_share, 0, 1, "Tongue share",
-     "How much jaw opening moves to tongue shapes (DST / Th).",
-     Sec::kGeneration},
-    {"EmotionFloor", &gen.a2f_floor, 0, 1, "Emotion floor",
-     "Minimum emotion intensity sent to Audio2Face for emotional lines.",
-     Sec::kGeneration},
-    {"EmotionGain", &gen.a2f_gain, 0, 3, "Emotion gain",
-     "Dialogue emotion -> Audio2Face emotion intensity.", Sec::kGeneration},
-    {"EmotionCap", &gen.a2f_cap, 0, 2, "Emotion cap",
-     "Maximum Audio2Face emotion.", Sec::kGeneration},
-    {"ExpressionFloor", &gen.expr_floor, 0, 1, "Expression floor",
-     "Minimum expression morph level for emotional lines.", Sec::kGeneration},
-    {"ExpressionGain", &gen.expr_gain, 0, 3, "Expression gain",
-     "Dialogue emotion -> expression morph level.", Sec::kGeneration},
-    {"Emphasis", &gen.emphasis, 0, 1, "Expression emphasis",
-     "How much the expression follows loudness.", Sec::kGeneration},
-    {"EmotionOnset", &gen.onset, 0, 1, "Emotion onset",
-     "Emotion level at the start / end of a line.", Sec::kGeneration},
-    {"EmotionAttack", &gen.attack, 0.01f, 2, "Emotion attack (s)",
-     "Ease-in time of the emotion.", Sec::kGeneration},
-    {"EmotionRelease", &gen.release, 0.01f, 2, "Emotion release (s)",
-     "Ease-out time of the emotion.", Sec::kGeneration},
-    {"DirectMode", nullptr, 0, 0, "Direct",
-     "Deform the face mesh directly from Audio2Face (jaw, lips, tongue, "
-     "teeth) instead of only the 16 mouth shapes. Works with High Poly Head.",
-     Sec::kDirect, &tune.direct},
     {"DirectBrows", &tune.direct_scale[direct::kBrows], 0, 2, "Brows",
-     "Direct: brow deformation.", Sec::kDirect},
+     "Brow deformation.", Sec::kDirect},
     {"DirectEyes", &tune.direct_scale[direct::kEyes], 0, 2, "Eyes",
-     "Direct: eyelid / eye region deformation.", Sec::kDirect},
+     "Eyelid / eye region deformation.", Sec::kDirect},
     {"DirectCheeks", &tune.direct_scale[direct::kCheeks], 0, 2, "Cheeks & nose",
-     "Direct: cheek and nose deformation.", Sec::kDirect},
+     "Cheek and nose deformation.", Sec::kDirect},
     {"DirectMouth", &tune.direct_scale[direct::kMouth], 0, 2, "Mouth",
-     "Direct: lip and mouth skin deformation.", Sec::kDirect},
+     "Lip and mouth skin deformation.", Sec::kDirect},
     {"DirectJaw", &tune.direct_scale[direct::kJaw], 0, 2, "Jaw & teeth",
-     "Direct: jaw, teeth and gums (Skyrim's own mouth shapes fitted to the "
+     "Jaw, teeth and gums (Skyrim's own mouth shapes fitted to the "
      "lips and chin).",
      Sec::kDirect},
     {"DirectTongue", &tune.direct_scale[direct::kTongue], 0, 2, "Tongue",
-     "Direct: tongue deformation.", Sec::kDirect},
+     "Tongue deformation.", Sec::kDirect},
     {"DirectExpression", nullptr, 0, 0, "Engine expression",
-     "Direct: also play the dialogue emotion expression morph on top.",
-     Sec::kDirect, &tune.direct_expression},
+     "Also play the dialogue emotion expression morph on top.", Sec::kDirect,
+     &tune.direct_expression},
 };
 const char* Section(const Param& p) {
-  static const char* const kNames[] = {"General", "Playback", "Generation",
-                                       "Direct"};
+  static const char* const kNames[] = {"General", "Playback", "Direct"};
   return kNames[static_cast<int>(p.sec)];
 }
 // Menu defaults; the Direct scales come from A2FDirect.bin.
@@ -353,6 +286,10 @@ struct Playing {
   // Direct: the frame (fractional, -1 none) and blend for the morph hook
   float direct_frame = -1, direct_mix = 1;
   int direct_tail = 0;
+  // log: last clock, Direct frames played / deformed, peak delta per part
+  float last_t = 0;
+  uint32_t direct_frames = 0, direct_adds = 0;
+  float peak[direct::kNumParts] = {};
 };
 struct Stats {
   uint32_t lines = 0, failed = 0, late = 0;
@@ -886,7 +823,7 @@ void PlayFrame(uint8_t* fg, const a2f::Line& line, float t, float mix,
   }
 }
 
-volatile LONG logged_plays;
+volatile LONG logged_plays, logged_ends;
 
 // Plays the head's current line for this frame. Returns bit 0: keyframes
 // written, bit 1: the meshes must be rebuilt (Direct deltas added or, for a
@@ -928,6 +865,11 @@ int Apply(uint8_t* fg) {
     bool tail = p.direct_tail > 0;
     if (tail) --p.direct_tail;
     if (done && !tail) {
+      if (p.logged && InterlockedIncrement(&logged_ends) <= config.log_lines)
+        Log("end %s: at %.2f s, %u Direct frames, deformed %u, peak head %.3f "
+            "mouth %.3f eyes %.3f",
+            p.name.c_str(), p.last_t, p.direct_frames, p.direct_adds, p.peak[0],
+            p.peak[1], p.peak[2]);
       playing.erase(it);
       num_playing = static_cast<LONG>(playing.size());
     }
@@ -946,7 +888,9 @@ int Apply(uint8_t* fg) {
           ? 1.f
           : std::clamp((t - p.ready_at) / std::max(tune.blend_in, 1e-3f), 0.f,
                        1.f);
+  p.last_t = t;
   if (direct) {
+    ++p.direct_frames;
     p.direct_frame =
         std::fmax(0.f, (t + tune.time_offset) * static_cast<float>(a2f::kFps));
     p.direct_mix = mix;
@@ -1150,6 +1094,8 @@ void AddDirect(uint8_t* node) {
       reinterpret_cast<float* (*)(uint8_t*)>(Addr(kIdLockDynamic));
   static auto unlock_dyn =
       reinterpret_cast<void (*)(uint8_t*)>(Addr(kIdUnlockDynamic));
+  static auto update_dyn = reinterpret_cast<void (*)(uint8_t*, float*, bool)>(
+      Addr(kIdUpdateDynamic));
   uint8_t* fg = *reinterpret_cast<uint8_t**>(node + kNodeFg);
   if (!fg) return;
   std::shared_ptr<const a2f::Line> line;
@@ -1170,6 +1116,7 @@ void AddDirect(uint8_t* node) {
   direct::Track track{line->direct.data(), line->frames, line->direct_dim, &sm};
   thread_local direct::Deltas deltas;
   bool have = false;
+  float peak[direct::kNumParts] = {};
   uint8_t** kids = *reinterpret_cast<uint8_t***>(node + kNodeChildren);
   uint16_t n = *reinterpret_cast<uint16_t*>(node + kNodeNumChildren);
   for (uint16_t i = 0; kids && i < n; ++i) {
@@ -1189,10 +1136,30 @@ void AddDirect(uint8_t* node) {
           for (float& v : d) v *= mix;
       have = true;
     }
+    const auto& d = deltas.part[static_cast<int>(part)];
+    for (float v : d)
+      peak[static_cast<int>(part)] =
+          std::fmax(peak[static_cast<int>(part)], std::fabs(v));
+    thread_local std::vector<float> xyzw, xyz;
+    xyzw.resize(nv * 4);
+    xyz.resize(nv * 3);
     float* data = lock_dyn(shape);
-    direct::AddDeltas(*m, deltas.part[static_cast<int>(part)], data);
+    std::memcpy(xyzw.data(), data, nv * 16);
+    direct::AddDeltas(*m, d, xyzw.data());
+    for (uint32_t v = 0; v < nv; ++v)
+      std::memcpy(&xyz[v * 3], &xyzw[v * 4], 12);
+    update_dyn(shape, xyz.data(), false);
     unlock_dyn(shape);
   }
+  if (!have) return;
+  AcquireSRWLockExclusive(&lock);
+  it = playing.find(fg);
+  if (it != playing.end()) {
+    ++it->second.direct_adds;
+    for (int i = 0; i < direct::kNumParts; ++i)
+      it->second.peak[i] = std::fmax(it->second.peak[i], peak[i]);
+  }
+  ReleaseSRWLockExclusive(&lock);
 }
 
 // Deltas are only ever added right after a reset to the base vertices (force,
@@ -1238,23 +1205,21 @@ void RenderMenu() {
             st.audio_sec / std::max(st.gen_sec, 1e-6), st.last_ms, st.late);
   if (!st.last_error.empty())
     ig.Text("Last skipped: %s", st.last_error.c_str());
-  static const char* const kHeaders[] = {nullptr, "Playback (instant)",
-                                         "Generation (new lines)", "Direct"};
+  static const char* const kHeaders[] = {nullptr, "Playback", "Direct"};
   Sec cur = Sec::kGeneral;
   for (const auto& p : kParams) {
     if (p.sec != cur) ig.SeparatorText(kHeaders[static_cast<int>(cur = p.sec)]);
     bool off = p.sec == Sec::kDirect && !direct_ok;
     if (off) ig.BeginDisabled(true);
     AcquireSRWLockExclusive(&settings_lock);
-    bool c = p.flag ? ig.Checkbox(p.label, p.flag)
-                    : ig.SliderFloat(p.label, p.value, p.lo, p.hi, "%.3g", 0);
+    p.flag ? ig.Checkbox(p.label, p.flag)
+           : ig.SliderFloat(p.label, p.value, p.lo, p.hi, "%.3g", 0);
     ReleaseSRWLockExclusive(&settings_lock);
     if (off) ig.EndDisabled();
     if (ig.IsItemHovered(off ? 128 /* AllowWhenDisabled */ : 0))
       ig.SetTooltip("%s", off ? "A2FDirect.bin not found in SKSE/Plugins/"
                                 "A2FLive (or the face hook failed)"
                               : p.tip);
-    if (c && p.sec == Sec::kGeneration) InterlockedIncrement(&gen_version);
   }
   ig.SeparatorText("");
   if (ig.Button("Save to A2FLive.ini", ImVec2{0, 0})) {
@@ -1265,10 +1230,8 @@ void RenderMenu() {
   ig.SameLine(0, -1);
   if (ig.Button("Defaults", ImVec2{0, 0}) && ready) {
     AcquireSRWLockExclusive(&settings_lock);
-    gen = data.defaults;
     ResetTune();
     ReleaseSRWLockExclusive(&settings_lock);
-    InterlockedIncrement(&gen_version);
   }
   ig.SameLine(0, -1);
   if (ig.Button("Clear cache", ImVec2{0, 0})) {
@@ -1352,7 +1315,7 @@ extern "C" __declspec(dllexport) bool SKSEPlugin_Load(
                  reinterpret_cast<void*>(&AnimUpdateHook)))
     return false;
   if (Addr(kIdMorphData) && Addr(kIdApplyMorph) && Addr(kIdLockDynamic) &&
-      Addr(kIdUnlockDynamic))
+      Addr(kIdUnlockDynamic) && Addr(kIdUpdateDynamic))
     morph_sites = HookCalls("morphs", kIdApplyMorphs, kMorphCallers,
                             reinterpret_cast<void*>(&ApplyMorphsHook));
   auto* msg = static_cast<skse::SKSEMessagingInterface*>(
