@@ -14,16 +14,17 @@ mkdir -p build
 CXX="x86_64-w64-mingw32-g++ -std=c++17 -O2"
 $CXX -Wall -c src/a2f_live.cc -o build/a2f_live.o &&
 $CXX -Wall -c src/skse.cc -o build/skse.o &&
+$CXX -Wall -c src/direct.cc -o build/direct.o &&
 $CXX -w -I$FFMPEG/include -c src/live_core.cc -o build/live_core.o &&
 $CXX -w -I$ORT/build/native/include -c src/ort_net.cc -o build/ort_net.o &&
-$CXX -shared -s build/a2f_live.o build/skse.o build/live_core.o build/ort_net.o -o build/A2FLive.dll \
+$CXX -shared -s build/a2f_live.o build/skse.o build/direct.o build/live_core.o build/ort_net.o -o build/A2FLive.dll \
     -L$FFMPEG/lib -lavformat -lavcodec -lswresample -lavutil -lbcrypt -lshell32 -lole32 -luuid -static -static-libgcc -static-libstdc++ || exit 1
 
 PKG=build/mod; P=$PKG/SKSE/Plugins; L=$P/A2FLive/licenses
 rm -rf $PKG; mkdir -p $L
 cp build/A2FLive.dll dist/A2FLive.ini $P/
 cp $ORT/runtimes/win-x64/native/onnxruntime.dll $ORT/runtimes/win-x64/native/onnxruntime_providers_shared.dll \
-   $DML/bin/x64-win/DirectML.dll $MODEL dist/A2FLive.dat dist/README.txt dist/NOTICE.txt $P/A2FLive/ || exit 1
+   $DML/bin/x64-win/DirectML.dll $MODEL dist/A2FLive.dat dist/A2FDirect.bin dist/README.txt dist/NOTICE.txt $P/A2FLive/ || exit 1
 cp LICENSE $L/A2FLive-GPL-3.0.txt
 cp $FFMPEG/COPYING.LGPLv2.1 $L/FFmpeg-LGPL-2.1.txt
 cp $ORT/LICENSE $L/onnxruntime-LICENSE.txt

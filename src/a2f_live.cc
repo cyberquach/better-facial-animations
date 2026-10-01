@@ -19,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+#include "direct.h"
 #include "live_core.h"
 #include "ort_net.h"
 #include "skse.h"
@@ -28,7 +29,7 @@ using skse::Log;
 
 namespace {
 
-constexpr char kVersion[] = "1.0.1";
+constexpr char kVersion[] = "1.1.0";
 
 // "major.minor.patch" -> SKSE's packed plugin version.
 constexpr uint32_t PackVersion(const char* s) {
@@ -67,8 +68,30 @@ constexpr uint64_t kIdStreamDtor = 71016;
 constexpr uint64_t kIdFaceAnimUpdate = 26598;
 // BSFaceGenNiNode: update keyframes, apply morphs
 constexpr uint64_t kFaceCallers[] = {26998};
+// BSFaceGenNiNode::ApplyMorphs(node, force): reset to base + morphs, run by
+// the "Face morphing" job (26999) and the player's face update (36564)
+constexpr uint64_t kIdApplyMorphs = 26988;
+constexpr uint64_t kMorphCallers[] = {26999, 36564};
+constexpr uint64_t kIdMorphData = 27020;    // shape -> BSFaceGenMorphDataHead
+constexpr uint64_t kIdApplyMorph = 26926;   // add one morph to a shape
+constexpr uint64_t kIdLockDynamic = 70950;  // BSDynamicTriShape data lock
+constexpr uint64_t kIdUnlockDynamic = 70952;
 constexpr uint64_t kIdSoundIsPlaying = 67620;    // bool(BSSoundHandle*)
 constexpr uint64_t kIdGenerateFromPath = 69979;  // ResId from "Sound\...\X.lip"
+// BSFaceGenNiNode / BSDynamicTriShape / NiObjectNET
+constexpr uint32_t kNodeChildren = 0x118;
+constexpr uint32_t kNodeNumChildren = 0x122;
+constexpr uint32_t kNodeFg = 0x150;
+constexpr uint32_t kNodeFlags = 0x160;  // u16, bit0 = reset needed
+constexpr uint32_t kObjName = 0x10;
+constexpr uint32_t kObjExtra = 0x20;
+constexpr uint32_t kObjNumExtra = 0x28;
+constexpr uint32_t kGeomType = 0x150;  // 4 = BSDynamicTriShape
+constexpr uint32_t kDynNumVerts = 0x15A;
+constexpr uint32_t kDynDataSize = 0x170;
+constexpr uint32_t kBaseVerts = 0x18;  // BSFaceGenBaseMorphExtraData ("FOD")
+constexpr uint32_t kBaseNumVerts = 0x24;
+constexpr uint32_t kFgDirty = 0x218;  // byte: run the face update next frame
 constexpr uint32_t kActorProcess = 0xF8;
 constexpr uint32_t kProcessHigh = 0x10;
 constexpr uint32_t kHighVoiceHandle = 0x2FC;
@@ -92,6 +115,9 @@ using SpeakFn = float (*)(uint8_t* actor, const char* voice, void* handle,
 using ResponseCtorFn = uint8_t* (*)(uint8_t* self, void* topic, void* info,
                                     uint8_t* speaker, void* response);
 using AnimUpdateFn = bool (*)(uint8_t* fg, float dt, uint64_t flag);
+using ApplyMorphsFn = uint64_t (*)(uint8_t* node, uint8_t force);
+using ApplyMorphFn = void (*)(void* morph_data, int type, int index,
+                              uint8_t* shape, float value);
 using GenerateFromPathFn = void (*)(skse::ResId*, const char*);
 
 constexpr char kIni[] = "Data\\SKSE\\Plugins\\A2FLive.ini";
@@ -107,8 +133,10 @@ struct Config {  // fixed after load
   std::wstring model;
 };
 struct Tune {  // menu
-  bool enabled = true, prefetch = true;
+  bool enabled = true, prefetch = true, direct = false;
   float time_offset = 0, blend_in = 0.15f, mouth = 1, brows = 1, expression = 1;
+  float direct_scale[direct::kNumRegions] = {0.5f, 0.3f, 0.4f,
+                                             1.3f, 1.3f, 1.3f};
 };
 // A line ready later than this after its start is blended in.
 constexpr float kLateStart = 0.1f;
@@ -120,18 +148,20 @@ volatile LONG gen_version = 1;  // bumped when gen changes: lines regenerate
 SRWLOCK settings_lock = SRWLOCK_INIT;  // guards gen
 a2f::Data data;
 volatile bool ready;  // data file loaded
+direct::Model model;
+volatile bool direct_ok;  // A2FDirect.bin loaded and the morph hook in place
 
 // Every ini key / menu item: a slider (value, lo..hi) or, with flag set, a
-// checkbox. gen: applies to newly generated lines (ini section Generation;
-// otherwise Playback for sliders, General for checkboxes). Table order = menu
-// order.
+// checkbox, in an ini section / menu group. Generation settings apply to
+// newly generated lines. Table order = menu order.
+enum class Sec { kGeneral, kPlayback, kGeneration, kDirect };
 struct Param {
   const char* key;
   float* value;
   float lo, hi;
   const char* label;
   const char* tip;
-  bool gen;
+  Sec sec;
   bool* flag;
 };
 const Param kParams[] = {
@@ -139,78 +169,109 @@ const Param kParams[] = {
      "Play Audio2Face lip-sync. Untick to see the game's own lip-sync "
      "instantly "
      "(A/B).",
-     false, &tune.enabled},
+     Sec::kGeneral, &tune.enabled},
     {"Prefetch", nullptr, 0, 0, "Prefetch",
      "Start generating when a dialogue response is created, before it is "
      "spoken.",
-     false, &tune.prefetch},
+     Sec::kGeneral, &tune.prefetch},
     {"EmotionToA2F", nullptr, 0, 0, "Emotion to Audio2Face",
-     "Feed the line's dialogue emotion to the network.", true,
+     "Feed the line's dialogue emotion to the network.", Sec::kGeneration,
      &gen.emotion_to_a2f},
     {"Expression", nullptr, 0, 0, "Expression morph",
-     "Drive the Dialogue<Emotion> expression morph.", true, &gen.expression_on},
+     "Drive the Dialogue<Emotion> expression morph.", Sec::kGeneration,
+     &gen.expression_on},
     {"Tongue", nullptr, 0, 0, "Tongue layer",
-     "Use Audio2Face's tongue to pick DST / Th shapes.", true, &gen.tongue_on},
+     "Use Audio2Face's tongue to pick DST / Th shapes.", Sec::kGeneration,
+     &gen.tongue_on},
     {"MouthStrength", &tune.mouth, 0, 2, "Mouth",
-     "Scales the phoneme (mouth) curves at playback.", false},
+     "Scales the phoneme (mouth) curves at playback.", Sec::kPlayback},
     {"BrowStrength", &tune.brows, 0, 2, "Brows / blinks",
-     "Scales brow, blink and squint curves at playback.", false},
+     "Scales brow, blink and squint curves at playback.", Sec::kPlayback},
     {"ExpressionStrength", &tune.expression, 0, 2, "Expression",
-     "Scales the dialogue emotion expression at playback.", false},
+     "Scales the dialogue emotion expression at playback.", Sec::kPlayback},
     {"TimeOffset", &tune.time_offset, -0.3f, 0.3f, "Sync offset (s)",
      "Shifts the animation against the voice. Positive = earlier mouth shapes.",
-     false},
+     Sec::kPlayback},
     {"BlendIn", &tune.blend_in, 0, 0.5f, "Blend-in (s)",
      "Crossfade from vanilla lip-sync when a line finishes generating after it "
      "started.",
-     false},
+     Sec::kPlayback},
     {"Strength", &gen.strength, 0.3f, 2.5f, "Solve strength",
-     "How far the Skyrim morphs follow the Audio2Face face.", true},
+     "How far the Skyrim morphs follow the Audio2Face face.", Sec::kGeneration},
     {"Smooth", &gen.smooth, 0, 0.8f, "Smoothing",
-     "Temporal smoothing of the morph curves (zero phase).", true},
+     "Temporal smoothing of the morph curves (zero phase).", Sec::kGeneration},
     {"Ridge", &gen.ridge, 0, 0.2f, "Regularisation",
-     "Penalty on morph weights; higher = fewer, softer shapes.", true},
+     "Penalty on morph weights; higher = fewer, softer shapes.",
+     Sec::kGeneration},
     {"FeatureWeight", &gen.feature_weight, 0, 100, "Lip feature weight",
-     "Weight of lip opening / width / protrusion matching.", true},
+     "Weight of lip opening / width / protrusion matching.", Sec::kGeneration},
     {"InputStrength", &gen.input_strength, 0.5f, 2, "Audio gain",
-     "Audio level fed to the network (Audio2Face input strength).", true},
+     "Audio level fed to the network (Audio2Face input strength).",
+     Sec::kGeneration},
     {"SkinStrength", &gen.skin_strength, 0.3f, 2, "A2F skin strength",
-     "Audio2Face skin animation strength.", true},
+     "Audio2Face skin animation strength.", Sec::kGeneration},
     {"LowerFaceStrength", &gen.lower_face_strength, 0.3f, 2.5f,
-     "A2F lower face", "Audio2Face mouth / jaw strength.", true},
+     "A2F lower face", "Audio2Face mouth / jaw strength.", Sec::kGeneration},
     {"UpperFaceStrength", &gen.upper_face_strength, 0, 2, "A2F upper face",
-     "Audio2Face brow / eye strength.", true},
+     "Audio2Face brow / eye strength.", Sec::kGeneration},
     {"LowerFaceSmoothing", &gen.lower_smoothing, 0, 0.05f,
      "A2F lower smoothing", "Audio2Face lower face smoothing half-life (s).",
-     true},
+     Sec::kGeneration},
     {"UpperFaceSmoothing", &gen.upper_smoothing, 0, 0.05f,
      "A2F upper smoothing", "Audio2Face upper face smoothing half-life (s).",
-     true},
+     Sec::kGeneration},
     {"TongueStrength", &gen.tongue_strength, 0, 3, "A2F tongue",
-     "Audio2Face tongue strength (drives the tongue phonemes).", true},
+     "Audio2Face tongue strength (drives the tongue phonemes).",
+     Sec::kGeneration},
     {"TongueShare", &gen.tongue_share, 0, 1, "Tongue share",
-     "How much jaw opening moves to tongue shapes (DST / Th).", true},
+     "How much jaw opening moves to tongue shapes (DST / Th).",
+     Sec::kGeneration},
     {"EmotionFloor", &gen.a2f_floor, 0, 1, "Emotion floor",
-     "Minimum emotion intensity sent to Audio2Face for emotional lines.", true},
+     "Minimum emotion intensity sent to Audio2Face for emotional lines.",
+     Sec::kGeneration},
     {"EmotionGain", &gen.a2f_gain, 0, 3, "Emotion gain",
-     "Dialogue emotion -> Audio2Face emotion intensity.", true},
+     "Dialogue emotion -> Audio2Face emotion intensity.", Sec::kGeneration},
     {"EmotionCap", &gen.a2f_cap, 0, 2, "Emotion cap",
-     "Maximum Audio2Face emotion.", true},
+     "Maximum Audio2Face emotion.", Sec::kGeneration},
     {"ExpressionFloor", &gen.expr_floor, 0, 1, "Expression floor",
-     "Minimum expression morph level for emotional lines.", true},
+     "Minimum expression morph level for emotional lines.", Sec::kGeneration},
     {"ExpressionGain", &gen.expr_gain, 0, 3, "Expression gain",
-     "Dialogue emotion -> expression morph level.", true},
+     "Dialogue emotion -> expression morph level.", Sec::kGeneration},
     {"Emphasis", &gen.emphasis, 0, 1, "Expression emphasis",
-     "How much the expression follows loudness.", true},
+     "How much the expression follows loudness.", Sec::kGeneration},
     {"EmotionOnset", &gen.onset, 0, 1, "Emotion onset",
-     "Emotion level at the start / end of a line.", true},
+     "Emotion level at the start / end of a line.", Sec::kGeneration},
     {"EmotionAttack", &gen.attack, 0.01f, 2, "Emotion attack (s)",
-     "Ease-in time of the emotion.", true},
+     "Ease-in time of the emotion.", Sec::kGeneration},
     {"EmotionRelease", &gen.release, 0.01f, 2, "Emotion release (s)",
-     "Ease-out time of the emotion.", true},
+     "Ease-out time of the emotion.", Sec::kGeneration},
+    {"DirectMode", nullptr, 0, 0, "Direct",
+     "Deform the face mesh directly from Audio2Face (jaw, lips, tongue, "
+     "teeth) instead of only the 16 mouth shapes. Works with High Poly Head.",
+     Sec::kDirect, &tune.direct},
+    {"DirectBrows", &tune.direct_scale[direct::kBrows], 0, 2, "Brows",
+     "Direct: brow deformation.", Sec::kDirect},
+    {"DirectEyes", &tune.direct_scale[direct::kEyes], 0, 2, "Eyes",
+     "Direct: eyelid / eye region deformation.", Sec::kDirect},
+    {"DirectCheeks", &tune.direct_scale[direct::kCheeks], 0, 2, "Cheeks & nose",
+     "Direct: cheek and nose deformation.", Sec::kDirect},
+    {"DirectMouth", &tune.direct_scale[direct::kMouth], 0, 2, "Mouth",
+     "Direct: lip and mouth skin deformation.", Sec::kDirect},
+    {"DirectJaw", &tune.direct_scale[direct::kJaw], 0, 2, "Jaw & teeth",
+     "Direct: lower jaw / teeth motion (follows the lower lip).", Sec::kDirect},
+    {"DirectTongue", &tune.direct_scale[direct::kTongue], 0, 2, "Tongue",
+     "Direct: tongue deformation.", Sec::kDirect},
 };
 const char* Section(const Param& p) {
-  return p.gen ? "Generation" : p.flag ? "General" : "Playback";
+  static const char* const kNames[] = {"General", "Playback", "Generation",
+                                       "Direct"};
+  return kNames[static_cast<int>(p.sec)];
+}
+// Menu defaults; the Direct scales come from A2FDirect.bin.
+void ResetTune() {
+  tune = Tune();
+  if (direct_ok)
+    std::copy_n(model.default_scale, direct::kNumRegions, tune.direct_scale);
 }
 
 // Called at load (General) and again by the worker once the data file's
@@ -273,16 +334,21 @@ struct Entry {
 struct Job {
   std::string cache_key, path;
   int emo, val;
-  bool female;
+  bool female, direct;
 };
+constexpr int kDirectTail = 3;  // forced resets after the last Direct frame
 struct Playing {
   std::shared_ptr<Entry> entry;
   std::string name;
   uint64_t lip_key;
   uint8_t* actor;
   double start;
+  bool female;
   float ready_at = -1;
   bool lip_seen = false, logged = false;
+  // Direct: the frame (fractional, -1 none) and blend for the morph hook
+  float direct_frame = -1, direct_mix = 1;
+  int direct_tail = 0;
 };
 struct Stats {
   uint32_t lines = 0, failed = 0, late = 0;
@@ -299,6 +365,7 @@ volatile LONG num_playing;  // playing.size(), so the per-frame hook can skip
                             // the lock
 uint64_t use_clock;
 Stats stats;
+int morph_sites;  // hooked ApplyMorphs call sites (Direct needs one)
 
 double Now() {
   static LARGE_INTEGER f;
@@ -340,8 +407,11 @@ std::shared_ptr<Entry> Request(const std::string& stem, int emo, int val,
                                bool female, bool urgent) {
   std::string key = stem;
   for (auto& c : key) c = static_cast<char>(tolower(static_cast<uint8_t>(c)));
+  // Direct lines also carry the vertex track and use the plain emotion
+  bool direct = tune.direct && direct_ok;
   char sfx[32];
-  snprintf(sfx, sizeof sfx, "|%c%d|%d", female ? 'f' : 'm', emo, val);
+  snprintf(sfx, sizeof sfx, "|%c%d|%d%s", female ? 'f' : 'm', emo, val,
+           direct ? "|d" : "");
   key += sfx;
   LONG ver = gen_version;
   AcquireSRWLockExclusive(&lock);
@@ -349,7 +419,7 @@ std::shared_ptr<Entry> Request(const std::string& stem, int emo, int val,
   if (!e || (e->version != ver && e->state != State::kPending)) {
     e = std::make_shared<Entry>();
     e->version = ver;
-    Job j{key, stem, emo, val, female};
+    Job j{key, stem, emo, val, female, direct};
     if (urgent) {
       queue.push_front(j);
     } else {
@@ -470,10 +540,17 @@ void Process(const Job& j) {
       AcquireSRWLockShared(&settings_lock);
       a2f::Settings s = gen;
       ReleaseSRWLockShared(&settings_lock);
+      a2f::DirectProj proj = model.Proj(j.female);
+      if (j.direct) {     // emotion = value / 100, constant: no floor, gain,
+        s.a2f_floor = 0;  // cap or onset envelope
+        s.a2f_gain = 1;
+        s.a2f_cap = 1;
+        s.onset = 1;
+      }
       line = std::make_shared<a2f::Line>();
       audio_sec = pcm.size() / static_cast<double>(a2f::kSampleRate);
       if (!a2f::Generate(data, *net, s, pcm.data(), pcm.size(), j.emo, j.val,
-                         j.female, *line, err, &tm))
+                         j.female, *line, err, &tm, j.direct ? &proj : nullptr))
         line.reset();
     } else if (err.empty()) {
       err = "network unavailable";
@@ -511,10 +588,11 @@ void Process(const Job& j) {
   ReleaseSRWLockExclusive(&lock);
   if (++logged <= config.log_lines) {
     if (line) {
-      Log("gen %s %c emo %d/%d: %.2f s audio, %u frames in %.0f ms (net %.0f, "
-          "solve %.0f)",
-          file.c_str(), j.female ? 'F' : 'M', j.emo, j.val, audio_sec,
-          line->frames, ms, tm.net * 1e3, tm.solve * 1e3);
+      Log("gen %s %c emo %d/%d%s: %.2f s audio, %u frames in %.0f ms (net "
+          "%.0f, solve %.0f)",
+          file.c_str(), j.female ? 'F' : 'M', j.emo, j.val,
+          j.direct ? " direct" : "", audio_sec, line->frames, ms, tm.net * 1e3,
+          tm.solve * 1e3);
     } else {
       Log("skip %s: %s", j.path.c_str(), err.c_str());
     }
@@ -527,8 +605,14 @@ DWORD WINAPI Worker(void*) {
     Log("A2FLive.dat: %s", err.c_str());
     return 1;
   }
+  if (!model.Load(PluginDir() + L"\\A2FDirect.bin", err)) {
+    Log("A2FDirect.bin: %s (Direct mode unavailable)", err.c_str());
+  } else if (morph_sites) {
+    direct_ok = true;
+  }
   AcquireSRWLockExclusive(&settings_lock);
   gen = data.defaults;
+  ResetTune();
   LoadIni();
   ReleaseSRWLockExclusive(&settings_lock);
   ready = true;
@@ -696,7 +780,7 @@ __attribute__((noinline)) float SpeakHook(
       reinterpret_cast<GenerateFromPathFn>(Addr(kIdGenerateFromPath));
   skse::ResId r{};
   gen_path(&r, (stem + ".lip").c_str());
-  Playing p{e, stem, skse::KeyOf(r), actor, Now()};
+  Playing p{e, stem, skse::KeyOf(r), actor, Now(), female};
   AcquireSRWLockExclusive(&lock);
   playing[fg] = p;
   num_playing = static_cast<LONG>(playing.size());
@@ -742,13 +826,18 @@ inline float Mix(float engine, float ours, float mix) {
 }
 
 // Write the line's frame at lip time t (s) into the final phoneme / modifier /
-// expression keyframes; mix < 1 blends from the engine's values.
-void PlayFrame(uint8_t* fg, const a2f::Line& line, float t, float mix) {
+// expression keyframes; mix < 1 blends from the engine's values. With Direct
+// the mesh carries the mouth and the emotion: phonemes and expression are
+// zeroed (crossfaded by the mouth scale below 1).
+void PlayFrame(uint8_t* fg, const a2f::Line& line, float t, float mix,
+               bool direct) {
   auto* phon = reinterpret_cast<skse::KeyframeMultiple*>(fg + skse::kFgPhon3);
   auto* mod = reinterpret_cast<skse::KeyframeMultiple*>(fg + skse::kFgMod3);
   auto* ex = reinterpret_cast<skse::KeyframeMultiple*>(fg + skse::kFgExpr3);
   float f = (t + tune.time_offset) * static_cast<float>(a2f::kFps);
   if (f < 0) f = 0;
+  float morph =
+      direct ? std::fmax(0.f, 1 - tune.direct_scale[direct::kMouth]) : 1.f;
   uint32_t i0 = static_cast<uint32_t>(f);
   float a = f - static_cast<float>(i0);
   bool past = i0 + 1 >= line.frames;
@@ -768,7 +857,8 @@ void PlayFrame(uint8_t* fg, const a2f::Line& line, float t, float mix) {
 
   if (phon->values && phon->count >= a2f::kNumMouth) {
     for (int i = 0; i < a2f::kNumMouth; ++i)
-      phon->values[i] = Mix(phon->values[i], sample(i, tune.mouth), mix);
+      phon->values[i] =
+          Mix(phon->values[i], sample(i, tune.mouth * morph), mix);
     phon->is_updated = true;
   }
   if (mod->values && mod->count >= 14) {
@@ -783,23 +873,26 @@ void PlayFrame(uint8_t* fg, const a2f::Line& line, float t, float mix) {
   }
   if (ex->values && ex->count >= 7) {
     for (uint32_t i = 0; i < 7; ++i)
-      ex->values[i] = Mix(
-          ex->values[i],
-          i == line.expr ? sample(a2f::kNumSolve, tune.expression) : 0.f, mix);
+      ex->values[i] =
+          Mix(ex->values[i],
+              i == line.expr ? sample(a2f::kNumSolve, tune.expression * morph)
+                             : 0.f,
+              mix);
     ex->is_updated = true;
   }
 }
 
 volatile LONG logged_plays;
 
-// Plays the head's current line for this frame; returns whether keyframes
-// were written.
-bool Apply(uint8_t* fg) {
+// Plays the head's current line for this frame. Returns bit 0: keyframes
+// written, bit 1: the meshes must be rebuilt (Direct deltas added or, for a
+// few frames after them, cleared).
+int Apply(uint8_t* fg) {
   AcquireSRWLockExclusive(&lock);
   auto it = playing.find(fg);
   if (it == playing.end()) {
     ReleaseSRWLockExclusive(&lock);
-    return false;
+    return 0;
   }
   Playing& p = it->second;
   const skse::ResId* act = skse::ActiveLine(fg);
@@ -822,15 +915,23 @@ bool Apply(uint8_t* fg) {
       if (t > line->frames / static_cast<float>(a2f::kFps) + 0.3f) done = true;
     }
   }
-  if (done) {
-    playing.erase(it);
-    num_playing = static_cast<LONG>(playing.size());
-    ReleaseSRWLockExclusive(&lock);
-    return false;
-  }
-  if (!line) {  // still generating: vanilla lip-sync meanwhile
-    ReleaseSRWLockExclusive(&lock);
-    return false;
+  bool direct = !done && line && tune.enabled && tune.direct && direct_ok &&
+                line->direct_dim &&
+                line->direct.size() ==
+                    static_cast<size_t>(line->frames) * line->direct_dim;
+  if (!direct) {
+    p.direct_frame = -1;
+    bool tail = p.direct_tail > 0;
+    if (tail) --p.direct_tail;
+    if (done && !tail) {
+      playing.erase(it);
+      num_playing = static_cast<LONG>(playing.size());
+    }
+    // disabled (A/B) or still generating: vanilla lip-sync meanwhile
+    if (done || !line || !tune.enabled) {
+      ReleaseSRWLockExclusive(&lock);
+      return tail ? 2 : 0;
+    }
   }
   if (p.ready_at < 0) {
     p.ready_at = t;
@@ -841,16 +942,23 @@ bool Apply(uint8_t* fg) {
           ? 1.f
           : std::clamp((t - p.ready_at) / std::max(tune.blend_in, 1e-3f), 0.f,
                        1.f);
+  if (direct) {
+    p.direct_frame =
+        std::fmax(0.f, (t + tune.time_offset) * static_cast<float>(a2f::kFps));
+    p.direct_mix = mix;
+    p.direct_tail = kDirectTail;
+  }
+  bool tail = p.direct_tail > 0;
   bool first = !p.logged;
   p.logged = true;
   std::string name = first ? p.name : std::string();
   float ready_at = p.ready_at;
   ReleaseSRWLockExclusive(&lock);
   if (first && InterlockedIncrement(&logged_plays) <= config.log_lines)
-    Log("play %s: %u frames, %s clock, ready at %.2f s", name.c_str(),
-        line->frames, act ? "lip" : "wall", ready_at);
-  PlayFrame(fg, *line, t, mix);
-  return true;
+    Log("play %s: %u frames, %s clock, ready at %.2f s%s", name.c_str(),
+        line->frames, act ? "lip" : "wall", ready_at, direct ? ", direct" : "");
+  PlayFrame(fg, *line, t, mix, direct);
+  return 1 | (tail ? 2 : 0);
 }
 
 // Runs where the head's morphs are applied (ID 26998), right after the engine
@@ -861,13 +969,236 @@ __attribute__((noinline)) bool AnimUpdateHook(uint8_t* fg, float dt,
   auto orig = reinterpret_cast<AnimUpdateFn>(
       SiteOrig(__builtin_return_address(0), kIdFaceAnimUpdate));
   bool changed = orig(fg, dt, flag);
-  if (fg && num_playing && tune.enabled) {
+  if (fg && num_playing) {
     auto* face_lock = reinterpret_cast<skse::SpinLock*>(fg + skse::kFgLock);
     face_lock->Lock();
-    changed |= Apply(fg);
+    int r = Apply(fg);
     face_lock->Unlock();
+    changed |= r != 0;
+    // "changed" makes the node reset its meshes; keep the update coming
+    if (r & 2) fg[kFgDirty] = 1;
   }
   return changed;
+}
+
+// ---------------- Direct: vertex deltas on the dynamic face meshes ---------
+// One mapping per distinct mesh (sex, part, vertex count, hash of the base
+// vertices), built on a thread of its own; until it exists the mesh is left
+// alone.
+struct MapJob {
+  std::string key;
+  bool female;
+  direct::Part part;
+  uint32_t nv;
+  std::vector<float> base, bigaah;  // nv x 3; bigaah may be empty
+};
+SRWLOCK map_lock = SRWLOCK_INIT;
+CONDITION_VARIABLE map_cv = CONDITION_VARIABLE_INIT;
+std::unordered_map<std::string, std::shared_ptr<const direct::Mapping>>
+    mappings;  // null while building
+std::deque<MapJob> map_queue;
+bool mapper_started;
+
+direct::Part Classify(const char* name) {
+  std::string n = name;
+  for (auto& c : n) c = static_cast<char>(tolower(static_cast<uint8_t>(c)));
+  if (n.find("mouth") != std::string::npos) return direct::Part::kMouth;
+  for (const char* w : {"head", "brows", "beard"})
+    if (n.find(w) != std::string::npos) return direct::Part::kHead;
+  return direct::Part::kNone;
+}
+
+// Base (pre-morph) vertices of a face shape: its "FOD" extra data.
+const float* BaseVerts(uint8_t* shape, uint32_t& nv) {
+  uint8_t** extra = *reinterpret_cast<uint8_t***>(shape + kObjExtra);
+  uint16_t n = *reinterpret_cast<uint16_t*>(shape + kObjNumExtra);
+  for (uint16_t i = 0; extra && i < n; ++i) {
+    uint8_t* e = extra[i];
+    const char* name =
+        e ? *reinterpret_cast<const char**>(e + kObjName) : nullptr;
+    if (!name || strcmp(name, "FOD")) continue;
+    nv = *reinterpret_cast<uint32_t*>(e + kBaseNumVerts);
+    return *reinterpret_cast<const float**>(e + kBaseVerts);
+  }
+  return nullptr;
+}
+
+// The shape's own BigAah morph (engine morph type 0 = phoneme, index 1), read
+// by applying it at 1.0 and undoing it; empty when the shape has no morphs.
+void BigAah(uint8_t* shape, uint32_t nv, std::vector<float>& out) {
+  static auto morph_data =
+      reinterpret_cast<void* (*)(uint8_t*)>(Addr(kIdMorphData));
+  static auto apply = reinterpret_cast<ApplyMorphFn>(Addr(kIdApplyMorph));
+  static auto lock_dyn =
+      reinterpret_cast<float* (*)(uint8_t*)>(Addr(kIdLockDynamic));
+  static auto unlock_dyn =
+      reinterpret_cast<void (*)(uint8_t*)>(Addr(kIdUnlockDynamic));
+  void* md = morph_data(shape);
+  if (!md) return;
+  std::vector<float> before(static_cast<size_t>(nv) * 4);
+  float* data = lock_dyn(shape);
+  memcpy(before.data(), data, before.size() * sizeof(float));
+  unlock_dyn(shape);
+  apply(md, 0, 1, shape, 1.f);
+  out.resize(static_cast<size_t>(nv) * 3);
+  data = lock_dyn(shape);
+  for (uint32_t i = 0; i < nv; ++i)
+    for (int c = 0; c < 3; ++c)
+      out[i * 3 + c] = data[i * 4 + c] - before[i * 4 + c];
+  memcpy(data, before.data(), before.size() * sizeof(float));
+  unlock_dyn(shape);
+}
+
+DWORD WINAPI Mapper(void*) {
+  for (;;) {
+    AcquireSRWLockExclusive(&map_lock);
+    while (map_queue.empty())
+      SleepConditionVariableSRW(&map_cv, &map_lock, INFINITE, 0);
+    MapJob j = std::move(map_queue.front());
+    map_queue.pop_front();
+    ReleaseSRWLockExclusive(&map_lock);
+    const direct::SexModel& sm = model.sex[j.female ? 0 : 1];
+    const direct::RefMesh& ref =
+        j.part == direct::Part::kHead ? sm.head : sm.mouth;
+    std::vector<uint8_t> labels;
+    if (!j.bigaah.empty()) {
+      direct::LipLabels(j.base.data(), j.bigaah.data(), j.nv, labels);
+    } else if (j.part == direct::Part::kMouth) {  // teeth / tongue: nearest
+      labels.resize(j.nv);
+      for (uint32_t i = 0; i < j.nv; ++i) {
+        float best = INFINITY;
+        for (uint32_t v = 0; v < ref.nv; ++v) {
+          float d = 0;
+          for (int c = 0; c < 3; ++c) {
+            float e = j.base[i * 3 + c] - ref.verts[v * 3 + c];
+            d += e * e;
+          }
+          if (d < best) best = d, labels[i] = ref.labels[v];
+        }
+      }
+    }
+    double t = Now();
+    auto m = std::make_shared<direct::Mapping>();
+    direct::BuildMapping(ref, j.base.data(), j.nv,
+                         labels.empty() ? nullptr : labels.data(), *m);
+    Log("direct map %s: %u verts, %s, dist mean %.3f max %.3f, %u snapped, "
+        "%s labels, %.1f ms",
+        j.key.c_str(), j.nv, m->identity ? "identity" : "resampled",
+        m->mean_dist, m->max_dist, m->snapped,
+        labels.empty()     ? "no"
+        : j.bigaah.empty() ? "nearest"
+                           : "BigAah",
+        (Now() - t) * 1e3);
+    AcquireSRWLockExclusive(&map_lock);
+    mappings[j.key] = m;
+    ReleaseSRWLockExclusive(&map_lock);
+  }
+}
+
+// The shape's mapping, or null (queued to the mapper on first sight).
+std::shared_ptr<const direct::Mapping> FindMapping(uint8_t* shape, bool female,
+                                                   direct::Part part,
+                                                   uint32_t nv) {
+  uint32_t nb = 0;
+  const float* base = BaseVerts(shape, nb);
+  if (!base || nb != nv) return nullptr;
+  uint64_t h = 1469598103934665603ull;  // FNV-1a over every 4th vertex
+  for (uint32_t i = 0; i < nv; i += 4)
+    for (int c = 0; c < 3; ++c) {
+      uint32_t b;
+      memcpy(&b, &base[i * 3 + c], 4);
+      h = (h ^ b) * 1099511628211ull;
+    }
+  char key[48];
+  snprintf(key, sizeof key, "%c/%s/%u/%016llx", female ? 'f' : 'm',
+           part == direct::Part::kHead ? "head" : "mouth", nv,
+           static_cast<unsigned long long>(h));
+  AcquireSRWLockShared(&map_lock);
+  auto it = mappings.find(key);
+  bool known = it != mappings.end();
+  std::shared_ptr<const direct::Mapping> m = known ? it->second : nullptr;
+  ReleaseSRWLockShared(&map_lock);
+  if (known) return m;
+  MapJob j{key, female, part, nv, std::vector<float>(base, base + nv * 3), {}};
+  if (part == direct::Part::kHead) BigAah(shape, nv, j.bigaah);
+  AcquireSRWLockExclusive(&map_lock);
+  if (mappings.emplace(key, nullptr).second) {
+    map_queue.push_back(std::move(j));
+    if (!mapper_started) {
+      HANDLE th = CreateThread(nullptr, 0, Mapper, nullptr, 0, nullptr);
+      mapper_started = th != nullptr;
+      if (th) CloseHandle(th);
+    }
+    WakeConditionVariable(&map_cv);
+  }
+  ReleaseSRWLockExclusive(&map_lock);
+  return nullptr;
+}
+
+// Adds the head's Direct frame to every dynamic face shape of the node (after
+// the engine rebuilt them from the base and the morphs).
+void AddDirect(uint8_t* node) {
+  static auto lock_dyn =
+      reinterpret_cast<float* (*)(uint8_t*)>(Addr(kIdLockDynamic));
+  static auto unlock_dyn =
+      reinterpret_cast<void (*)(uint8_t*)>(Addr(kIdUnlockDynamic));
+  uint8_t* fg = *reinterpret_cast<uint8_t**>(node + kNodeFg);
+  if (!fg) return;
+  std::shared_ptr<const a2f::Line> line;
+  float frame = -1, mix = 1;
+  bool female = false;
+  AcquireSRWLockShared(&lock);
+  auto it = playing.find(fg);
+  if (it != playing.end() && it->second.direct_frame >= 0) {
+    const Playing& p = it->second;
+    line = p.entry->line;
+    frame = p.direct_frame;
+    mix = p.direct_mix;
+    female = p.female;
+  }
+  ReleaseSRWLockShared(&lock);
+  if (!line || frame < 0) return;
+  const direct::SexModel& sm = model.sex[female ? 0 : 1];
+  direct::Track track{line->direct.data(), line->frames, line->direct_dim, &sm};
+  float scales[direct::kNumRegions];
+  std::copy_n(tune.direct_scale, direct::kNumRegions, scales);
+  thread_local std::vector<float> deltas[2];
+  bool have[2] = {};
+  uint8_t** kids = *reinterpret_cast<uint8_t***>(node + kNodeChildren);
+  uint16_t n = *reinterpret_cast<uint16_t*>(node + kNodeNumChildren);
+  for (uint16_t i = 0; kids && i < n; ++i) {
+    uint8_t* shape = kids[i];
+    if (!shape || shape[kGeomType] != 4) continue;
+    const char* name = *reinterpret_cast<const char**>(shape + kObjName);
+    direct::Part part = name ? Classify(name) : direct::Part::kNone;
+    if (part == direct::Part::kNone) continue;
+    uint32_t nv = *reinterpret_cast<uint16_t*>(shape + kDynNumVerts);
+    if (*reinterpret_cast<uint32_t*>(shape + kDynDataSize) != nv * 16) continue;
+    auto m = FindMapping(shape, female, part, nv);
+    if (!m) continue;
+    int k = static_cast<int>(part);
+    if (!have[k]) {
+      direct::Evaluate(track, frame, part, scales, deltas[k]);
+      if (mix < 1)
+        for (float& d : deltas[k]) d *= mix;
+      have[k] = true;
+    }
+    float* data = lock_dyn(shape);
+    direct::AddDeltas(*m, deltas[k], data);
+    unlock_dyn(shape);
+  }
+}
+
+// Deltas are only ever added right after a reset to the base vertices (force,
+// or the node's reset flag, which the original clears).
+__attribute__((noinline)) uint64_t ApplyMorphsHook(uint8_t* node,
+                                                   uint8_t force) {
+  auto orig = reinterpret_cast<ApplyMorphsFn>(
+      SiteOrig(__builtin_return_address(0), kIdApplyMorphs));
+  bool reset = force || (*reinterpret_cast<uint16_t*>(node + kNodeFlags) & 1);
+  uint64_t r = orig(node, force);
+  if (reset && num_playing && direct_ok) AddDirect(node);
+  return r;
 }
 
 // ---------------- SKSE Menu Framework page (optional; cimgui exports) -------
@@ -883,6 +1214,8 @@ struct ImGui {  // cimgui export names
   void (*SetTooltip)(const char*, ...);
   bool (*IsItemHovered)(int);
   void (*SameLine)(float, float);
+  void (*BeginDisabled)(bool);
+  void (*EndDisabled)();
 } ig;
 
 void RenderMenu() {
@@ -899,19 +1232,23 @@ void RenderMenu() {
             st.audio_sec / std::max(st.gen_sec, 1e-6), st.last_ms, st.late);
   if (!st.last_error.empty())
     ig.Text("Last skipped: %s", st.last_error.c_str());
-  // checkboxes, then sliders by section
   static const char* const kHeaders[] = {nullptr, "Playback (instant)",
-                                         "Generation (new lines)"};
-  int cur = 0;
+                                         "Generation (new lines)", "Direct"};
+  Sec cur = Sec::kGeneral;
   for (const auto& p : kParams) {
-    int sec = p.flag ? 0 : 1 + p.gen;
-    if (sec != cur) ig.SeparatorText(kHeaders[cur = sec]);
+    if (p.sec != cur) ig.SeparatorText(kHeaders[static_cast<int>(cur = p.sec)]);
+    bool off = p.sec == Sec::kDirect && !direct_ok;
+    if (off) ig.BeginDisabled(true);
     AcquireSRWLockExclusive(&settings_lock);
     bool c = p.flag ? ig.Checkbox(p.label, p.flag)
                     : ig.SliderFloat(p.label, p.value, p.lo, p.hi, "%.3g", 0);
     ReleaseSRWLockExclusive(&settings_lock);
-    if (ig.IsItemHovered(0)) ig.SetTooltip("%s", p.tip);
-    if (c && p.gen) InterlockedIncrement(&gen_version);
+    if (off) ig.EndDisabled();
+    if (ig.IsItemHovered(off ? 128 /* AllowWhenDisabled */ : 0))
+      ig.SetTooltip("%s", off ? "A2FDirect.bin not found in SKSE/Plugins/"
+                                "A2FLive (or the face hook failed)"
+                              : p.tip);
+    if (c && p.sec == Sec::kGeneration) InterlockedIncrement(&gen_version);
   }
   ig.SeparatorText("");
   if (ig.Button("Save to A2FLive.ini", ImVec2{0, 0})) {
@@ -923,7 +1260,7 @@ void RenderMenu() {
   if (ig.Button("Defaults", ImVec2{0, 0}) && ready) {
     AcquireSRWLockExclusive(&settings_lock);
     gen = data.defaults;
-    tune = Tune();
+    ResetTune();
     ReleaseSRWLockExclusive(&settings_lock);
     InterlockedIncrement(&gen_version);
   }
@@ -934,6 +1271,10 @@ void RenderMenu() {
       it = it->second->state == State::kPending ? std::next(it)
                                                 : cache.erase(it);
     ReleaseSRWLockExclusive(&lock);
+    AcquireSRWLockExclusive(&map_lock);
+    for (auto it = mappings.begin(); it != mappings.end();)
+      it = it->second ? mappings.erase(it) : std::next(it);
+    ReleaseSRWLockExclusive(&map_lock);
   }
 }
 
@@ -958,7 +1299,9 @@ void RegisterMenu() {
       !Import(m, "igButton", ig.Button) ||
       !Import(m, "igSetTooltip", ig.SetTooltip) ||
       !Import(m, "igIsItemHovered", ig.IsItemHovered) ||
-      !Import(m, "igSameLine", ig.SameLine)) {
+      !Import(m, "igSameLine", ig.SameLine) ||
+      !Import(m, "igBeginDisabled", ig.BeginDisabled) ||
+      !Import(m, "igEndDisabled", ig.EndDisabled)) {
     Log("SKSE Menu Framework: missing exports, no menu page");
     return;
   }
@@ -1002,6 +1345,10 @@ extern "C" __declspec(dllexport) bool SKSEPlugin_Load(
   if (!HookCalls("face", kIdFaceAnimUpdate, kFaceCallers,
                  reinterpret_cast<void*>(&AnimUpdateHook)))
     return false;
+  if (Addr(kIdMorphData) && Addr(kIdApplyMorph) && Addr(kIdLockDynamic) &&
+      Addr(kIdUnlockDynamic))
+    morph_sites = HookCalls("morphs", kIdApplyMorphs, kMorphCallers,
+                            reinterpret_cast<void*>(&ApplyMorphsHook));
   auto* msg = static_cast<skse::SKSEMessagingInterface*>(
       iface->QueryInterface(skse::kInterfaceMessaging));
   if (!msg ||

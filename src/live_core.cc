@@ -495,7 +495,7 @@ const uint32_t kEngineExpr[8] = {255, 0, 6, 1, 3, 2, 4, 5};
 // ---------------- the whole line ----------------
 bool Generate(const Data& d, Net& net, const Settings& s, const float* pcm,
               size_t n, int emotion, int value, bool female, Line& out,
-              std::string& err, Timing* timing) {
+              std::string& err, Timing* timing, const DirectProj* direct) {
   using Clock = std::chrono::steady_clock;
   auto t0 = Clock::now();
   if (!n) {
@@ -735,6 +735,24 @@ bool Generate(const Data& d, Net& net, const Settings& s, const float* pcm,
                  (1 - s.emphasis + s.emphasis * db[t]);
       out.data[static_cast<size_t>(t) * kNumChannels + kNumSolve] =
           static_cast<uint8_t>(std::nearbyint(std::clamp(v, 0.0, 1.0) * 255));
+    }
+  }
+  // --- A2F Direct coefficients ---
+  out.direct_dim = 0;
+  out.direct.clear();
+  if (direct) {
+    out.direct_dim = direct->k + kNumTongue;
+    out.direct.assign(static_cast<size_t>(num_frames) * out.direct_dim, 0.f);
+    for (int t = 0; t < num_frames; ++t) {
+      const float* y = &raw[static_cast<size_t>(t) * kNumRaw];
+      float* o = &out.direct[static_cast<size_t>(t) * out.direct_dim];
+      for (uint32_t k = 0; k < direct->k; ++k) {
+        const float* p = direct->proj + static_cast<size_t>(k) * kNumPca;
+        for (int j = 0; j < kNumPca; ++j)
+          o[k] += (y[j] - direct->rest[j]) * p[j];
+      }
+      for (int j = 0; j < kNumTongue; ++j)
+        o[direct->k + j] = y[kNumPca + j] - direct->rest[kNumPca + j];
     }
   }
   if (timing) {

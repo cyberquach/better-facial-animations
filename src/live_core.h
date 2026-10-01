@@ -79,10 +79,21 @@ class Net {
 };
 
 // Generated curves: frames x kNumChannels; expr is the engine expression
-// index or 255.
+// index or 255. direct: frames x direct_dim A2F Direct coefficients (empty
+// unless Generate was given a DirectProj).
 struct Line {
-  uint32_t frames = 0, expr = 255;
+  uint32_t frames = 0, expr = 255, direct_dim = 0;
   std::vector<uint8_t> data;
+  std::vector<float> direct;
+};
+
+// A2F Direct coefficients from the network output y (kNumRaw per frame):
+// k skin coefficients (y[0:272] - rest) . proj[k] followed by the 10 tongue
+// coefficients y[272 + j] - rest[272 + j]. proj: k x kNumPca, rest: kNumRaw.
+struct DirectProj {
+  const float* proj;
+  const float* rest;
+  uint32_t k;
 };
 
 // Decode .fuz / .xwm / .wav bytes to 16 kHz mono float (same conversion as
@@ -95,10 +106,11 @@ struct Timing {
 };
 
 // emotion: Skyrim emotion type (0..7) and value (0..100). female selects the
-// head the curves are solved for.
+// head the curves are solved for. direct, when given, also fills out.direct.
 bool Generate(const Data& d, Net& net, const Settings& s, const float* pcm,
               size_t n, int emotion, int value, bool female, Line& out,
-              std::string& err, Timing* timing = nullptr);
+              std::string& err, Timing* timing = nullptr,
+              const DirectProj* direct = nullptr);
 
 }  // namespace a2f
 
