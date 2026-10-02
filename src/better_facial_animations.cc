@@ -30,7 +30,7 @@ using skse::Log;
 
 namespace {
 
-constexpr char kVersion[] = "1.2.2";
+constexpr char kVersion[] = "1.2.3";
 
 // "major.minor.patch" -> SKSE's packed plugin version.
 constexpr uint32_t PackVersion(const char* s) {
