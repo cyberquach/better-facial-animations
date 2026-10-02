@@ -42,15 +42,12 @@ constexpr uint32_t PackVersion(const char* s) {
       part[i] = part[i] * 10 + (*s - '0');
     }
   }
-  return (part[0] << 24) | (part[1] << 16) | (part[2] << 4);
+  return skse::Version(part[0], part[1], part[2]);
 }
 
 }  // namespace
 
-extern "C" {
-__declspec(dllexport) extern skse::SKSEPluginVersionData SKSEPlugin_Version;
-}
-skse::SKSEPluginVersionData SKSEPlugin_Version = {
+__declspec(dllexport) skse::SKSEPluginVersionData SKSEPlugin_Version = {
     1,
     PackVersion(kVersion),
     "BetterFacialAnimations",
@@ -58,14 +55,13 @@ skse::SKSEPluginVersionData SKSEPlugin_Version = {
     "",
     0,
     0,
-    // the last field is the store: 1.6.1179 only exists on GOG (.1)
-    {0x01064920 /* 1.6.1170 */, 0x010649B1 /* 1.6.1179 GOG */,
-     0x01070680 /* 1.7.104 */, 0},
+    {skse::Version(1, 6, 1170), skse::Version(1, 6, 1179, skse::kGog),
+     skse::Version(1, 7, 99), skse::Version(1, 7, 104), 0},
     0};
 
 namespace {
 
-// ------------- engine (AE 1.6.1170, 1.6.1179, 1.7.104) -------------
+// ---------------- engine (AE 1.6.1170+) ----------------
 constexpr uint64_t kIdSpeakVoiceLine = 37542;
 constexpr uint64_t kIdDialogueResponseCtor = 35249;
 // play-response, UpdateInDialogue, 44673, console SpeakSound
@@ -1277,18 +1273,11 @@ void OnMessage(skse::SKSEMessage* m) {
 
 extern "C" __declspec(dllexport) bool SKSEPlugin_Load(
     const skse::SKSEInterface* iface) {
-  const uint32_t rv = iface->runtimeVersion;
-  skse::SetRuntime(rv);
+  skse::SetRuntime(iface->runtimeVersion);
   LoadIni();  // turns the log on when Logging=1
-  Log("runtime %08X", rv);
-  // Address Library for the running game, e.g. versionlib-1-7-104-0.bin; the
-  // last field is always 0, also on GOG (SKSE CheckAddressLibrary).
-  char address_library[64];
-  snprintf(address_library, sizeof(address_library),
-           "Data\\SKSE\\Plugins\\versionlib-%u-%u-%u-0.bin", rv >> 24,
-           (rv >> 16) & 0xFF, (rv >> 4) & 0xFFF);
-  if (!skse::LoadAddressLibrary(address_library)) {
-    Log("address library %s missing/unreadable", address_library);
+  Log("runtime %08X", iface->runtimeVersion);
+  if (!skse::LoadAddressLibrary()) {
+    Log("address library not loaded");
     return false;
   }
   if (!Addr(kIdGenerateFromPath) || !Addr(kIdStreamCtor) ||

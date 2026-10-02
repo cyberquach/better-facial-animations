@@ -1,5 +1,4 @@
-// SKSE ABI, log, Address Library and engine layout (AE 1.6.1170, 1.6.1179,
-// 1.7.104).
+// SKSE ABI, log, Address Library and engine layout (AE 1.6.1170+).
 #ifndef SRC_SKSE_H_
 #define SRC_SKSE_H_
 
@@ -47,17 +46,26 @@ struct SKSEMessagingInterface {
 constexpr uint32_t kInterfaceMessaging = 5;
 constexpr uint32_t kMessageDataLoaded = 8;
 
-// Picks the My Games folder SKSE uses for this runtime (Steam, GOG or Epic).
+// SKSE's packed version (skse_version.h); the low nibble is the store.
+enum Store : uint32_t { kSteam, kGog, kEpic };
+constexpr uint32_t Version(uint32_t major, uint32_t minor, uint32_t build,
+                           Store store = kSteam) {
+  return (major << 24) | (minor << 16) | (build << 4) | store;
+}
+
+// Records the runtime: the My Games folder per store and the Address Library
+// file. Call first in SKSEPlugin_Load.
 void SetRuntime(uint32_t runtime_version);
-// Log file in that folder's SKSE directory, created (truncated) the first
-// time logging is turned on; Log is a no-op while it is off. True when this
-// call created the file.
+// <plugin name>.log in that folder's SKSE directory, created (truncated) the
+// first time logging is turned on; Log is a no-op while it is off. True when
+// this call created the file.
 bool SetLogging(bool on);
 void Log(const char* fmt, ...);
 
-// Address Library (versionlib format 2, or 5 from 1.7.99). LoadAddressLibrary
-// also records the executable's image base; Addr returns 0 for unknown ids.
-bool LoadAddressLibrary(const char* path);
+// Address Library for the runtime set above (versionlib format 2, or 5 from
+// 1.7.99). Also records the executable's image base; Addr returns 0 for
+// unknown ids.
+bool LoadAddressLibrary();
 uint64_t ImageBase();
 uint64_t Addr(uint64_t id);
 
@@ -101,5 +109,8 @@ struct SpinLock {
 const ResId* ActiveLine(uint8_t* fg);
 
 }  // namespace skse
+
+// Defined (and exported) by the plugin.
+extern "C" skse::SKSEPluginVersionData SKSEPlugin_Version;
 
 #endif  // SRC_SKSE_H_

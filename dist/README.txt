@@ -7,7 +7,8 @@ emotion expression. Works with High Poly Head and with Creation Engine Raytracin
 expression are in Settings -> Direct. Vanilla, DLC and modded voices all work, packed or loose, with or without .lip files.
 
 Requirements
-  Skyrim Special Edition 1.6.1170, 1.6.1179 (GOG) or 1.7.104 (AE), matching SKSE, Address Library for SKSE Plugins.
+  Skyrim Special Edition 1.6.1170, 1.6.1179 (GOG), 1.7.99 or 1.7.104 (AE), matching SKSE, Address Library for SKSE Plugins.
+  Not the Epic Games Store version: SKSE does not support it.
   A DirectX 12 GPU (~85 MB of VRAM). Without one it falls back to the CPU.
   Optional: SKSE Menu Framework, for the in-game settings page (Better Facial Animations -> Settings).
 

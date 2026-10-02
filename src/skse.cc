@@ -17,6 +17,7 @@ namespace {
 
 FILE* log_file;
 volatile bool log_on;
+uint32_t runtime;
 const wchar_t* my_games = L"Skyrim Special Edition";
 uint64_t image_base;
 std::vector<std::pair<uint64_t, uint64_t>> ids;  // id -> offset, sorted by id
@@ -34,6 +35,7 @@ void Log(const char* fmt, ...) {
 }
 
 void SetRuntime(uint32_t runtime_version) {
+  runtime = runtime_version;
   // SKSE's folder per store, from the version's last field (skse_version.h)
   switch (runtime_version & 0xF) {
     case 1:
@@ -52,40 +54,53 @@ bool SetLogging(bool on) {
   wchar_t path[MAX_PATH];
   if (SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &docs) != S_OK)
     return false;
-  _snwprintf(path, MAX_PATH,
-             L"%ls\\My Games\\%ls\\SKSE\\BetterFacialAnimations.log", docs,
-             my_games);
+  _snwprintf(path, MAX_PATH, L"%ls\\My Games\\%ls\\SKSE\\%hs.log", docs,
+             my_games, SKSEPlugin_Version.name);
   CoTaskMemFree(docs);
   log_file = _wfopen(path, L"w");
   return log_file != nullptr;
 }
 
 // versionlib format 2 (CommonLibSSE-NG REL/ID.h) or format 5.
-bool LoadAddressLibrary(const char* path) {
+bool LoadAddressLibrary() {
   image_base = reinterpret_cast<uint64_t>(GetModuleHandleA(nullptr));
+  // The last field is always 0, also on GOG (SKSE CheckAddressLibrary).
+  char path[64];
+  snprintf(path, sizeof(path),
+           "Data\\SKSE\\Plugins\\versionlib-%u-%u-%u-0.bin", runtime >> 24,
+           (runtime >> 16) & 0xFF, (runtime >> 4) & 0xFFF);
   FILE* f = fopen(path, "rb");
-  if (!f) return false;
+  if (!f) {
+    Log("%s missing", path);
+    return false;
+  }
   std::vector<uint8_t> d;
   fseek(f, 0, SEEK_END);
-  d.resize(ftell(f));
+  const long size = ftell(f);
+  if (size > 0) d.resize(size);
   fseek(f, 0, SEEK_SET);
-  fread(d.data(), 1, d.size(), f);
+  d.resize(fread(d.data(), 1, d.size(), f));
   fclose(f);
   size_t p = 0;
+  bool bad = false;  // a read ran past the end
   auto rd = [&](size_t n) -> uint64_t {
     uint64_t v = 0;
+    if (p > d.size() || n > d.size() - p) {
+      bad = true;
+      return 0;
+    }
     memcpy(&v, &d[p], n);
     p += n;
     return v;
   };
+  ids.clear();
   const int32_t format = static_cast<int32_t>(rd(4));
   if (format == 5) {
     // 1.7.99+ (commonlib-shared REL/IDDB.cpp): game version, 64-byte name,
     // pointer size, data format and count, then a uint32 offset per id.
     p += 16 + 64 + 8;
-    const uint64_t count = static_cast<uint32_t>(rd(4));
-    if (d.size() < p + count * 4) return false;
-    ids.clear();
+    const size_t count = rd(4);
+    if (bad || d.size() - p < count * 4) return false;
     for (uint64_t id = 0; id < count; ++id) {
       const uint64_t off = rd(4);
       if (off) ids.emplace_back(id, off);
@@ -94,13 +109,13 @@ bool LoadAddressLibrary(const char* path) {
   }
   if (format != 2) return false;
   p += 16;
-  int32_t name_len = static_cast<int32_t>(rd(4));
-  p += name_len;
-  int32_t ptr_size = static_cast<int32_t>(rd(4));
-  int32_t count = static_cast<int32_t>(rd(4));
+  p += static_cast<uint32_t>(rd(4));  // name
+  const int32_t ptr_size = static_cast<int32_t>(rd(4));
+  const int32_t count = static_cast<int32_t>(rd(4));
+  if (bad || ptr_size <= 0 || count < 0) return false;
   ids.reserve(count);
   uint64_t pid = 0, poff = 0;
-  for (int32_t i = 0; i < count; ++i) {
+  for (int32_t i = 0; i < count && !bad; ++i) {
     uint8_t t = static_cast<uint8_t>(rd(1));
     uint8_t lo = t & 0xF, hi = t >> 4;
     uint64_t id, off;
@@ -167,7 +182,7 @@ bool LoadAddressLibrary(const char* path) {
     poff = off;
   }
   std::sort(ids.begin(), ids.end());
-  return true;
+  return !bad;
 }
 
 uint64_t ImageBase() { return image_base; }
