@@ -48,7 +48,7 @@ bool SetLogging(bool on) {
   return log_file != nullptr;
 }
 
-// versionlib format 2 (CommonLibSSE-NG REL/ID.h).
+// versionlib format 2 (CommonLibSSE-NG REL/ID.h) or format 5.
 bool LoadAddressLibrary(const char* path) {
   image_base = reinterpret_cast<uint64_t>(GetModuleHandleA(nullptr));
   FILE* f = fopen(path, "rb");
@@ -66,7 +66,21 @@ bool LoadAddressLibrary(const char* path) {
     p += n;
     return v;
   };
-  if (static_cast<int32_t>(rd(4)) != 2) return false;
+  const int32_t format = static_cast<int32_t>(rd(4));
+  if (format == 5) {
+    // 1.7.99+ (commonlib-shared REL/IDDB.cpp): game version, 64-byte name,
+    // pointer size, data format and count, then a uint32 offset per id.
+    p += 16 + 64 + 8;
+    const uint64_t count = static_cast<uint32_t>(rd(4));
+    if (d.size() < p + count * 4) return false;
+    ids.clear();
+    for (uint64_t id = 0; id < count; ++id) {
+      const uint64_t off = rd(4);
+      if (off) ids.emplace_back(id, off);
+    }
+    return true;
+  }
+  if (format != 2) return false;
   p += 16;
   int32_t name_len = static_cast<int32_t>(rd(4));
   p += name_len;

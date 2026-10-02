@@ -1,4 +1,5 @@
-// SKSE ABI, log, Address Library and engine layout (AE 1.6.1170, 1.6.1179).
+// SKSE ABI, log, Address Library and engine layout (AE 1.6.1170, 1.6.1179,
+// 1.7.104).
 #ifndef SRC_SKSE_H_
 #define SRC_SKSE_H_
 
@@ -52,8 +53,8 @@ constexpr uint32_t kMessageDataLoaded = 8;
 bool SetLogging(bool on);
 void Log(const char* fmt, ...);
 
-// Address Library (versionlib format 2). LoadAddressLibrary also records the
-// executable's image base; Addr returns 0 for unknown ids.
+// Address Library (versionlib format 2, or 5 from 1.7.99). LoadAddressLibrary
+// also records the executable's image base; Addr returns 0 for unknown ids.
 bool LoadAddressLibrary(const char* path);
 uint64_t ImageBase();
 uint64_t Addr(uint64_t id);

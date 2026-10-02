@@ -58,12 +58,13 @@ skse::SKSEPluginVersionData SKSEPlugin_Version = {
     "",
     0,
     0,
-    {0x01064920 /* 1.6.1170 */, 0x010649B0 /* 1.6.1179 */, 0},
+    {0x01064920 /* 1.6.1170 */, 0x010649B0 /* 1.6.1179 */,
+     0x01070680 /* 1.7.104 */, 0},
     0};
 
 namespace {
 
-// ---------------- engine (AE 1.6.1170, 1.6.1179) ----------------
+// ------------- engine (AE 1.6.1170, 1.6.1179, 1.7.104) -------------
 constexpr uint64_t kIdSpeakVoiceLine = 37542;
 constexpr uint64_t kIdDialogueResponseCtor = 35249;
 // play-response, UpdateInDialogue, 44673, console SpeakSound
