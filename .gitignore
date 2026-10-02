@@ -1,6 +1,7 @@
 # only the mod is tracked
 /*
 !/src/
+!/tests/
 !/dist/
 !/build.sh
 !/README.md

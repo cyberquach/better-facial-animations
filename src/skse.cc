@@ -47,6 +47,8 @@ void SetRuntime(uint32_t runtime_version) {
   }
 }
 
+bool IsSe() { return runtime && runtime < Version(1, 6, 0); }
+
 bool SetLogging(bool on) {
   log_on = on;
   if (!on || log_file) return false;
@@ -61,13 +63,14 @@ bool SetLogging(bool on) {
   return log_file != nullptr;
 }
 
-// versionlib format 2 (CommonLibSSE-NG REL/ID.h) or format 5.
+// version format 1 (SE), versionlib format 2 (CommonLibSSE-NG REL/ID.h; same
+// encoding) or format 5.
 bool LoadAddressLibrary() {
   image_base = reinterpret_cast<uint64_t>(GetModuleHandleA(nullptr));
   // The last field is always 0, also on GOG (SKSE CheckAddressLibrary).
   char path[64];
-  snprintf(path, sizeof(path),
-           "Data\\SKSE\\Plugins\\versionlib-%u-%u-%u-0.bin", runtime >> 24,
+  snprintf(path, sizeof(path), "Data\\SKSE\\Plugins\\%s-%u-%u-%u-0.bin",
+           IsSe() ? "version" : "versionlib", runtime >> 24,
            (runtime >> 16) & 0xFF, (runtime >> 4) & 0xFFF);
   FILE* f = fopen(path, "rb");
   if (!f) {
@@ -107,7 +110,7 @@ bool LoadAddressLibrary() {
     }
     return true;
   }
-  if (format != 2) return false;
+  if (format != 1 && format != 2) return false;
   p += 16;
   p += static_cast<uint32_t>(rd(4));  // name
   const int32_t ptr_size = static_cast<int32_t>(rd(4));

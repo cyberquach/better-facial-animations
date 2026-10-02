@@ -1,4 +1,4 @@
-// SKSE ABI, log, Address Library and engine layout (AE 1.6.1170+).
+// SKSE ABI, log, Address Library and engine layout (SE 1.5.97, AE 1.6.1170+).
 #ifndef SRC_SKSE_H_
 #define SRC_SKSE_H_
 
@@ -21,6 +21,13 @@ struct SKSEPluginVersionData {
   uint32_t seVersionRequired;
 };
 static_assert(sizeof(SKSEPluginVersionData) == 0x350, "SKSEPluginVersionData");
+
+// SE's SKSE (1.5.97) asks SKSEPlugin_Query for this instead.
+struct PluginInfo {
+  uint32_t infoVersion;
+  const char* name;
+  uint32_t version;
+};
 
 struct SKSEInterface {
   uint32_t skseVersion, runtimeVersion, editorVersion, isEditor;
@@ -56,18 +63,29 @@ constexpr uint32_t Version(uint32_t major, uint32_t minor, uint32_t build,
 // Records the runtime: the My Games folder per store and the Address Library
 // file. Call first in SKSEPlugin_Load.
 void SetRuntime(uint32_t runtime_version);
+// The runtime set above is SE (1.5.x) rather than AE (1.6+); AE until set.
+bool IsSe();
 // <plugin name>.log in that folder's SKSE directory, created (truncated) the
 // first time logging is turned on; Log is a no-op while it is off. True when
 // this call created the file.
 bool SetLogging(bool on);
 void Log(const char* fmt, ...);
 
-// Address Library for the runtime set above (versionlib format 2, or 5 from
-// 1.7.99). Also records the executable's image base; Addr returns 0 for
-// unknown ids.
+// A value that differs between SE and AE, like CommonLibSSE-NG's
+// RelocationID: an Address Library id or a member offset. An id of 0 does not
+// exist on that runtime.
+struct Rel {
+  uint64_t se, ae;
+  uint64_t Get() const { return IsSe() ? se : ae; }
+};
+
+// Address Library for the runtime set above (version format 1 on SE,
+// versionlib format 2, or 5 from 1.7.99). Also records the executable's image
+// base; Addr returns 0 for unknown ids.
 bool LoadAddressLibrary();
 uint64_t ImageBase();
 uint64_t Addr(uint64_t id);
+inline uint64_t Addr(Rel id) { return id.Get() ? Addr(id.Get()) : 0; }
 
 // BSFaceGenAnimationData layout.
 constexpr uint32_t kFgExpr3 = 0xC0;
