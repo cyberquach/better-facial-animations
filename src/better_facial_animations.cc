@@ -182,7 +182,7 @@ const Param kParams[] = {
      Sec::kDirect},
     {"DirectTongue", &tune.direct_scale[direct::kTongue], 0, 2, "Tongue",
      "Tongue deformation.", Sec::kDirect},
-    {"DirectExpression", nullptr, 0, 0, "Engine expression",
+    {"DirectExpression", nullptr, 0, 0, "Blend vanilla emotions",
      "Also play the dialogue emotion expression morph on top.", Sec::kDirect,
      &tune.direct_expression},
     {"Logging", nullptr, 0, 0, "Logging",
@@ -742,7 +742,7 @@ inline float Mix(float engine, float ours, float mix) {
 
 // The mesh carries the mouth, brows and eyes: zeroes the final phoneme and
 // modifier keyframes (but the blinks) and writes the line's expression at
-// lip time t (s) when "Engine expression" is on; mix < 1 blends from the
+// lip time t (s) when "Blend vanilla emotions" is on; mix < 1 blends from the
 // engine's values.
 void PlayFrame(uint8_t* fg, const a2f::Line& line, float t, float mix) {
   auto* phon = reinterpret_cast<skse::KeyframeMultiple*>(fg + skse::kFgPhon3);
