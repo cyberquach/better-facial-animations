@@ -80,15 +80,27 @@ struct Deltas {
 void Evaluate(const Track& track, float frame, const float* scales,
               Deltas& out);
 
+// Shift that takes a mesh stored in skeleton space (custom heads such as
+// High Poly Head: no shape transform, vertices ~120 units up) into the
+// reference's shape-local space; zero for one already there.
+void FrameOffset(const RefMesh& ref, const float* verts, uint32_t nv,
+                 float offset[3]);
+
 // Lip labels (0 skin, 1 upper lip, 2 lower lip) of a head mesh from its own
-// BigAah morph deltas, the rule the reference labels were made with.
-void LipLabels(const float* verts, const float* bigaah, uint32_t nv,
-               std::vector<uint8_t>& labels);
+// BigAah morph deltas, the rule the reference labels were made with, inside
+// the reference's lip box (plus a margin, open in front). With align, the
+// box first follows the target's lips; offset gets the shift of the upper
+// lip onto the reference's and moved the target with its upper lip shifted;
+// else (or when no shift is needed) moved is empty and offset zero.
+void LipLabels(const RefMesh& ref, const float* verts, const float* bigaah,
+               uint32_t nv, bool align, std::vector<uint8_t>& labels,
+               std::vector<float>& moved, float offset[3]);
 
 // Target vertex -> reference triangle corners + barycentric weights, or the
 // identity for the reference topology itself. A target vertex with a label
 // only maps to triangles of its own region (nearest such vertex if none is
-// nearby); target_labels may be null.
+// nearby); target_labels may be null. moved (may be null): the target
+// positions to search with instead (not for the identity test).
 struct Mapping {
   bool identity = false;
   uint32_t nv = 0;
@@ -98,7 +110,8 @@ struct Mapping {
   uint32_t snapped = 0;  // vertices with no same-region triangle nearby
 };
 void BuildMapping(const RefMesh& ref, const float* target, uint32_t nv,
-                  const uint8_t* target_labels, Mapping& out);
+                  const uint8_t* target_labels, Mapping& out,
+                  const float* moved = nullptr);
 
 // Adds the mapped deltas to xyz of float4 vertices.
 void AddDeltas(const Mapping& m, const std::vector<float>& ref_deltas,

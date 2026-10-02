@@ -466,25 +466,100 @@ void Evaluate(const Track& tr, float frame, const float* scales, Deltas& dl) {
   }
 }
 
-void LipLabels(const float* verts, const float* bigaah, uint32_t nv,
-               std::vector<uint8_t>& labels) {
-  labels.assign(nv, 0);
-  float drop = 0;
-  auto zone = [&](uint32_t i) {
-    const float* v = &verts[i * 3];
-    return std::fabs(v[0]) < 2.6f && v[1] > 6.5f && v[2] > -3.5f && v[2] < 0.5f;
+void FrameOffset(const RefMesh& ref, const float* verts, uint32_t nv,
+                 float offset[3]) {
+  // the vanilla head parts' shape translation
+  constexpr V3 kHeadToSkeleton{0, -1.55f, 120.34f};
+  auto centre = [](const float* v, uint32_t n) {
+    V3 lo = At(v), hi = lo;
+    for (uint32_t i = 1; i < n; ++i) {
+      V3 p = At(&v[i * 3]);
+      lo = {std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z)};
+      hi = {std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
+    }
+    return (lo + hi) * 0.5f;
   };
-  for (uint32_t i = 0; i < nv; ++i)
-    if (zone(i)) drop = std::max(drop, -bigaah[i * 3 + 2]);
-  for (uint32_t i = 0; i < nv; ++i) {
-    if (!zone(i)) continue;
-    float dz = bigaah[i * 3 + 2];
-    labels[i] = dz < -0.25f * drop ? 2 : dz > -0.12f * drop ? 1 : 0;
+  V3 d = nv ? centre(ref.verts.data(), ref.nv) - centre(verts, nv) : V3{};
+  if (Len(d) < 10) d = {0, 0, 0};
+  else if (Len(d + kHeadToSkeleton) < 2) d = kHeadToSkeleton * -1;
+  offset[0] = d.x, offset[1] = d.y, offset[2] = d.z;
+}
+
+void LipLabels(const RefMesh& ref, const float* verts, const float* bigaah,
+               uint32_t nv, bool align, std::vector<uint8_t>& labels,
+               std::vector<float>& moved, float offset[3]) {
+  constexpr float kMargin = 0.5f, kMinShift = 0.3f;
+  labels.assign(nv, 0);
+  moved.clear();
+  offset[0] = offset[1] = offset[2] = 0;
+  if (ref.labels.size() != ref.nv) return;
+  // the reference lips: box and per-lip centroids (rc[1] upper, rc[2] lower)
+  V3 lo{INFINITY, INFINITY, INFINITY}, hi = lo * -1, rc[3] = {};
+  uint32_t n[3] = {};
+  for (uint32_t i = 0; i < ref.nv; ++i) {
+    uint8_t l = ref.labels[i];
+    if (l != 1 && l != 2) continue;
+    V3 p = At(&ref.verts[i * 3]);
+    lo = {std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z)};
+    hi = {std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
+    rc[l] = rc[l] + p, ++n[l];
   }
+  if (!n[1] || !n[2]) return;
+  for (int l = 1; l < 3; ++l) rc[l] = rc[l] * (1.f / n[l]);
+  hi.y = INFINITY;  // open in front, where lips get pushed out
+  // labels inside the box grown by margin, at target + off; c gets the
+  // per-lip centroids (+ off), the reference's for a lip with no vertices
+  V3 off{0, 0, 0}, c[3];
+  auto label = [&](float margin) {
+    auto zone = [&](uint32_t i) {
+      V3 p = At(&verts[i * 3]) + off;
+      return p.x >= lo.x - margin && p.x <= hi.x + margin &&
+             p.y >= lo.y - margin && p.y <= hi.y + margin &&
+             p.z >= lo.z - margin && p.z <= hi.z + margin;
+    };
+    float drop = 0;
+    for (uint32_t i = 0; i < nv; ++i)
+      if (zone(i)) drop = std::max(drop, -bigaah[i * 3 + 2]);
+    c[1] = c[2] = {0, 0, 0};
+    n[1] = n[2] = 0;
+    for (uint32_t i = 0; i < nv; ++i) {
+      labels[i] = 0;
+      if (!zone(i)) continue;
+      float dz = bigaah[i * 3 + 2];
+      uint8_t l = labels[i] = dz < -0.25f * drop ? 2 : dz > -0.12f * drop;
+      if (l) c[l] = c[l] + At(&verts[i * 3]), ++n[l];
+    }
+    for (int l = 1; l < 3; ++l)
+      c[l] = n[l] ? c[l] * (1.f / n[l]) + off : rc[l];
+  };
+  // move the box until the midpoint of the lips it holds is the reference's
+  // (the midpoint, so a lip partly leaving the box doesn't drag it along)
+  for (int it = 0; align && it < 10; ++it) {
+    label(0);
+    V3 d = (rc[1] + rc[2] - c[1] - c[2]) * 0.5f;
+    d.x = 0;
+    off = off + d;
+    if (Len(d) < 0.01f) break;
+  }
+  // then the upper lip onto the reference's: it is what ends up on the skin
+  // above it when a sculpt pushes the lips out (orcs). The lower lip keeps
+  // its place, its centroid drags with the jaw.
+  V3 up = off + rc[1] - c[1];
+  up.x = 0;  // faces are mirrored on x = 0
+  label(kMargin);
+  // smaller shifts are within what vertex density alone moves a centroid by
+  // (0.15 for the High Poly Head, which lies on the reference)
+  if (!align || Len(up) < kMinShift) return;
+  offset[0] = up.x, offset[1] = up.y, offset[2] = up.z;
+  moved.assign(verts, verts + static_cast<size_t>(nv) * 3);
+  for (uint32_t i = 0; i < nv; ++i)
+    if (labels[i] == 1)
+      for (int k = 0; k < 3; ++k) moved[i * 3 + k] += offset[k];
 }
 
 void BuildMapping(const RefMesh& ref, const float* target, uint32_t nv,
-                  const uint8_t* target_labels, Mapping& out) {
+                  const uint8_t* target_labels, Mapping& out,
+                  const float* moved) {
   out = Mapping();
   out.nv = nv;
   if (nv == ref.nv) {
@@ -524,8 +599,9 @@ void BuildMapping(const RefMesh& ref, const float* target, uint32_t nv,
   std::vector<uint32_t> near, stamp(nt, 0);
   uint32_t gen = 0;
   double sum = 0;
+  if (!moved) moved = target;
   for (uint32_t i = 0; i < nv; ++i) {
-    V3 p = At(&target[i * 3]);
+    V3 p = At(&moved[i * 3]);
     grid.Collect(p, 0, near);
     if (near.empty()) continue;  // off the grid: no deltas
     auto nearest = [&](uint8_t label) {

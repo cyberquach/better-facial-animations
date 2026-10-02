@@ -1,6 +1,6 @@
-Better Facial Animations 1.2.1 - real-time Audio2Face lip-sync for Skyrim
+Better Facial Animations 1.2.2 - real-time Audio2Face lip-sync for Skyrim
 
-Every voiced line spoken by an NPC with a FaceGen head (all playable races; creatures and animals are skipped)
+Every voiced line spoken by an NPC with a FaceGen head (all playable races except Argonians, who keep vanilla lip-sync; creatures and animals are skipped)
 is run through NVIDIA Audio2Face-3D v2.3 (Mark) on your GPU, which deforms the face mesh directly: skin, lips,
 brows and eyelids, with the jaw, teeth and gums on Skyrim's own mouth shapes and the tongue on top, plus the dialogue
 emotion expression. Works with High Poly Head and with Creation Engine Raytracing. Per-region scales and the
