@@ -60,8 +60,9 @@ __declspec(dllexport) skse::SKSEPluginVersionData SKSEPlugin_Version = {
     "",
     0,
     0,
-    {skse::Version(1, 6, 1170), skse::Version(1, 6, 1179, skse::kGog),
-     skse::Version(1, 7, 99), skse::Version(1, 7, 104), 0},
+    {skse::Version(1, 6, 640), skse::Version(1, 6, 1170),
+     skse::Version(1, 6, 1179, skse::kGog), skse::Version(1, 7, 99),
+     skse::Version(1, 7, 104), 0},
     0};
 
 namespace {

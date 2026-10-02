@@ -1,4 +1,5 @@
-// SKSE ABI, log, Address Library and engine layout (SE 1.5.97, AE 1.6.1170+).
+// SKSE ABI, log, Address Library and engine layout (SE 1.5.97, AE 1.6.640 and
+// 1.6.1170+).
 #ifndef SRC_SKSE_H_
 #define SRC_SKSE_H_
 
