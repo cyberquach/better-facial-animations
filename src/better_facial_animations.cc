@@ -293,6 +293,10 @@ struct Playing {
   bool female;
   float ready_at = -1;
   bool lip_seen = false, logged = false;
+  // audio clock: playhead (s, -1 until the lip clock is seen), the engine lip
+  // timer and Now() at the last update
+  double clock = -1, last_real = 0;
+  float last_lip = 0;
   // Direct: the frame (fractional, -1 none) and blend for the morph hook
   float direct_frame = -1, direct_mix = 1;
   int direct_tail = 0;
@@ -793,6 +797,27 @@ void PlayFrame(uint8_t* fg, const a2f::Line& line, float t, float mix) {
 
 volatile LONG logged_plays, logged_ends;
 
+// The engine lip timer advances by the game's frame time, which is clamped on
+// slow frames, while the voice plays in real time: over a line it falls
+// behind the audio. The playhead starts at the lip timer and then follows
+// real time while the timer runs; a gap longer than kMaxRealStep (a pause or
+// a long hitch) advances it as the timer did, and it snaps back to the timer
+// if they drift more than kMaxDrift apart or the timer restarts.
+constexpr double kMaxRealStep = 0.25, kMaxDrift = 1.0;
+float AudioClock(Playing& p, float lip) {
+  double now = Now();
+  if (p.clock < 0 || lip < p.last_lip - 0.05f) {
+    p.clock = lip;
+  } else if (lip > p.last_lip) {  // not paused
+    double real = now - p.last_real;
+    p.clock += real <= kMaxRealStep ? real : lip - p.last_lip;
+    if (std::fabs(p.clock - lip) > kMaxDrift) p.clock = lip;
+  }
+  p.last_lip = lip;
+  p.last_real = now;
+  return static_cast<float>(p.clock);
+}
+
 // Plays the head's current line for this frame. Returns bit 0: keyframes
 // written, bit 1: the meshes must be rebuilt (Direct deltas added or, for a
 // few frames after them, cleared).
@@ -808,7 +833,7 @@ int Apply(uint8_t* fg) {
   float t = static_cast<float>(Now() - p.start);
   bool done = t > 120;
   if (act && skse::KeyOf(*act) == p.lip_key) {  // engine lip clock
-    t = *reinterpret_cast<float*>(fg + skse::kFgPhon1Timer);
+    t = AudioClock(p, *reinterpret_cast<float*>(fg + skse::kFgPhon1Timer));
     p.lip_seen = true;
   } else if (p.lip_seen) {  // the engine ended or replaced the line
     done = true;
@@ -832,10 +857,10 @@ int Apply(uint8_t* fg) {
     if (done && !tail) {
       if (p.logged && tune.logging &&
           InterlockedIncrement(&logged_ends) <= config.log_lines)
-        Log("end %s: at %.2f s, %u Direct frames, deformed %u, peak head %.3f "
-            "mouth %.3f eyes %.3f",
-            p.name.c_str(), p.last_t, p.direct_frames, p.direct_adds, p.peak[0],
-            p.peak[1], p.peak[2]);
+        Log("end %s: at %.2f s (engine lip timer %.2f s), %u Direct frames, "
+            "deformed %u, peak head %.3f mouth %.3f eyes %.3f",
+            p.name.c_str(), p.last_t, p.last_lip, p.direct_frames,
+            p.direct_adds, p.peak[0], p.peak[1], p.peak[2]);
       playing.erase(it);
       num_playing = static_cast<LONG>(playing.size());
     }
