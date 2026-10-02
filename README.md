@@ -27,6 +27,7 @@ Commands:
 - `./build.sh` builds into `build/mod`.
 - `./build.sh install <dir>` also copies the result into a mod folder.
 - `./build.sh release` also writes the release archives to `release/`.
+- `./build.sh test` also checks under `wine64` that SKSE would load the plugin on each supported runtime and that every Address Library id resolves. It needs the Address Library for SKSE Plugins (all-in-one) files, extracted to `deps/address-library` (`ADDRLIB`) so that `SKSE/Plugins` is inside it.
 
 ## License
 

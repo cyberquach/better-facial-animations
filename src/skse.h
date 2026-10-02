@@ -4,7 +4,6 @@
 
 #include <windows.h>
 
-#include <cstddef>
 #include <cstdint>
 
 namespace skse {
@@ -23,7 +22,7 @@ struct SKSEPluginVersionData {
 };
 static_assert(sizeof(SKSEPluginVersionData) == 0x350, "SKSEPluginVersionData");
 
-// SE 1.5.97 SKSE loads plugins through SKSEPlugin_Query instead.
+// SE's SKSE (1.5.97) asks SKSEPlugin_Query for this instead.
 struct PluginInfo {
   uint32_t infoVersion;
   const char* name;
@@ -64,26 +63,29 @@ constexpr uint32_t Version(uint32_t major, uint32_t minor, uint32_t build,
 // Records the runtime: the My Games folder per store and the Address Library
 // file. Call first in SKSEPlugin_Load.
 void SetRuntime(uint32_t runtime_version);
+// The runtime set above is SE (1.5.x) rather than AE (1.6+); AE until set.
+bool IsSe();
 // <plugin name>.log in that folder's SKSE directory, created (truncated) the
 // first time logging is turned on; Log is a no-op while it is off. True when
 // this call created the file.
 bool SetLogging(bool on);
 void Log(const char* fmt, ...);
 
-constexpr uint32_t kRuntimeSe = Version(1, 5, 97);
-
-// An Address Library id on AE and its 1.5.97 counterpart.
-struct IdPair {
-  uint64_t ae, se;
+// A value that differs between SE and AE, like CommonLibSSE-NG's
+// RelocationID: an Address Library id or a member offset. An id of 0 does not
+// exist on that runtime.
+struct Rel {
+  uint64_t se, ae;
+  uint64_t Get() const { return IsSe() ? se : ae; }
 };
 
-// Address Library for the runtime set above (version format 1 on 1.5.97,
+// Address Library for the runtime set above (version format 1 on SE,
 // versionlib format 2, or 5 from 1.7.99). Also records the executable's image
-// base. Ids are AE ids everywhere: on 1.5.97 they go through se_ids, and ids
-// missing there are unknown. Addr returns 0 for unknown ids.
-bool LoadAddressLibrary(const IdPair* se_ids, size_t num_se_ids);
+// base; Addr returns 0 for unknown ids.
+bool LoadAddressLibrary();
 uint64_t ImageBase();
 uint64_t Addr(uint64_t id);
+inline uint64_t Addr(Rel id) { return id.Get() ? Addr(id.Get()) : 0; }
 
 // BSFaceGenAnimationData layout.
 constexpr uint32_t kFgExpr3 = 0xC0;

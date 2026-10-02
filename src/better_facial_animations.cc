@@ -14,7 +14,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
-#include <iterator>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -22,6 +21,7 @@
 #include <vector>
 
 #include "direct.h"
+#include "ids.h"
 #include "live_core.h"
 #include "ort_net.h"
 #include "skse.h"
@@ -62,44 +62,7 @@ __declspec(dllexport) skse::SKSEPluginVersionData SKSEPlugin_Version = {
 
 namespace {
 
-// ---------------- engine (AE 1.6.1170+; ids are AE ids) ----------------
-constexpr uint64_t kIdSpeakVoiceLine = 37542;
-constexpr uint64_t kIdDialogueResponseCtor = 35249;
-// play-response, UpdateInDialogue, 44673, console SpeakSound
-constexpr uint64_t kSpeakCallers[] = {39772, 37541, 44673, 22864};
-// DialogueItem ctor, MenuTopicManager x2
-constexpr uint64_t kResponseCallers[] = {35220, 35254, 35256};
-constexpr uint64_t kIdStreamCtor = 71014;  // BSResourceNiBinaryStream
-constexpr uint64_t kIdStreamDtor = 71016;
-// BSFaceGenAnimationData::Update(fg, dt, bool)
-constexpr uint64_t kIdFaceAnimUpdate = 26598;
-// BSFaceGenNiNode: update keyframes, apply morphs
-constexpr uint64_t kFaceCallers[] = {26998};
-// BSFaceGenNiNode::ApplyMorphs(node, force): reset to base + morphs, run by
-// the "Face morphing" job (26999) and the player's face update (36564)
-constexpr uint64_t kIdApplyMorphs = 26988;
-constexpr uint64_t kMorphCallers[] = {26999, 36564};
-constexpr uint64_t kIdMorphData = 27020;    // shape -> BSFaceGenMorphDataHead
-constexpr uint64_t kIdApplyMorph = 26926;   // add one morph to a shape
-constexpr uint64_t kIdLockDynamic = 70950;  // BSDynamicTriShape data lock
-constexpr uint64_t kIdUnlockDynamic = 70952;
-// BSDynamicTriShape::UpdateDynamicData(float3*, bool): what the engine's morph
-// kernel writes through; renderers that mirror face meshes (Creation Engine
-// Raytracing) hook it, so Direct writes through it too
-constexpr uint64_t kIdUpdateDynamic = 70954;
-constexpr uint64_t kIdSoundIsPlaying = 67620;    // bool(BSSoundHandle*)
-constexpr uint64_t kIdGenerateFromPath = 69979;  // ResId from "Sound\...\X.lip"
-
-// The ids above on 1.5.97, matched against the 1.6.1170 exe (code similarity,
-// callers and callees). 35254 has no 1.5.97 counterpart.
-constexpr skse::IdPair kSeIds[] = {
-    {37542, 36541}, {35249, 34429}, {39772, 38747}, {37541, 36540},
-    {44673, 43467}, {22864, 22389}, {35220, 34413}, {35256, 34436},
-    {71014, 69636}, {71016, 69638}, {26598, 25983}, {26998, 26417},
-    {26988, 26407}, {26999, 26418}, {36564, 35565}, {27020, 26441},
-    {26926, 26348}, {70950, 69566}, {70952, 69568}, {70954, 69570},
-    {67620, 66359}, {69979, 68635},
-};
+// ---------------- engine (ids in ids.h) ----------------
 // BSFaceGenNiNode / BSDynamicTriShape / NiObjectNET
 constexpr uint32_t kNodeChildren = 0x118;
 constexpr uint32_t kNodeNumChildren = 0x122;
@@ -114,17 +77,15 @@ constexpr uint32_t kDynDataSize = 0x170;
 constexpr uint32_t kBaseVerts = 0x18;  // BSFaceGenBaseMorphExtraData ("FOD")
 constexpr uint32_t kBaseNumVerts = 0x24;
 constexpr uint32_t kFgDirty = 0x218;  // byte: run the face update next frame
-constexpr uint32_t kActorProcess = 0xF8;
+constexpr skse::Rel kActorProcess{0xF0, 0xF8};
 constexpr uint32_t kProcessHigh = 0x10;
 constexpr uint32_t kHighVoiceHandle = 0x2FC;
 constexpr uint32_t kFormId = 0x14;
 constexpr uint32_t kFormType = 0x1A;
 constexpr uint32_t kRefrBase = 0x40;
 constexpr uint32_t kNpcFlags = 0x38;
-constexpr uint32_t kActorRace = 0x1F8;
+constexpr skse::Rel kActorRace{0x1F0, 0x1F8};
 constexpr uint32_t kRaceFlags = 0x108;
-// Actor's runtime data (process, race) starts 8 bytes earlier before 1.6.629.
-uint32_t actor_shift;
 // Skyrim.esm ArgonianRace / ArgonianRaceVampire: their snout doesn't match the
 // human-trained model, so they keep vanilla lip-sync.
 constexpr uint32_t kArgonianRace = 0x00013740;
@@ -362,8 +323,7 @@ bool VoiceStem(const char* voice, std::string& stem) {
 bool SpeakerOk(uint8_t* ref, bool& female) {
   if (!ref || ref[kFormType] != kFtActor) return false;
   uint8_t* base = *reinterpret_cast<uint8_t**>(ref + kRefrBase);
-  uint8_t* race =
-      *reinterpret_cast<uint8_t**>(ref + kActorRace - actor_shift);
+  uint8_t* race = *reinterpret_cast<uint8_t**>(ref + kActorRace.Get());
   if (!base || base[kFormType] != kFtNpc || !race ||
       !(*reinterpret_cast<uint32_t*>(race + kRaceFlags) & 2))
     return false;
@@ -641,22 +601,22 @@ bool PatchCall(uint64_t at, void* to) {
 }
 // Original target of the site that called a hook; the callee itself for
 // unknown callers.
-void* SiteOrig(void* ret, uint64_t callee_id) {
+void* SiteOrig(void* ret, skse::Rel callee_id) {
   for (int i = 0; i < num_sites; ++i)
     if (sites[i].at + 5 == reinterpret_cast<uint64_t>(ret))
       return sites[i].orig;
   return reinterpret_cast<void*>(Addr(callee_id));
 }
 template <size_t N>
-int HookCalls(const char* what, uint64_t callee_id,
-              const uint64_t (&callers)[N], void* hook) {
+int HookCalls(const char* what, skse::Rel callee_id,
+              const skse::Rel (&callers)[N], void* hook) {
   const uint64_t base = skse::ImageBase();
   uint64_t callee = Addr(callee_id);
   auto* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(
       base + reinterpret_cast<IMAGE_DOS_HEADER*>(base)->e_lfanew);
   uint64_t end = base + nt->OptionalHeader.SizeOfImage;
   if (!callee) {
-    Log("%s: address id %llu not found", what, callee_id);
+    Log("%s: address id %llu not found", what, callee_id.Get());
     return 0;
   }
   void* thunk = Thunk(hook);
@@ -665,7 +625,7 @@ int HookCalls(const char* what, uint64_t callee_id,
     Log("%s: no thunk memory", what);
     return 0;
   }
-  for (uint64_t caller : callers) {
+  for (skse::Rel caller : callers) {
     uint64_t f = Addr(caller);
     if (!f) continue;
     for (uint64_t at = f; at < f + 0x2000 && at + 5 < end && num_sites < 16;
@@ -675,7 +635,7 @@ int HookCalls(const char* what, uint64_t callee_id,
         continue;
       sites[num_sites++] = {at, reinterpret_cast<void*>(callee), thunk, what};
       Log("%s: hooked call at rva %llx (caller id %llu)", what, at - base,
-          caller);
+          caller.Get());
       ++n;
     }
   }
@@ -761,8 +721,7 @@ __attribute__((noinline)) uint8_t* ResponseHook(uint8_t* self, void* topic,
 bool VoicePlaying(uint8_t* actor) {
   static auto is_playing =
       reinterpret_cast<bool (*)(void*)>(Addr(kIdSoundIsPlaying));
-  uint8_t* proc =
-      *reinterpret_cast<uint8_t**>(actor + kActorProcess - actor_shift);
+  uint8_t* proc = *reinterpret_cast<uint8_t**>(actor + kActorProcess.Get());
   uint8_t* high =
       proc ? *reinterpret_cast<uint8_t**>(proc + kProcessHigh) : nullptr;
   return !high || !is_playing || is_playing(high + kHighVoiceHandle);
@@ -1312,22 +1271,21 @@ void OnMessage(skse::SKSEMessage* m) {
 
 }  // namespace
 
-// SE 1.5.97 SKSE; AE SKSE reads SKSEPlugin_Version instead.
+// SE 1.5.97's SKSE asks this instead of reading SKSEPlugin_Version.
 extern "C" __declspec(dllexport) bool SKSEPlugin_Query(
     const skse::SKSEInterface* iface, skse::PluginInfo* info) {
   info->infoVersion = 1;
   info->name = SKSEPlugin_Version.name;
   info->version = SKSEPlugin_Version.pluginVersion;
-  return !iface->isEditor && iface->runtimeVersion == skse::kRuntimeSe;
+  return !iface->isEditor && iface->runtimeVersion == skse::Version(1, 5, 97);
 }
 
 extern "C" __declspec(dllexport) bool SKSEPlugin_Load(
     const skse::SKSEInterface* iface) {
   skse::SetRuntime(iface->runtimeVersion);
-  if (iface->runtimeVersion == skse::kRuntimeSe) actor_shift = 8;
   LoadIni();  // turns the log on when Logging=1
   Log("runtime %08X", iface->runtimeVersion);
-  if (!skse::LoadAddressLibrary(kSeIds, std::size(kSeIds))) {
+  if (!skse::LoadAddressLibrary()) {
     Log("address library not loaded");
     return false;
   }

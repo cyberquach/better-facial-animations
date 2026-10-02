@@ -3,12 +3,14 @@
 #   ./build.sh                    build + assemble
 #   ./build.sh install <dir>      also copy into <dir> (e.g. an MO2 mod folder)
 #   ./build.sh release            also write release/Better Facial Animations-<ver>.7z and the source zip
+#   ./build.sh test               also check every supported runtime (tests/runtimes_test.cc, under $WINE)
 # Dependency locations (see README) can be overridden with these variables:
 cd "$(dirname "$0")" || exit 1
 FFMPEG=${FFMPEG:-deps/ffmpeg/win64}
 ORT=${ORT:-deps/dml/microsoft.ml.onnxruntime.directml}
 DML=${DML:-deps/dml/microsoft.ai.directml}
 MODEL=${MODEL:-models/mark/network_fp16.onnx}
+ADDRLIB=${ADDRLIB:-deps/address-library}  # test only
 
 mkdir -p build
 CXX="x86_64-w64-mingw32-g++ -std=c++17 -O2"
@@ -44,4 +46,8 @@ release)
     # source only: no binaries (A2FDirect.bin ships in the mod archive), no commit id comment
     git archive --prefix="BetterFacialAnimations-$V-src/" -o "$R/Better Facial Animations - Source-$V.zip" "HEAD^{tree}" -- . ":!dist/A2FDirect.bin" &&
     ls -la $R ;;
+test)
+    T=build/test; mkdir -p $T/Data && ln -sfn "$(realpath "$ADDRLIB")/SKSE" $T/Data/SKSE &&
+    $CXX -Wall -static src/skse.cc tests/runtimes_test.cc -o $T/runtimes_test.exe -lshell32 -lole32 -luuid &&
+    WINEDEBUG=-all ${WINE-wine64} $T/runtimes_test.exe build/BetterFacialAnimations.dll $T ;;
 esac
