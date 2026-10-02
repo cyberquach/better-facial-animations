@@ -6,6 +6,7 @@
 #   ./build.sh test               also check every supported runtime (tests/runtimes_test.cc, under $WINE)
 # Dependency locations (see README) can be overridden with these variables:
 cd "$(dirname "$0")" || exit 1
+V=$(cat VERSION) || exit 1
 FFMPEG=${FFMPEG:-deps/ffmpeg/win64}
 ORT=${ORT:-deps/dml/microsoft.ml.onnxruntime.directml}
 DML=${DML:-deps/dml/microsoft.ai.directml}
@@ -14,7 +15,7 @@ ADDRLIB=${ADDRLIB:-deps/address-library}  # test only
 
 mkdir -p build
 CXX="x86_64-w64-mingw32-g++ -std=c++17 -O2"
-$CXX -Wall -c src/better_facial_animations.cc -o build/better_facial_animations.o &&
+$CXX -Wall -DBFA_VERSION=\"$V\" -c src/better_facial_animations.cc -o build/better_facial_animations.o &&
 $CXX -Wall -c src/skse.cc -o build/skse.o &&
 $CXX -Wall -c src/direct.cc -o build/direct.o &&
 $CXX -w -I$FFMPEG/include -c src/live_core.cc -o build/live_core.o &&
@@ -26,7 +27,8 @@ PKG=build/mod; P=$PKG/SKSE/Plugins; L=$P/BetterFacialAnimations/licenses
 rm -rf $PKG; mkdir -p $L
 cp build/BetterFacialAnimations.dll dist/BetterFacialAnimations.ini $P/
 cp $ORT/runtimes/win-x64/native/onnxruntime.dll $ORT/runtimes/win-x64/native/onnxruntime_providers_shared.dll \
-   $DML/bin/x64-win/DirectML.dll $MODEL dist/A2FDirect.bin dist/README.txt dist/NOTICE.txt $P/BetterFacialAnimations/ || exit 1
+   $DML/bin/x64-win/DirectML.dll $MODEL dist/A2FDirect.bin dist/NOTICE.txt $P/BetterFacialAnimations/ || exit 1
+sed "s/@VERSION@/$V/" dist/README.txt > $P/BetterFacialAnimations/README.txt
 cp LICENSE $L/BetterFacialAnimations-GPL-3.0.txt
 cp $FFMPEG/COPYING.LGPLv2.1 $L/FFmpeg-LGPL-2.1.txt
 cp $ORT/LICENSE $L/onnxruntime-LICENSE.txt
@@ -40,7 +42,7 @@ install)
     [ -n "$2" ] || { echo "usage: $0 install <dir>"; exit 1; }
     mkdir -p "$2" && cp -r $PKG/. "$2/" && echo "installed to $2" ;;
 release)
-    V=$(sed -n 's/^constexpr char kVersion\[\] = "\(.*\)";/\1/p' src/better_facial_animations.cc); R=$PWD/release; mkdir -p $R
+    R=$PWD/release; mkdir -p $R
     rm -f "$R/Better Facial Animations-$V.7z" "$R/Better Facial Animations - Source-$V.zip"
     (cd $PKG && 7z a -t7z -mx=9 "$R/Better Facial Animations-$V.7z" SKSE >/dev/null) &&
     # source only: no binaries (A2FDirect.bin ships in the mod archive), no commit id comment

@@ -22,6 +22,8 @@ Requires `x86_64-w64-mingw32-g++`, `7z` (for releases) and these dependencies. T
 - `models/mark/network_fp16.onnx` (`MODEL`): `network.onnx` from [nvidia/Audio2Face-3D-v2.3-Mark](https://huggingface.co/nvidia/Audio2Face-3D-v2.3-Mark), converted with
   `onnxconverter_common.float16.convert_float_to_float16(model, keep_io_types=True)`
 
+The version is in `VERSION`; `build.sh` builds it into the plugin and the packaged readme.
+
 Commands:
 
 - `./build.sh` builds into `build/mod`.

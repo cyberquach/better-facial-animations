@@ -4,6 +4,7 @@
 !/tests/
 !/dist/
 !/build.sh
+!/VERSION
 !/README.md
 !/LICENSE
 !/.gitignore

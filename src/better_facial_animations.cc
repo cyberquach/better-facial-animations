@@ -31,7 +31,11 @@ using skse::Log;
 
 namespace {
 
-constexpr char kVersion[] = "1.2.7";
+// From the VERSION file, passed in by build.sh.
+#ifndef BFA_VERSION
+#error "build with build.sh, which defines BFA_VERSION from VERSION"
+#endif
+constexpr char kVersion[] = BFA_VERSION;
 
 // "major.minor.patch" -> SKSE's packed plugin version.
 constexpr uint32_t PackVersion(const char* s) {
