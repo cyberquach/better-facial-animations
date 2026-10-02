@@ -58,12 +58,12 @@ skse::SKSEPluginVersionData SKSEPlugin_Version = {
     "",
     0,
     0,
-    {0x01064920 /* 1.6.1170 */, 0},
+    {0x01064920 /* 1.6.1170 */, 0x010649B0 /* 1.6.1179 */, 0},
     0};
 
 namespace {
 
-// ---------------- engine (AE 1.6.1170) ----------------
+// ---------------- engine (AE 1.6.1170, 1.6.1179) ----------------
 constexpr uint64_t kIdSpeakVoiceLine = 37542;
 constexpr uint64_t kIdDialogueResponseCtor = 35249;
 // play-response, UpdateInDialogue, 44673, console SpeakSound
@@ -140,8 +140,6 @@ using GenerateFromPathFn = void (*)(skse::ResId*, const char*);
 constexpr char kIni[] = "Data\\SKSE\\Plugins\\BetterFacialAnimations.ini";
 constexpr wchar_t kIniW[] = L"Data\\SKSE\\Plugins\\BetterFacialAnimations.ini";
 constexpr wchar_t kPluginDir[] = L"Data\\SKSE\\Plugins\\BetterFacialAnimations";
-constexpr char kAddressLibrary[] =
-    "Data\\SKSE\\Plugins\\versionlib-1-6-1170-0.bin";
 
 // ---------------- settings ----------------
 struct Config {  // fixed after load
@@ -1279,8 +1277,14 @@ extern "C" __declspec(dllexport) bool SKSEPlugin_Load(
     const skse::SKSEInterface* iface) {
   LoadIni();  // turns the log on when Logging=1
   Log("runtime %08X", iface->runtimeVersion);
-  if (!skse::LoadAddressLibrary(kAddressLibrary)) {
-    Log("address library missing/unreadable");
+  // Address Library for the running game, e.g. versionlib-1-6-1179-0.bin.
+  const uint32_t rv = iface->runtimeVersion;
+  char address_library[64];
+  snprintf(address_library, sizeof(address_library),
+           "Data\\SKSE\\Plugins\\versionlib-%u-%u-%u-%u.bin", rv >> 24,
+           (rv >> 16) & 0xFF, (rv >> 4) & 0xFFF, rv & 0xF);
+  if (!skse::LoadAddressLibrary(address_library)) {
+    Log("address library %s missing/unreadable", address_library);
     return false;
   }
   if (!Addr(kIdGenerateFromPath) || !Addr(kIdStreamCtor) ||
