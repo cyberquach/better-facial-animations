@@ -17,6 +17,7 @@ namespace {
 
 FILE* log_file;
 volatile bool log_on;
+const wchar_t* my_games = L"Skyrim Special Edition";
 uint64_t image_base;
 std::vector<std::pair<uint64_t, uint64_t>> ids;  // id -> offset, sorted by id
 
@@ -32,6 +33,18 @@ void Log(const char* fmt, ...) {
   fflush(log_file);
 }
 
+void SetRuntime(uint32_t runtime_version) {
+  // SKSE's folder per store, from the version's last field (skse_version.h)
+  switch (runtime_version & 0xF) {
+    case 1:
+      my_games = L"Skyrim Special Edition GOG";
+      break;
+    case 2:
+      my_games = L"Skyrim Special Edition EPIC";
+      break;
+  }
+}
+
 bool SetLogging(bool on) {
   log_on = on;
   if (!on || log_file) return false;
@@ -40,9 +53,8 @@ bool SetLogging(bool on) {
   if (SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &docs) != S_OK)
     return false;
   _snwprintf(path, MAX_PATH,
-             L"%ls\\My Games\\Skyrim Special "
-             L"Edition\\SKSE\\BetterFacialAnimations.log",
-             docs);
+             L"%ls\\My Games\\%ls\\SKSE\\BetterFacialAnimations.log", docs,
+             my_games);
   CoTaskMemFree(docs);
   log_file = _wfopen(path, L"w");
   return log_file != nullptr;

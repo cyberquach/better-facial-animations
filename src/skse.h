@@ -47,9 +47,11 @@ struct SKSEMessagingInterface {
 constexpr uint32_t kInterfaceMessaging = 5;
 constexpr uint32_t kMessageDataLoaded = 8;
 
-// Log file in My Games\Skyrim Special Edition\SKSE, created (truncated) the
-// first time logging is turned on; Log is a no-op while it is off. True when
-// this call created the file.
+// Picks the My Games folder SKSE uses for this runtime (Steam, GOG or Epic).
+void SetRuntime(uint32_t runtime_version);
+// Log file in that folder's SKSE directory, created (truncated) the first
+// time logging is turned on; Log is a no-op while it is off. True when this
+// call created the file.
 bool SetLogging(bool on);
 void Log(const char* fmt, ...);
 

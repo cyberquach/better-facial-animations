@@ -58,7 +58,8 @@ skse::SKSEPluginVersionData SKSEPlugin_Version = {
     "",
     0,
     0,
-    {0x01064920 /* 1.6.1170 */, 0x010649B0 /* 1.6.1179 */,
+    // the last field is the store: 1.6.1179 only exists on GOG (.1)
+    {0x01064920 /* 1.6.1170 */, 0x010649B1 /* 1.6.1179 GOG */,
      0x01070680 /* 1.7.104 */, 0},
     0};
 
@@ -209,9 +210,9 @@ const Param kParams[] = {
      "Also play the dialogue emotion expression morph on top.", Sec::kDirect,
      &tune.direct_expression},
     {"Logging", nullptr, 0, 0, "Logging",
-     "Write BetterFacialAnimations.log (My Games/Skyrim Special "
-     "Edition/SKSE). Turn on to report a problem; startup is only logged "
-     "when it is on at launch.",
+     "Write BetterFacialAnimations.log (SKSE log folder in My Games). Turn "
+     "on to report a problem; startup is only logged when it is on at "
+     "launch.",
      Sec::kDebug, &tune.logging},
 };
 const char* Section(const Param& p) {
@@ -1276,14 +1277,16 @@ void OnMessage(skse::SKSEMessage* m) {
 
 extern "C" __declspec(dllexport) bool SKSEPlugin_Load(
     const skse::SKSEInterface* iface) {
-  LoadIni();  // turns the log on when Logging=1
-  Log("runtime %08X", iface->runtimeVersion);
-  // Address Library for the running game, e.g. versionlib-1-6-1179-0.bin.
   const uint32_t rv = iface->runtimeVersion;
+  skse::SetRuntime(rv);
+  LoadIni();  // turns the log on when Logging=1
+  Log("runtime %08X", rv);
+  // Address Library for the running game, e.g. versionlib-1-7-104-0.bin; the
+  // last field is always 0, also on GOG (SKSE CheckAddressLibrary).
   char address_library[64];
   snprintf(address_library, sizeof(address_library),
-           "Data\\SKSE\\Plugins\\versionlib-%u-%u-%u-%u.bin", rv >> 24,
-           (rv >> 16) & 0xFF, (rv >> 4) & 0xFFF, rv & 0xF);
+           "Data\\SKSE\\Plugins\\versionlib-%u-%u-%u-0.bin", rv >> 24,
+           (rv >> 16) & 0xFF, (rv >> 4) & 0xFFF);
   if (!skse::LoadAddressLibrary(address_library)) {
     Log("address library %s missing/unreadable", address_library);
     return false;
