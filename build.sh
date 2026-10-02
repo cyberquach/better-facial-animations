@@ -41,6 +41,7 @@ release)
     V=$(sed -n 's/^constexpr char kVersion\[\] = "\(.*\)";/\1/p' src/better_facial_animations.cc); R=$PWD/release; mkdir -p $R
     rm -f "$R/Better Facial Animations-$V.7z" "$R/Better Facial Animations - Source-$V.zip"
     (cd $PKG && 7z a -t7z -mx=9 "$R/Better Facial Animations-$V.7z" SKSE >/dev/null) &&
-    git archive --prefix="BetterFacialAnimations-$V-src/" -o "$R/Better Facial Animations - Source-$V.zip" HEAD &&
+    # source only: no binaries (A2FDirect.bin ships in the mod archive), no commit id comment
+    git archive --prefix="BetterFacialAnimations-$V-src/" -o "$R/Better Facial Animations - Source-$V.zip" "HEAD^{tree}" -- . ":!dist/A2FDirect.bin" &&
     ls -la $R ;;
 esac
