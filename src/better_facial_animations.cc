@@ -1182,6 +1182,7 @@ void RenderMenu() {
   size_t cached = cache.size(), queued = queue.size();
   ReleaseSRWLockShared(&lock);
   ig.SeparatorText("Status");
+  ig.Text("Version: %s", kVersion);
   if (!ready)
     ig.Text(
         "Not running: turn on Logging, restart the game and see "
