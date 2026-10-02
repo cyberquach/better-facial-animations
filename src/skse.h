@@ -1,9 +1,10 @@
-// SKSE ABI, log, Address Library and engine layout (AE 1.6.1170+).
+// SKSE ABI, log, Address Library and engine layout (SE 1.5.97, AE 1.6.1170+).
 #ifndef SRC_SKSE_H_
 #define SRC_SKSE_H_
 
 #include <windows.h>
 
+#include <cstddef>
 #include <cstdint>
 
 namespace skse {
@@ -21,6 +22,13 @@ struct SKSEPluginVersionData {
   uint32_t seVersionRequired;
 };
 static_assert(sizeof(SKSEPluginVersionData) == 0x350, "SKSEPluginVersionData");
+
+// SE 1.5.97 SKSE loads plugins through SKSEPlugin_Query instead.
+struct PluginInfo {
+  uint32_t infoVersion;
+  const char* name;
+  uint32_t version;
+};
 
 struct SKSEInterface {
   uint32_t skseVersion, runtimeVersion, editorVersion, isEditor;
@@ -62,10 +70,18 @@ void SetRuntime(uint32_t runtime_version);
 bool SetLogging(bool on);
 void Log(const char* fmt, ...);
 
-// Address Library for the runtime set above (versionlib format 2, or 5 from
-// 1.7.99). Also records the executable's image base; Addr returns 0 for
-// unknown ids.
-bool LoadAddressLibrary();
+constexpr uint32_t kRuntimeSe = Version(1, 5, 97);
+
+// An Address Library id on AE and its 1.5.97 counterpart.
+struct IdPair {
+  uint64_t ae, se;
+};
+
+// Address Library for the runtime set above (version format 1 on 1.5.97,
+// versionlib format 2, or 5 from 1.7.99). Also records the executable's image
+// base. Ids are AE ids everywhere: on 1.5.97 they go through se_ids, and ids
+// missing there are unknown. Addr returns 0 for unknown ids.
+bool LoadAddressLibrary(const IdPair* se_ids, size_t num_se_ids);
 uint64_t ImageBase();
 uint64_t Addr(uint64_t id);
 

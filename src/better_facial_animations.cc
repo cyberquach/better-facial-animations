@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -61,7 +62,7 @@ __declspec(dllexport) skse::SKSEPluginVersionData SKSEPlugin_Version = {
 
 namespace {
 
-// ---------------- engine (AE 1.6.1170+) ----------------
+// ---------------- engine (AE 1.6.1170+; ids are AE ids) ----------------
 constexpr uint64_t kIdSpeakVoiceLine = 37542;
 constexpr uint64_t kIdDialogueResponseCtor = 35249;
 // play-response, UpdateInDialogue, 44673, console SpeakSound
@@ -88,6 +89,17 @@ constexpr uint64_t kIdUnlockDynamic = 70952;
 constexpr uint64_t kIdUpdateDynamic = 70954;
 constexpr uint64_t kIdSoundIsPlaying = 67620;    // bool(BSSoundHandle*)
 constexpr uint64_t kIdGenerateFromPath = 69979;  // ResId from "Sound\...\X.lip"
+
+// The ids above on 1.5.97, matched against the 1.6.1170 exe (code similarity,
+// callers and callees). 35254 has no 1.5.97 counterpart.
+constexpr skse::IdPair kSeIds[] = {
+    {37542, 36541}, {35249, 34429}, {39772, 38747}, {37541, 36540},
+    {44673, 43467}, {22864, 22389}, {35220, 34413}, {35256, 34436},
+    {71014, 69636}, {71016, 69638}, {26598, 25983}, {26998, 26417},
+    {26988, 26407}, {26999, 26418}, {36564, 35565}, {27020, 26441},
+    {26926, 26348}, {70950, 69566}, {70952, 69568}, {70954, 69570},
+    {67620, 66359}, {69979, 68635},
+};
 // BSFaceGenNiNode / BSDynamicTriShape / NiObjectNET
 constexpr uint32_t kNodeChildren = 0x118;
 constexpr uint32_t kNodeNumChildren = 0x122;
@@ -111,6 +123,8 @@ constexpr uint32_t kRefrBase = 0x40;
 constexpr uint32_t kNpcFlags = 0x38;
 constexpr uint32_t kActorRace = 0x1F8;
 constexpr uint32_t kRaceFlags = 0x108;
+// Actor's runtime data (process, race) starts 8 bytes earlier before 1.6.629.
+uint32_t actor_shift;
 // Skyrim.esm ArgonianRace / ArgonianRaceVampire: their snout doesn't match the
 // human-trained model, so they keep vanilla lip-sync.
 constexpr uint32_t kArgonianRace = 0x00013740;
@@ -348,7 +362,8 @@ bool VoiceStem(const char* voice, std::string& stem) {
 bool SpeakerOk(uint8_t* ref, bool& female) {
   if (!ref || ref[kFormType] != kFtActor) return false;
   uint8_t* base = *reinterpret_cast<uint8_t**>(ref + kRefrBase);
-  uint8_t* race = *reinterpret_cast<uint8_t**>(ref + kActorRace);
+  uint8_t* race =
+      *reinterpret_cast<uint8_t**>(ref + kActorRace - actor_shift);
   if (!base || base[kFormType] != kFtNpc || !race ||
       !(*reinterpret_cast<uint32_t*>(race + kRaceFlags) & 2))
     return false;
@@ -746,7 +761,8 @@ __attribute__((noinline)) uint8_t* ResponseHook(uint8_t* self, void* topic,
 bool VoicePlaying(uint8_t* actor) {
   static auto is_playing =
       reinterpret_cast<bool (*)(void*)>(Addr(kIdSoundIsPlaying));
-  uint8_t* proc = *reinterpret_cast<uint8_t**>(actor + kActorProcess);
+  uint8_t* proc =
+      *reinterpret_cast<uint8_t**>(actor + kActorProcess - actor_shift);
   uint8_t* high =
       proc ? *reinterpret_cast<uint8_t**>(proc + kProcessHigh) : nullptr;
   return !high || !is_playing || is_playing(high + kHighVoiceHandle);
@@ -1296,12 +1312,22 @@ void OnMessage(skse::SKSEMessage* m) {
 
 }  // namespace
 
+// SE 1.5.97 SKSE; AE SKSE reads SKSEPlugin_Version instead.
+extern "C" __declspec(dllexport) bool SKSEPlugin_Query(
+    const skse::SKSEInterface* iface, skse::PluginInfo* info) {
+  info->infoVersion = 1;
+  info->name = SKSEPlugin_Version.name;
+  info->version = SKSEPlugin_Version.pluginVersion;
+  return !iface->isEditor && iface->runtimeVersion == skse::kRuntimeSe;
+}
+
 extern "C" __declspec(dllexport) bool SKSEPlugin_Load(
     const skse::SKSEInterface* iface) {
   skse::SetRuntime(iface->runtimeVersion);
+  if (iface->runtimeVersion == skse::kRuntimeSe) actor_shift = 8;
   LoadIni();  // turns the log on when Logging=1
   Log("runtime %08X", iface->runtimeVersion);
-  if (!skse::LoadAddressLibrary()) {
+  if (!skse::LoadAddressLibrary(kSeIds, std::size(kSeIds))) {
     Log("address library not loaded");
     return false;
   }

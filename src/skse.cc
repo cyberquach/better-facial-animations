@@ -61,13 +61,15 @@ bool SetLogging(bool on) {
   return log_file != nullptr;
 }
 
-// versionlib format 2 (CommonLibSSE-NG REL/ID.h) or format 5.
-bool LoadAddressLibrary() {
-  image_base = reinterpret_cast<uint64_t>(GetModuleHandleA(nullptr));
+namespace {
+
+// version format 1 (SE) or versionlib format 2 (CommonLibSSE-NG REL/ID.h),
+// or format 5.
+bool ReadAddressLibrary() {
   // The last field is always 0, also on GOG (SKSE CheckAddressLibrary).
   char path[64];
-  snprintf(path, sizeof(path),
-           "Data\\SKSE\\Plugins\\versionlib-%u-%u-%u-0.bin", runtime >> 24,
+  snprintf(path, sizeof(path), "Data\\SKSE\\Plugins\\%s-%u-%u-%u-0.bin",
+           runtime == kRuntimeSe ? "version" : "versionlib", runtime >> 24,
            (runtime >> 16) & 0xFF, (runtime >> 4) & 0xFFF);
   FILE* f = fopen(path, "rb");
   if (!f) {
@@ -107,7 +109,7 @@ bool LoadAddressLibrary() {
     }
     return true;
   }
-  if (format != 2) return false;
+  if (format != (runtime == kRuntimeSe ? 1 : 2)) return false;
   p += 16;
   p += static_cast<uint32_t>(rd(4));  // name
   const int32_t ptr_size = static_cast<int32_t>(rd(4));
@@ -183,6 +185,25 @@ bool LoadAddressLibrary() {
   }
   std::sort(ids.begin(), ids.end());
   return !bad;
+}
+
+}  // namespace
+
+bool LoadAddressLibrary(const IdPair* se_ids, size_t num_se_ids) {
+  image_base = reinterpret_cast<uint64_t>(GetModuleHandleA(nullptr));
+  if (!ReadAddressLibrary()) return false;
+  if (runtime != kRuntimeSe) return true;
+  // Re-key the SE offsets by their AE ids.
+  std::vector<std::pair<uint64_t, uint64_t>> ae;
+  for (size_t i = 0; i < num_se_ids; ++i) {
+    auto it = std::lower_bound(ids.begin(), ids.end(),
+                               std::make_pair(se_ids[i].se, uint64_t{0}));
+    if (it != ids.end() && it->first == se_ids[i].se)
+      ae.emplace_back(se_ids[i].ae, it->second);
+  }
+  std::sort(ae.begin(), ae.end());
+  ids = std::move(ae);
+  return true;
 }
 
 uint64_t ImageBase() { return image_base; }
