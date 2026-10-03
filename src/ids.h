@@ -41,14 +41,16 @@ constexpr skse::Rel kIdUpdateDynamic{69570, 70954};
 constexpr skse::Rel kIdSoundIsPlaying{66359, 67620};
 // ResId from "Sound\...\X.lip"
 constexpr skse::Rel kIdGenerateFromPath{68635, 69979};
+// TESDataHandler* singleton (CommonLibSSE-NG Offset::TESDataHandler)
+constexpr skse::Rel kIdDataHandler{514141, 400269};
 
 // The single ids above, for tests/runtimes_test.cc.
 constexpr skse::Rel kIds[] = {
-    kIdSpeakVoiceLine, kIdDialogueResponseCtor, kIdStreamCtor,
-    kIdStreamDtor,     kIdFaceAnimUpdate,       kIdApplyMorphs,
-    kIdMorphData,      kIdApplyMorph,           kIdLockDynamic,
-    kIdUnlockDynamic,  kIdUpdateDynamic,        kIdSoundIsPlaying,
-    kIdGenerateFromPath,
+    kIdSpeakVoiceLine,   kIdDialogueResponseCtor, kIdStreamCtor,
+    kIdStreamDtor,       kIdFaceAnimUpdate,       kIdApplyMorphs,
+    kIdMorphData,        kIdApplyMorph,           kIdLockDynamic,
+    kIdUnlockDynamic,    kIdUpdateDynamic,        kIdSoundIsPlaying,
+    kIdGenerateFromPath, kIdDataHandler,
 };
 
 #endif  // SRC_IDS_H_
