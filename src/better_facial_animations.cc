@@ -847,7 +847,8 @@ int Apply(uint8_t* fg) {
       if (t > line->frames / static_cast<float>(a2f::kFps) + 0.3f) done = true;
     }
   }
-  bool direct = !done && line && tune.enabled && !hold;
+  // holding (t = 0) too: the engine's .lip already runs before the sound
+  bool direct = !done && line && tune.enabled;
   if (!direct) {
     p.direct_frame = -1;
     bool tail = p.direct_tail > 0;
