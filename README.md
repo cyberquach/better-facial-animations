@@ -2,12 +2,17 @@
 
 Real-time NVIDIA Audio2Face-3D (v2.3 Mark) lip-sync for Skyrim SE 1.6.1170, 1.6.1179 (GOG), 1.7.99 and 1.7.104, as an SKSE plugin. 1.6.640 is supported in theory: the plugin loads there and its hooks were checked against the 1.6.640 exe, but it hasn't been tested in-game yet.
 
-When an actor with a FaceGen head speaks, the plugin runs the voice file through the Audio2Face network on the GPU (ONNX Runtime + DirectML). The result deforms the head's face meshes directly (A2F Direct): per-vertex deltas from reference meshes, resampled onto any head topology, with the jaw, teeth and gums on Skyrim's own mouth shapes. The line's emotion also plays as the engine expression morph. There is an optional settings page through SKSE Menu Framework.
+When an actor with a FaceGen head speaks, the plugin runs the voice file through the Audio2Face network on the GPU (ONNX Runtime + DirectML). The result deforms the head's face meshes directly (A2F Direct): each head is mapped onto Mark, the face the network animates, the first time it speaks, from its own expression morphs; its brows, beard and eyes follow its skin, and its mouth part takes Mark's jaw and tongue: the lower teeth and gums turn with the network's jaw, and the tongue rides it and bends like Mark's. A line's emotion is fed to the network per frame: the game's emotion value for the line, times `VoiceEmotion`, growing with the voice's loudness by `VoiceSwell`. A head whose .tri lacks a morph the mapping needs keeps vanilla lip-sync. The game's emotion expressions (dialogue, mood, combat) of the NPC the player talks to and of anyone speaking are played on the same meshes from each head's own expression morphs, at half strength on the mouth; they fade out while a line plays, when the network alone shapes the face and the game's emotion reaches it only as the network's emotion input, and back in after it. There is an optional settings page through SKSE Menu Framework.
 
-- `src/better_facial_animations.cc`: hooks, worker thread, cache, playback, ini and settings page
-- `src/live_core.*`: audio decoding, Audio2Face network windows and emotion, Direct coefficients, expression curve
-- `src/direct.*`: A2FDirect.bin, mesh mapping, per-frame vertex deltas and the mouth rig
-- `src/ort_net.*`: ONNX Runtime C API wrapper (loaded at runtime)
+- `src/better_facial_animations.cc`: hooks, worker thread, line cache, playback
+- `src/head_cache.*`: one head -> Mark mapping per distinct head, built on its own thread
+- `src/settings.cc`, `src/menu.*`, `src/plugin.h`: ini, settings page, what the plugin's files share
+- `src/engine.h`: engine object layouts and function types
+- `src/pose.*`: coefficient-space continuity across line starts, replacements and endings
+- `src/live_core.*`: audio decoding, the line's emotion (game, loudness), Audio2Face network windows, Direct coefficients
+- `src/direct.*`: A2FDirect.bin (Mark), the head -> Mark mapping (skin, jaw, tongue) and per-frame vertex deltas
+- `tools/mark_export.py`: writes A2FDirect.bin from the Audio2Face Mark package
+- `src/ort_net.*`, `src/net_keeper.*`, `src/gpu_state.h`: ONNX Runtime C API wrapper (loaded at runtime), keeping and regaining the GPU session
 - `src/skse.*`: SKSE ABI, log, Address Library, engine layout
 - `dist/`: ini, Direct face data (`A2FDirect.bin`), player readme, notices, model license
 

@@ -9,3 +9,4 @@
 !/LICENSE
 !/.gitignore
 !/.clang-format
+!/tools/
