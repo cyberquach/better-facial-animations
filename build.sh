@@ -4,7 +4,7 @@
 #   ./build.sh install <dir>      also copy into <dir> (e.g. an MO2 mod folder)
 #   ./build.sh release            also write release/Better Facial Animations-<ver>.7z and the source zip
 #   ./build.sh test               also check every supported runtime (tests/runtimes_test.cc) and the
-#                                 Direct mesh placement (tests/direct_test.cc), under $WINE
+#                                 Direct mesh placement and voice-start gating, under $WINE
 # Dependency locations (see README) can be overridden with these variables:
 cd "$(dirname "$0")" || exit 1
 V=$(cat VERSION) || exit 1
@@ -53,6 +53,8 @@ test)
     T=build/test; mkdir -p $T/Data && ln -sfn "$(realpath "$ADDRLIB")/SKSE" $T/Data/SKSE &&
     $CXX -Wall -static src/skse.cc tests/runtimes_test.cc -o $T/runtimes_test.exe -lshell32 -lole32 -luuid &&
     $CXX -Wall -static src/direct.cc tests/direct_test.cc -o $T/direct_test.exe &&
+    $CXX -Wall -static tests/voice_sync_test.cc -o $T/voice_sync_test.exe &&
     WINEDEBUG=-all ${WINE-wine64} $T/runtimes_test.exe build/BetterFacialAnimations.dll $T &&
-    WINEDEBUG=-all ${WINE-wine64} $T/direct_test.exe ;;
+    WINEDEBUG=-all ${WINE-wine64} $T/direct_test.exe &&
+    WINEDEBUG=-all ${WINE-wine64} $T/voice_sync_test.exe ;;
 esac
