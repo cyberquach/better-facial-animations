@@ -1,9 +1,9 @@
 // Voice-start gating and the lip clock (src/voice_sync.h).
+#include "../src/voice_sync.h"
+
 #include <cmath>
 #include <cstdio>
 #include <initializer_list>
-
-#include "../src/voice_sync.h"
 
 namespace {
 int failures = 0;
@@ -25,9 +25,9 @@ int main() {
     Expect(clock.Update(static_cast<float>(t), t, voice, true, false) == 0,
            "lip timer cannot advance the waiting line");
   }
-  Expect(voice.Observe(172, 1, 2.006) == 1 && !voice.fallback &&
-             voice.at == 2.006,
-         "playing sound starts the line");
+  Expect(
+      voice.Observe(172, 1, 2.006) == 1 && !voice.fallback && voice.at == 2.006,
+      "playing sound starts the line");
   Expect(clock.Update(1.97f, 2.006, voice, false, false) == 0,
          "lip time before the start is discarded");
   Expect(Near(clock.Update(2.22f, 2.306, voice, false, true), 0.25),
@@ -69,8 +69,8 @@ int main() {
          "fallback follows the raw lip timer");
 
   a2f::VoiceStart unavailable;
-  Expect(unavailable.Observe(a2f::kNoSound, -1, 1) == -1 &&
-             !unavailable.seen && !unavailable.Holding(-1),
+  Expect(unavailable.Observe(a2f::kNoSound, -1, 1) == -1 && !unavailable.seen &&
+             !unavailable.Holding(-1),
          "no ID and no query play on the wall clock");
 
   a2f::VoiceStart late{7, 10};

@@ -20,8 +20,9 @@ namespace {
 using skse::Version;
 
 constexpr uint32_t kSupported[] = {
-    Version(1, 5, 97), Version(1, 6, 640), Version(1, 6, 1170),
-    Version(1, 6, 1179, skse::kGog), Version(1, 7, 99), Version(1, 7, 104),
+    Version(1, 5, 97),   Version(1, 6, 640),
+    Version(1, 6, 1170), Version(1, 6, 1179, skse::kGog),
+    Version(1, 7, 99),   Version(1, 7, 104),
 };
 // Neighbours of the supported ones, which the plugin has no ids or layout for.
 constexpr uint32_t kUnsupported[] = {

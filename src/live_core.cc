@@ -1,9 +1,8 @@
-// Better Facial Animations core: decode, network windows, A2F Direct
-// coefficients, expression curve.
+// Better Facial Animations core: decode, the line's emotion, network windows,
+// A2F Direct coefficients.
 #include "live_core.h"
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -29,11 +28,6 @@ constexpr float kImplicit[kNumImplicit] = {
     0.0044094822f, -0.039738461f, -0.013413748f,  0.013034184f,
     0.0074624573f, -0.026291862f, -0.057227135f,  -0.02242188f,
     0.0015903788f, 0.03309321f,   -0.030960485f,  0.017880375f};
-// Expression morph: level = floor + (1 - floor) * value / 100, times gain
-// (max 1); eased in / out over attack / release from onset; emphasis = how
-// much it follows loudness.
-constexpr double kExprFloor = 0.4, kExprGain = 1.5, kOnset = 0.2,
-                 kAttack = 0.35, kRelease = 0.4, kEmphasis = 0.35;
 }  // namespace
 
 // ---------------- audio ----------------
@@ -207,33 +201,16 @@ bool DecodeAudio(const uint8_t* data, size_t n, std::vector<float>& pcm,
 }
 
 namespace {
-double Ease(double x) {
-  double c = std::clamp(x, 0.0, 1.0);
-  return c * c * (3 - 2 * c);
-}
-double Envelope(double s, double dur) {
-  double e = Ease(s / kAttack) * Ease((dur - s) / kRelease);
-  return kOnset + (1 - kOnset) * e;
-}
-
 // emotion_map.MAP in network order (amazement anger cheekiness disgust fear
-// grief joy outofbreath pain sadness), at value / 100.
-void ExplicitEmotion(int type, int value, float out[kNumMod]) {
-  static const float kMap[8][kNumMod] = {{},
-                                         {0, 1},
-                                         {0, 0, 0, 1},
-                                         {0, 0, 0, 0, 1},
-                                         {0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
-                                         {0, 0, 0, 0, 0, 0, 1},
-                                         {1},
-                                         {0.3f, 0, 0.3f}};
-  for (int i = 0; i < kNumMod; ++i) out[i] = 0;
-  if (type < 1 || type > 7) return;
-  double k = std::clamp(value / 100.0, 0.0, 1.0);
-  for (int i = 0; i < kNumMod; ++i)
-    out[i] = static_cast<float>(std::nearbyint(kMap[type][i] * k * 1e3) / 1e3);
-}
-
+// grief joy outofbreath pain sadness) per Skyrim emotion type.
+constexpr float kMap[8][kNumMod] = {{},
+                                    {0, 1},
+                                    {0, 0, 0, 1},
+                                    {0, 0, 0, 0, 1},
+                                    {0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+                                    {0, 0, 0, 0, 0, 0, 1},
+                                    {1},
+                                    {0.3f, 0, 0.3f}};
 // numpy default (linear).
 double Percentile(std::vector<double> v, double q) {
   std::sort(v.begin(), v.end());
@@ -243,52 +220,96 @@ double Percentile(std::vector<double> v, double q) {
   return i + 1 < v.size() ? v[i] + (v[i + 1] - v[i]) * f : v[i];
 }
 
-// expression.loudness smoothing: forward-backward one-pole, twice.
-void ZeroPhase(std::vector<double>& e, double a) {
+// Forward-backward one-pole, `passes` times.
+void ZeroPhase(std::vector<double>& e, double a, int passes) {
   size_t n = e.size();
-  for (int pass = 0; pass < 2; ++pass) {
+  for (int pass = 0; pass < 2 * passes; ++pass) {
     for (size_t i = 1; i < n; ++i) e[i] = a * e[i - 1] + (1 - a) * e[i];
     std::reverse(e.begin(), e.end());
   }
 }
 
-// Engine expression index (channels.EXPRESSIONS) for Skyrim emotion types
-// 1..7.
-const uint32_t kEngineExpr[8] = {255, 0, 6, 1, 3, 2, 4, 5};
+// The voice's level per frame, 0..1: RMS in dB, normalised between the
+// line's 20th and 97th percentile, slowly smoothed.
+std::vector<double> Loudness(const float* pcm, size_t n, int frames) {
+  std::vector<double> db(frames);
+  double hop = static_cast<double>(kSampleRate) / kFps;
+  for (int i = 0; i < frames; ++i) {
+    size_t a = static_cast<size_t>(i * hop),
+           b = std::min(static_cast<size_t>((i + 1) * hop), n);
+    double e = 0;
+    for (size_t k = a; k < b; ++k) e += static_cast<double>(pcm[k]) * pcm[k];
+    db[i] = 20 * std::log10(std::sqrt((b > a ? e / (b - a) : 0) + 1e-12));
+  }
+  double lo = Percentile(db, 20), hi = Percentile(db, 97);
+  for (double& v : db)
+    v = std::clamp((v - lo) / std::max(hi - lo, 1e-3), 0.0, 1.0);
+  ZeroPhase(db, 0.82, 2);
+  return db;
+}
+
 }  // namespace
 
+void EmotionTrack(const float* pcm, size_t n, int frames,
+                  const Emotion& emotion, std::vector<float>& track) {
+  double game[kNumMod] = {};
+  if (emotion.type >= 1 && emotion.type <= 7)
+    for (int c = 0; c < kNumMod; ++c)
+      game[c] =
+          kMap[emotion.type][c] * std::clamp(emotion.value / 100.0, 0.0, 1.0);
+  std::vector<double> loud;
+  if (emotion.swell > 0 && emotion.gain > 0) loud = Loudness(pcm, n, frames);
+  track.resize(static_cast<size_t>(frames) * kNumMod);
+  for (int t = 0; t < frames; ++t) {
+    const double g =
+        emotion.gain * (loud.empty() ? 1 : 1 + emotion.swell * loud[t]);
+    for (int c = 0; c < kNumMod; ++c)
+      track[static_cast<size_t>(t) * kNumMod + c] =
+          static_cast<float>(std::clamp(g * game[c], 0.0, kMaxEmotion));
+  }
+}
+
 // ---------------- the whole line ----------------
-bool Generate(Net& net, const float* pcm, size_t n, int emotion, int value,
-              const DirectProj& direct, Line& out, std::string& err,
-              Timing* timing) {
-  using Clock = std::chrono::steady_clock;
-  auto t0 = Clock::now();
+bool Generate(Net& net, const float* pcm, size_t n, const Emotion& emotion,
+              const float* proj, const float* rest, uint32_t k, Line& out,
+              std::string& err) {
+  out = Line();  // a second run (after a lost session) starts clean
   if (!n) {
     err = "empty audio";
     return false;
   }
-  int num_frames = 0;
-  while (static_cast<int64_t>(num_frames) * kSampleRate / kFps <
-         static_cast<int64_t>(n))
-    ++num_frames;
+  const int num_frames = static_cast<int>(
+      (static_cast<int64_t>(n) * kFps + kSampleRate - 1) / kSampleRate);
+  std::vector<float> track;
+  EmotionTrack(pcm, n, num_frames, emotion, track);
+  for (int t = 0; t < num_frames; ++t)
+    for (int c = 0; c < kNumMod; ++c) {
+      float v = track[static_cast<size_t>(t) * kNumMod + c];
+      out.emotion_peak[c] = std::max(out.emotion_peak[c], v);
+      out.emotion_mean[c] += v / num_frames;
+    }
 
-  // --- network: audio windows + [implicit, explicit] emotion per frame,
-  // the emotion constant over the line ---
-  float emo10[kNumMod];
-  ExplicitEmotion(emotion, value, emo10);
+  // --- network: audio windows + [implicit, explicit] emotion per frame; the
+  // outputs straight to the A2F Direct coefficients ---
   int batch = std::max(1, net.Batch());
   std::vector<float> x(static_cast<size_t>(batch) * kWindow),
       em(static_cast<size_t>(batch) * kNumEmo),
-      y(static_cast<size_t>(batch) * kNumOut),
-      raw(static_cast<size_t>(num_frames) * kNumRaw);
-  for (int i = 0; i < batch; ++i) {
-    float* ei = &em[static_cast<size_t>(i) * kNumEmo];
-    memcpy(ei, kImplicit, sizeof kImplicit);
-    memcpy(ei + kNumImplicit, emo10, sizeof emo10);
-  }
+      y(static_cast<size_t>(batch) * kNumOut);
+  out.frames = num_frames;
+  const uint32_t dim = k + kNumTongue + kNumJaw;
+  out.direct_dim = dim;
+  out.direct.assign(static_cast<size_t>(num_frames) * dim, 0.f);
   for (int f0 = 0; f0 < num_frames; f0 += batch) {
     int b = std::min(batch, num_frames - f0);
     std::fill(x.begin(), x.end(), 0.f);
+    for (int i = 0; i < batch; ++i) {  // the padding: the last frame's
+      float* ei = &em[static_cast<size_t>(i) * kNumEmo];
+      memcpy(ei, kImplicit, sizeof kImplicit);
+      memcpy(ei + kNumImplicit,
+             &track[static_cast<size_t>(std::min(f0 + i, num_frames - 1)) *
+                    kNumMod],
+             kNumMod * sizeof(float));
+    }
     for (int i = 0; i < b; ++i) {
       int64_t start =
           static_cast<int64_t>(f0 + i) * kSampleRate / kFps - kWindowOffset;
@@ -301,61 +322,16 @@ bool Generate(Net& net, const float* pcm, size_t n, int emotion, int value,
       }
     }
     if (!net.Run(x.data(), em.data(), batch, y.data(), err)) return false;
-    for (int i = 0; i < b; ++i)
-      memcpy(&raw[static_cast<size_t>(f0 + i) * kNumRaw],
-             &y[static_cast<size_t>(i) * kNumOut], kNumRaw * sizeof(float));
-  }
-  auto t1 = Clock::now();
-
-  // --- A2F Direct coefficients ---
-  out.frames = num_frames;
-  out.direct_dim = direct.k + kNumTongue;
-  out.direct.assign(static_cast<size_t>(num_frames) * out.direct_dim, 0.f);
-  for (int t = 0; t < num_frames; ++t) {
-    const float* yt = &raw[static_cast<size_t>(t) * kNumRaw];
-    float* o = &out.direct[static_cast<size_t>(t) * out.direct_dim];
-    for (uint32_t k = 0; k < direct.k; ++k) {
-      const float* p = direct.proj + static_cast<size_t>(k) * kNumPca;
-      for (int j = 0; j < kNumPca; ++j) o[k] += (yt[j] - direct.rest[j]) * p[j];
+    for (int i = 0; i < b; ++i) {
+      const float* yt = &y[static_cast<size_t>(i) * kNumOut];
+      float* o = &out.direct[static_cast<size_t>(f0 + i) * dim];
+      for (uint32_t c = 0; c < k; ++c) {
+        const float* p = proj + static_cast<size_t>(c) * kNumPca;
+        for (int j = 0; j < kNumPca; ++j) o[c] += (yt[j] - rest[j]) * p[j];
+      }
+      for (int j = kNumPca; j < kNumPca + kNumTongue + kNumJaw; ++j)
+        o[k + j - kNumPca] = yt[j] - rest[j];
     }
-    for (int j = 0; j < kNumTongue; ++j)
-      o[direct.k + j] = yt[kNumPca + j] - direct.rest[kNumPca + j];
-  }
-
-  // --- expression curve: level x envelope x loudness (expression.loudness:
-  // per-frame RMS in dB, normalised between the 20th and 97th percentile,
-  // slow smoothing) ---
-  out.expr = emotion >= 1 && emotion <= 7 ? kEngineExpr[emotion] : 255;
-  out.expression.clear();
-  if (out.expr != 255) {
-    std::vector<double> db(num_frames);
-    double hop = static_cast<double>(kSampleRate) / kFps;
-    for (int i = 0; i < num_frames; ++i) {
-      size_t a = static_cast<size_t>(i * hop),
-             b = std::min(static_cast<size_t>((i + 1) * hop), n);
-      double e = 0;
-      for (size_t k = a; k < b; ++k) e += static_cast<double>(pcm[k]) * pcm[k];
-      db[i] = 20 * std::log10(std::sqrt((b > a ? e / (b - a) : 0) + 1e-12));
-    }
-    double lo = Percentile(db, 20), hi = Percentile(db, 97);
-    for (double& v : db)
-      v = std::clamp((v - lo) / std::max(hi - lo, 1e-3), 0.0, 1.0);
-    ZeroPhase(db, 0.82);
-    double level = std::min(
-               1.0,
-               (kExprFloor + (1 - kExprFloor) * std::min(1.0, value / 100.0)) *
-                   kExprGain),
-           dur = static_cast<double>(num_frames) / kFps;
-    out.expression.resize(num_frames);
-    for (int t = 0; t < num_frames; ++t)
-      out.expression[t] = static_cast<float>(
-          std::clamp(level * Envelope(static_cast<double>(t) / kFps, dur) *
-                         (1 - kEmphasis + kEmphasis * db[t]),
-                     0.0, 1.0));
-  }
-  if (timing) {
-    timing->net = std::chrono::duration<double>(t1 - t0).count();
-    timing->post = std::chrono::duration<double>(Clock::now() - t1).count();
   }
   return true;
 }

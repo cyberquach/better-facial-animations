@@ -1,7 +1,10 @@
-// A2F Direct: per-vertex deltas for the engine's dynamic head / mouth shapes,
-// evaluated on reference meshes (DIRECT_SPEC.md, tools/direct_export.py) and
-// resampled onto any topology (High Poly Head). Shape-local space, the same
-// as the .tri files.
+// A2F Direct: per-vertex deltas for the engine's dynamic face shapes. The
+// skin basis lives on Mark, the face the network animates (A2FDirect.bin,
+// tools/mark_export.py). Every head is mapped straight onto Mark from its own
+// expression morphs (BuildHead); its brows, beard and eyes follow its skin,
+// and its mouth part takes Mark's jaw and tongue: the lower teeth and gums
+// turn with Mark's jaw, the tongue rides it and bends like Mark's. Shape-local
+// space, the same as the .tri files.
 #ifndef SRC_DIRECT_H_
 #define SRC_DIRECT_H_
 
@@ -14,109 +17,170 @@
 namespace direct {
 
 enum class Part { kHead, kMouth, kEyes, kNone };
-constexpr int kNumParts = 3;
 
 // Deformation scales: the head skin by smooth per-vertex region weights
-// (kBrows..kMouth), the jaw motion and the tongue by one factor each.
+// (the kNumSkinRegions kBrows..kMouth), the mouth part by how far the jaw
+// moves (lower teeth, gums, tongue) and how far the tongue bends.
 enum Region { kBrows, kEyes, kCheeks, kMouth, kJaw, kTongue, kNumRegions };
+constexpr int kNumSkinRegions = kJaw;
 
-// Reference mesh of one part with region labels: head 0 skin, 1 upper lip,
-// 2 lower lip; mouth 0 gums, 1 upper teeth, 2 lower teeth, 3 tongue.
-struct RefMesh {
-  uint32_t nv = 0;
-  std::vector<float> verts;     // nv x 3
-  std::vector<uint32_t> tris;   // nt x 3
-  std::vector<uint8_t> labels;  // nv
+// The phonemes that tell a mouth part's tongue from its teeth: those that
+// move the tongue against the jaw.
+constexpr int kNumTonguePhonemes = 5;
+// A line's coefficients per frame: the skin's k, then the network's tongue
+// and jaw outputs less their rest.
+constexpr uint32_t kNumMouthCoef = a2f::kNumTongue + a2f::kNumJaw;
+constexpr int kNumJawPoints = a2f::kNumJaw / 3;
+// The engine expression morphs the plugin plays itself, so that they can be
+// scaled per region: 0..6 Dialogue*, 8..14 Mood*, 15 CombatAnger. 7
+// MoodNeutral and 16 CombatShout are left to the engine.
+constexpr int kNumExpressions = 16;
+constexpr bool PlaysExpression(int i) { return i != 7; }
+// Their scale per skin region: the mouth at half, where the expression
+// competes with the lip-sync (the mouth part takes kMouth's).
+constexpr float kExpressionScale[kNumSkinRegions] = {1, 1, 1, .5f};
+constexpr int kNumLandmarks = 8;
+
+// The engine morphs a head's shapes are read with (ShapeIn::morphs), by
+// ApplyMorph (type, index): type 0 phoneme, 1 expression, 2 modifier. The
+// skin reads the mapping's (kBlinkLeft..kOohQ and kHappy, which a head must
+// have to be animated) and the expressions; the mouth part BigAah (how far
+// each vertex follows the jaw), the tongue phonemes and the expressions; the
+// eyes the two blinks.
+enum Morph {
+  kBlinkLeft,
+  kBlinkRight,
+  kBrowUpLeft,
+  kBrowUpRight,
+  kBigAah,
+  kOohQ,
+  kTonguePhoneme,                                     // kNumTonguePhonemes
+  kExpression = kTonguePhoneme + kNumTonguePhonemes,  // kNumExpressions
+  kHappy = kExpression + 10,                          // MoodHappy
+  kNumMorphs = kExpression + kNumExpressions
 };
+struct MorphId {
+  uint8_t type, index;
+  const char* name;
+};
+extern const MorphId kMorphIds[kNumMorphs];
 
-struct SexModel {
-  RefMesh head, mouth, eyes;  // eyes: no labels
-  // skin: delta_head[midx[i]] = g sum_k coef[k] basis[k][i]
-  uint32_t k = 0, nm = 0;
-  std::vector<uint16_t> midx;
-  std::vector<float> basis;     // k x nm x 3
-  std::vector<float> proj;      // k x kNumPca
-  std::vector<float> region_w;  // nm x 4: kBrows..kMouth weights
-  // tongue: delta_mouth[tongue_idx[i]] = g sum_j c[j] tongue_basis[j][i]
-  std::vector<uint16_t> tongue_idx;
-  std::vector<float> tongue_basis;  // kNumTongue x n x 3
-  // mouth (teeth, gums, tongue base): the race's own phoneme morphs with
-  // w = argmin |A w - delta_head[rows]|, 0 <= w <= 1, fitted to the unscaled
-  // skin; delta_mouth = scale_jaw sum_p w[p] rig_mouth[p]
-  uint32_t rig_p = 0;
-  std::vector<float> rig_ata;    // p x p: A^T A
-  std::vector<float> rig_atb;    // p x k: A^T basis on the rows
-  std::vector<float> rig_mouth;  // p x mouth nv x 3
-  // eyes (lashes / lid line) follow the scaled head delta:
-  // delta_eyes[v] = sum_j eye_w[v][j] delta_head[eye_idx[v][j]]
-  uint32_t eye_k = 0;
-  std::vector<uint16_t> eye_idx;  // eyes nv x eye_k
-  std::vector<float> eye_w;
+// Mark: neutral skin, jaw and tongue in Skyrim axes and Mark's units.
+struct Mark {
+  uint32_t nv = 0, k = 0;
+  std::vector<float> verts;  // nv x 3
+  std::vector<float> jaw;    // nv: z of jawOpen (how far it follows the jaw)
+  float landmarks[kNumLandmarks * 3];
+  std::vector<int32_t> row;  // nv: basis row, -1 for a vertex that is still
+  std::vector<float> basis;  // rows x k x 3
+  std::vector<float> proj;   // k x kNumPca
+  // the jaw: its points at rest; they move by jaw_strength times the
+  // network's jaw output less its rest, and the lower teeth with them rigidly
+  float jaw_points[a2f::kNumJaw], jaw_strength = 0;
+  // the tongue at rest (riding the jaw), its tip, and its vertices' motion
+  // per tongue coefficient
+  uint32_t tongue_nv = 0;
+  std::vector<float> tongue_verts;  // tongue_nv x 3
+  float tongue_tip[3];
+  std::vector<float> tongue_basis;  // tongue_nv x kNumTongue x 3
 };
 
 // A2FDirect.bin.
 struct Model {
-  SexModel sex[2];          // female, male
-  std::vector<float> rest;  // kNumRaw
-  float default_scale[kNumRegions];
+  Mark mark;
+  std::vector<float> rest;  // kNumOut: the network's output for silence
   bool Load(const std::wstring& path, std::string& err);
-  a2f::DirectProj Proj(bool female) const;
 };
 
-// One line's coefficients (a2f::Line::direct) and the model they index.
-struct Track {
-  const float* coeffs;
-  uint32_t frames, dim;
-  const SexModel* model;
+// Whether the shape reads morph m (see Morph).
+constexpr bool Reads(bool skin, Part part, int m) {
+  return skin                   ? m < kTonguePhoneme || m >= kExpression
+         : part == Part::kMouth ? m == kBigAah || m >= kTonguePhoneme
+                                : part == Part::kEyes && m <= kBlinkRight;
+}
+
+// One dynamic face shape as the engine has it.
+struct ShapeIn {
+  std::string name;
+  Part part = Part::kNone;
+  bool skin = false;  // the head skin itself
+  uint32_t nv = 0;
+  std::vector<float> verts;  // nv x 3, base (pre-morph)
+  // by Morph, nv x 3 each: those it Reads (zero when the shape lacks it),
+  // else empty
+  std::vector<std::vector<float>> morphs;
 };
 
-// Deltas (float3 per reference vertex) of every part at a fractional frame,
-// interpolated and eased out over 0.1 s past the end, scaled per
-// region (scales[kNumRegions]). The eyes follow the scaled head delta; the
-// mouth rig is fitted to the unscaled one and scaled by kJaw.
-struct Deltas {
-  std::vector<float> part[kNumParts];  // by Part
+// One head mapped onto Mark.
+struct Head {
+  uint32_t k = 0, nv = 0;       // skin
+  std::vector<int32_t> row;     // nv: basis row, -1 where the speech is still
+  std::vector<float> basis;     // rows x k x 3 (Mark's, through the mapping)
+  std::vector<float> region_w;  // nv x kNumSkinRegions
+  // Mark's jaw points at rest on this head, and the matrix that takes a
+  // point's network output (less rest) to its displacement here
+  float jaw_points[a2f::kNumJaw] = {}, jaw_motion[9] = {};
+  struct Shape {
+    std::string name;
+    Part part;
+    uint32_t nv;
+    // brows, beards, eyes: delta = sum_j w[j] delta_skin[idx[j]], kFollow
+    // per vertex
+    std::vector<uint32_t> idx;
+    std::vector<float> w;
+    // mouth part: the vertices in the skin's space (nv x 3), how far each
+    // follows the jaw (nv; 0 upper teeth, 1 lower teeth and tongue, between
+    // on the gums) and the tongue's motion per tongue coefficient (nv x
+    // kNumTongue x 3; empty: no tongue found);
+    // delta = jaw[v] (jaw transform of pos[v] - pos[v]) +
+    //         sum_c coef[c] tongue[v][c]
+    std::vector<float> pos, jaw, tongue;
+    // skin and mouth part: the expression morphs, nv x 3 (empty: none)
+    std::vector<float> expr[kNumExpressions];
+  };
+  std::vector<Shape> shapes;
+  uint32_t skin = 0;  // the skin's index in shapes
+  // How far this head's own morphs move next to a standard head's (their
+  // peak over Mark's scale, over kAutoRef), kAutoMin..1: a head made for
+  // smaller motion takes the speech scaled down by it. Brows from BrowUp,
+  // cheeks from MoodHappy, mouth and jaw from BigAah; eyes and tongue 1.
+  float auto_scale[kNumRegions] = {1, 1, 1, 1, 1, 1};
+  // log: Mark's scale, landmark residuals after the similarity, skin
+  // vertices on the upper and lower lip, mean distance of the lips to Mark's,
+  // mouth part vertices that follow the jaw and that are tongue
+  float scale = 0, residual[kNumLandmarks] = {}, lip_dist = 0;
+  uint32_t lips[2] = {}, jaw_verts = 0, tongue_verts = 0;
 };
-void Evaluate(const Track& track, float frame, const float* scales,
-              Deltas& out);
+constexpr int kFollow = 4;
+// The standard heads' morph peaks over Mark's scale (the least of vanilla,
+// Expressive Facial Animation and High Poly Head, female and male).
+constexpr float kAutoBrowUp = 0.53f, kAutoHappy = 1.02f, kAutoBigAah = 2.5f;
+constexpr float kAutoMin = 0.4f;
+
+// Maps one head (all its dynamic face shapes) onto Mark. False, with why,
+// when it has no skin shape or the skin lacks a morph of kMorphIds: such a
+// head is not animated.
+bool BuildHead(const Model& model, const std::vector<ShapeIn>& shapes,
+               Head& out, std::string& why);
+
+// Per-shape float3 deltas from final speech coefficients (head.k +
+// kNumMouthCoef; null for no speech), scaled per region, plus expression
+// levels (kNumExpressions). Followers inherit the skin's deltas. False when
+// neither speech nor expressions contribute.
+bool Evaluate(const Head& head, const float* coefficients, const float* scales,
+              const float* expressions, std::vector<std::vector<float>>& out);
+
+// The line's coefficients (head.k + kNumMouthCoef) at a fractional frame, as
+// Evaluate takes them (past the end: the last frame's); zeros and false
+// without a line.
+bool Coefficients(const Head& head, const a2f::Line* line, float frame,
+                  std::vector<float>& c);
 
 // Shift that takes a mesh stored in skeleton space (custom heads such as
-// High Poly Head: no shape transform, vertices ~120 units up) into the
-// reference's shape-local space: the vanilla head transform, or zero for one
-// already there.
-void FrameOffset(const RefMesh& ref, const float* verts, uint32_t nv,
-                 float offset[3]);
-
-// Lip labels (0 skin, 1 upper lip, 2 lower lip) of a head mesh from its own
-// BigAah morph deltas, the rule the reference labels were made with, inside
-// the reference's lip box (plus a margin, open in front). With align, the
-// box first follows the target's lips; offset gets the shift of the upper
-// lip onto the reference's and moved the target with its upper lip shifted;
-// else (or when no shift is needed) moved is empty and offset zero.
-void LipLabels(const RefMesh& ref, const float* verts, const float* bigaah,
-               uint32_t nv, bool align, std::vector<uint8_t>& labels,
-               std::vector<float>& moved, float offset[3]);
-
-// Target vertex -> reference triangle corners + barycentric weights, or the
-// identity for the reference topology itself. A target vertex with a label
-// only maps to triangles of its own region (nearest such vertex if none is
-// nearby); target_labels may be null. moved (may be null): the target
-// positions to search with instead (not for the identity test).
-struct Mapping {
-  bool identity = false;
-  uint32_t nv = 0;
-  std::vector<uint32_t> idx;  // 3 per vertex
-  std::vector<float> w;       // 3 per vertex
-  float max_dist = 0, mean_dist = 0;
-  uint32_t snapped = 0;  // vertices with no same-region triangle nearby
-};
-void BuildMapping(const RefMesh& ref, const float* target, uint32_t nv,
-                  const uint8_t* target_labels, Mapping& out,
-                  const float* moved = nullptr);
-
-// Adds the mapped deltas to xyz of float4 vertices.
-void AddDeltas(const Mapping& m, const std::vector<float>& ref_deltas,
-               float* xyzw);
+// High Poly Head: no shape transform, vertices ~120 units up) into
+// shape-local space: the vanilla head transform, or zero for one already
+// there.
+void FrameOffset(const float* verts, uint32_t nv, float offset[3]);
 
 }  // namespace direct
 

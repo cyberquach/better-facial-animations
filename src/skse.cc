@@ -5,6 +5,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -16,7 +17,7 @@ namespace skse {
 namespace {
 
 FILE* log_file;
-volatile bool log_on;
+std::atomic<bool> log_on{false};
 uint32_t runtime;
 const wchar_t* my_games = L"Skyrim Special Edition";
 uint64_t image_base;
