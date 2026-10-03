@@ -78,6 +78,14 @@ bool DecodeAudio(const uint8_t* data, size_t n, std::vector<float>& pcm,
     data += 12 + lip;
     n -= 12 + lip;
   }
+  if (n >= 8 && !memcmp(data, "RIFF", 4)) {
+    uint32_t riff_size;
+    memcpy(&riff_size, data + 4, 4);
+    if (static_cast<uint64_t>(riff_size) + 8 > n) {
+      err = "truncated audio container";
+      return false;
+    }
+  }
   Mem mem{data, n, 0};
   const int iosz = 32768;
   uint8_t* iobuf = static_cast<uint8_t*>(av_malloc(iosz));
@@ -160,13 +168,27 @@ bool DecodeAudio(const uint8_t* data, size_t n, std::vector<float>& pcm,
       break;
     }
     bool bad = false;
-    while (!bad && av_read_frame(fmt, pkt) >= 0) {
-      if (pkt->stream_index == st && avcodec_send_packet(dec, pkt) >= 0)
-        bad = !receive();
+    int read_result = 0;
+    while (!bad && (read_result = av_read_frame(fmt, pkt)) >= 0) {
+      if (pkt->stream_index == st) {
+        if (avcodec_send_packet(dec, pkt) < 0) {
+          err = "audio packet rejected";
+          bad = true;
+        } else {
+          bad = !receive();
+        }
+      }
       av_packet_unref(pkt);
     }
     if (bad) break;
-    avcodec_send_packet(dec, nullptr);
+    if (read_result != AVERROR_EOF) {
+      err = "audio read failed";
+      break;
+    }
+    if (avcodec_send_packet(dec, nullptr) < 0) {
+      err = "audio decoder flush failed";
+      break;
+    }
     if (!receive() || !drain(nullptr)) break;
     ok = !s16.empty();
     if (!ok) err = "no audio decoded";
