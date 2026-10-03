@@ -82,7 +82,8 @@ void Evaluate(const Track& track, float frame, const float* scales,
 
 // Shift that takes a mesh stored in skeleton space (custom heads such as
 // High Poly Head: no shape transform, vertices ~120 units up) into the
-// reference's shape-local space; zero for one already there.
+// reference's shape-local space: the vanilla head transform, or zero for one
+// already there.
 void FrameOffset(const RefMesh& ref, const float* verts, uint32_t nv,
                  float offset[3]);
 

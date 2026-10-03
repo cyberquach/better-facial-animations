@@ -479,9 +479,12 @@ void FrameOffset(const RefMesh& ref, const float* verts, uint32_t nv,
     }
     return (lo + hi) * 0.5f;
   };
+  // The box only tells the space: a part other than the head skin (beard,
+  // brows, eyes, mouth) is centred several units off the head, so moving it
+  // by the box difference would map it onto the wrong skin. A mesh ~120 up is
+  // in skeleton space, anything else shape-local.
   V3 d = nv ? centre(ref.verts.data(), ref.nv) - centre(verts, nv) : V3{};
-  if (Len(d) < 10) d = {0, 0, 0};
-  else if (Len(d + kHeadToSkeleton) < 2) d = kHeadToSkeleton * -1;
+  d = d.z < -kHeadToSkeleton.z / 2 ? kHeadToSkeleton * -1 : V3{0, 0, 0};
   offset[0] = d.x, offset[1] = d.y, offset[2] = d.z;
 }
 

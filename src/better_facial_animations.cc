@@ -95,9 +95,26 @@ constexpr uint32_t kRaceFlags = 0x108;
 // human-trained model, so they keep vanilla lip-sync.
 constexpr uint32_t kArgonianRace = 0x00013740;
 constexpr uint32_t kArgonianRaceVampire = 0x0008883A;
+constexpr uint8_t kFtHeadPart = 0x0C;
 constexpr uint8_t kFtNpc = 0x2B;
 constexpr uint8_t kFtActor = 0x3E;
 constexpr uint32_t kVfGetFaceGenAnimationData = 0x63;
+// TESDataHandler::formArrays, one BSTArray per form type
+constexpr uint32_t kDhFormArrays = 0x10;
+// BGSHeadPart
+constexpr uint32_t kHeadPartType = 0x6C;
+constexpr uint32_t kHeadPartExtras = 0x70;  // BSTArray<BGSHeadPart*>
+constexpr uint32_t kHeadPartName = 0x118;  // BSFixedString formEditorID
+enum HeadPartType : uint8_t {
+  kHpMisc,
+  kHpFace,
+  kHpEyes,
+  kHpHair,
+  kHpFacialHair,
+  kHpScar,
+  kHpEyebrows,
+  kHpNumTypes
+};
 // DialogueResponse
 constexpr uint32_t kRespEmoType = 0x10;
 constexpr uint32_t kRespEmoValue = 0x14;
@@ -338,11 +355,16 @@ bool SpeakerOk(uint8_t* ref, bool& female) {
   return true;
 }
 
+std::string Lower(const char* s) {
+  std::string n = s;
+  for (auto& c : n) c = static_cast<char>(tolower(static_cast<uint8_t>(c)));
+  return n;
+}
+
 // Queue a line unless it is cached or in flight. Returns its entry.
 std::shared_ptr<Entry> Request(const std::string& stem, int emo, int val,
                                bool female, bool urgent) {
-  std::string key = stem;
-  for (auto& c : key) c = static_cast<char>(tolower(static_cast<uint8_t>(c)));
+  std::string key = Lower(stem.c_str());
   char sfx[32];
   snprintf(sfx, sizeof sfx, "|%c%d|%d", female ? 'f' : 'm', emo, val);
   key += sfx;
@@ -915,23 +937,106 @@ std::unordered_map<std::string, std::shared_ptr<const direct::Mapping>>
 std::deque<MapJob> map_queue;
 bool mapper_started;
 
-direct::Part Classify(const char* name) {
-  std::string n = name;
-  for (auto& c : n) c = static_cast<char>(tolower(static_cast<uint8_t>(c)));
-  if (n.find("mouth") != std::string::npos) return direct::Part::kMouth;
-  if (n.find("eyes") != std::string::npos) return direct::Part::kEyes;
-  for (const char* w : {"head", "brows", "beard"})
-    if (n.find(w) != std::string::npos) return direct::Part::kHead;
-  return direct::Part::kNone;
+// Head part type by lowercase editor id, which FaceGen names its shapes
+// after; filled once at data loaded, empty if the forms didn't look right.
+std::unordered_map<std::string, uint8_t> head_part_types;
+
+// BSTArray<T*>: items, capacity, size.
+struct BSTArray {
+  uint8_t** items;
+  uint32_t cap, pad, n;
+  bool Ok() const { return n <= cap && n <= 1000000 && (items || !n); }
+};
+static_assert(sizeof(BSTArray) == 0x18, "BSTArray");
+
+// Extra parts (long beards' _1bit meshes, Khajiit mustache alphas, lashes,
+// hairlines, blind eyes) are mostly Misc: they take their parent's type.
+// Types past kEyebrows, which some mods use, are left to the shape name.
+void LoadHeadPartTypes() {
+  uint8_t** dh = reinterpret_cast<uint8_t**>(Addr(kIdDataHandler));
+  const BSTArray* parts =
+      dh && *dh
+          ? &reinterpret_cast<const BSTArray*>(*dh + kDhFormArrays)[kFtHeadPart]
+          : nullptr;
+  if (!parts || !parts->Ok()) {
+    Log("head parts: no form array, using shape names");
+    return;
+  }
+  auto type_of = [](uint8_t* hp) {
+    return *reinterpret_cast<uint32_t*>(hp + kHeadPartType);
+  };
+  auto name_of = [](uint8_t* hp) {
+    return *reinterpret_cast<const char**>(hp + kHeadPartName);
+  };
+  std::unordered_map<std::string, uint8_t> types;
+  for (uint32_t i = 0; i < parts->n; ++i) {
+    uint8_t* hp = parts->items[i];
+    if (!hp || hp[kFormType] != kFtHeadPart) {
+      Log("head parts: unexpected form %u of %u, using shape names", i,
+          parts->n);
+      return;
+    }
+    uint32_t type = type_of(hp);
+    const char* name = name_of(hp);
+    if (type < kHpNumTypes && name && *name)
+      types[Lower(name)] = static_cast<uint8_t>(type);
+  }
+  uint32_t inherited = 0;
+  for (uint32_t i = 0; i < parts->n; ++i) {
+    uint32_t type = type_of(parts->items[i]);
+    const auto& extras = *reinterpret_cast<const BSTArray*>(parts->items[i] +
+                                                            kHeadPartExtras);
+    if (type == kHpMisc || type >= kHpNumTypes || !extras.Ok()) continue;
+    for (uint32_t j = 0; j < extras.n; ++j) {
+      uint8_t* x = extras.items[j];
+      const char* name =
+          x && x[kFormType] == kFtHeadPart ? name_of(x) : nullptr;
+      if (!name || !*name || type_of(x) != kHpMisc) continue;
+      types[Lower(name)] = static_cast<uint8_t>(type);
+      ++inherited;
+    }
+  }
+  head_part_types = std::move(types);
+  Log("head parts: %u, %zu named, %u extras typed by their parent", parts->n,
+      head_part_types.size(), inherited);
 }
 
-// The head skin itself (not brows / beard), whose lips the mapping aligns.
-bool IsHeadSkin(const char* name) {
-  std::string n = name;
-  for (auto& c : n) c = static_cast<char>(tolower(static_cast<uint8_t>(c)));
-  return n.find("head") != std::string::npos &&
-         n.find("brow") == std::string::npos &&
-         n.find("beard") == std::string::npos;
+// The head part type of a shape, or kHpNumTypes when unknown.
+uint8_t HeadPartTypeOf(const std::string& n) {
+  auto it = head_part_types.find(n);
+  return it == head_part_types.end() ? kHpNumTypes : it->second;
+}
+
+// The part a dynamic face shape follows: by its head part's type where that
+// is unambiguous, else by its name. skin: it is the head skin itself (not
+// brows / beard), whose lips the mapping aligns.
+direct::Part Classify(const char* name, bool& skin) {
+  std::string n = Lower(name);
+  uint8_t type = HeadPartTypeOf(n);
+  skin = type != kHpNumTypes ? type == kHpFace
+                             : n.find("head") != std::string::npos &&
+                                   n.find("brow") == std::string::npos &&
+                                   n.find("beard") == std::string::npos;
+  switch (type) {
+    // Scar is also used for antlers and the like, which map to the scalp,
+    // where the face doesn't move
+    case kHpFace:
+    case kHpFacialHair:
+    case kHpScar:
+    case kHpEyebrows:
+      return direct::Part::kHead;
+    case kHpEyes:
+      return direct::Part::kEyes;
+    case kHpHair:
+      return direct::Part::kNone;
+  }
+  // Misc (mouths, stray parts) or unknown: by name
+  if (n.find("mouth") != std::string::npos) return direct::Part::kMouth;
+  if (n.find("eyes") != std::string::npos) return direct::Part::kEyes;
+  for (const char* w : {"head", "brow", "beard", "mustache", "moustache",
+                        "goatee", "stubble", "sideburn", "scar"})
+    if (n.find(w) != std::string::npos) return direct::Part::kHead;
+  return direct::Part::kNone;
 }
 
 // Base (pre-morph) vertices of a face shape: its "FOD" extra data.
@@ -1110,11 +1215,12 @@ void AddDirect(uint8_t* node) {
     uint8_t* shape = kids[i];
     if (!shape || shape[kGeomType] != 4) continue;
     const char* name = *reinterpret_cast<const char**>(shape + kObjName);
-    direct::Part part = name ? Classify(name) : direct::Part::kNone;
+    bool skin = false;
+    direct::Part part = name ? Classify(name, skin) : direct::Part::kNone;
     if (part == direct::Part::kNone) continue;
     uint32_t nv = *reinterpret_cast<uint16_t*>(shape + kDynNumVerts);
     if (*reinterpret_cast<uint32_t*>(shape + kDynDataSize) != nv * 16) continue;
-    auto m = FindMapping(shape, female, part, nv, IsHeadSkin(name));
+    auto m = FindMapping(shape, female, part, nv, skin);
     if (!m) continue;
     if (!have) {
       direct::Evaluate(track, frame, tune.direct_scale, deltas);
@@ -1266,6 +1372,7 @@ void RegisterMenu() {
 // ---------------- SKSE ----------------
 void OnMessage(skse::SKSEMessage* m) {
   if (m->type != skse::kMessageDataLoaded) return;
+  LoadHeadPartTypes();  // before the worker, which turns Direct on
   RetakeSites();
   RegisterMenu();
   HANDLE h = CreateThread(nullptr, 0, Worker, nullptr, 0, nullptr);
