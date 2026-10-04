@@ -53,8 +53,11 @@ constexpr skse::Rel kIdDataHandler{514141, 400269, 0x1F82AD8};
 // (CommonLibSSE-NG MenuTopicManager::GetSingleton, GetHandleEntries)
 constexpr skse::Rel kIdMenuTopicManager{514959, 401099, 0x2FC4878};
 constexpr skse::Rel kIdHandleEntries{514478, 400622, 0x1F89660};
+// PlayerCharacter* singleton (CommonLibSSE-NG PlayerCharacter::GetSingleton).
+// None on VR: DBReV supports SE/AE, and VR's player is not verified.
+constexpr skse::Rel kIdPlayer{517014, 403521, 0};
 
-// The single ids above, for tests/runtimes_test.cc.
+// The single ids above that every runtime has, for tests/runtimes_test.cc.
 constexpr skse::Rel kIds[] = {
     kIdSpeakVoiceLine,   kIdDialogueResponseCtor, kIdStreamCtor,
     kIdStreamDtor,       kIdFaceAnimUpdate,       kIdApplyMorphs,
@@ -63,5 +66,7 @@ constexpr skse::Rel kIds[] = {
     kIdGenerateFromPath, kIdDataHandler,          kIdMenuTopicManager,
     kIdHandleEntries,
 };
+// And those some runtime lacks.
+constexpr skse::Rel kOptionalIds[] = {kIdPlayer};
 
 #endif  // SRC_IDS_H_

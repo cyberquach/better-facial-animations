@@ -25,6 +25,10 @@ extern const Param kParams[] = {
      "Play Audio2Face lip-sync. Untick to see the game's own lip-sync "
      "instantly (A/B).",
      Sec::kGeneral, &tune.enabled},
+    {"PlayerFacialAnimations", nullptr, 0, 0, "Player facial animations",
+     "Animate the player's voiced dialogue (DBReV 1.4.4+). Untick to keep "
+     "the voice mod's own facial animation; NPCs are unaffected.",
+     Sec::kGeneral, &tune.player},
     {"Prefetch", nullptr, 0, 0, "Prefetch",
      "Start generating when a dialogue response is created, before it is "
      "spoken.",

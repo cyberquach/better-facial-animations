@@ -107,6 +107,7 @@ int main(int argc, char** argv) {
     }
     CheckIds(kIds, runtime);
     for (const skse::Rel& id : kIds) Check(id.Get(), "id missing", runtime);
+    CheckIds(kOptionalIds, runtime);
     CheckIds(kSpeakCallers, runtime);
     CheckIds(kResponseCallers, runtime);
     CheckIds(kFaceCallers, runtime);

@@ -22,6 +22,7 @@ ADDRLIB=${ADDRLIB:-deps/address-library}  # test only
 mkdir -p build
 CXX="x86_64-w64-mingw32-g++ -std=c++17 -O2"
 $CXX -Wall -DBFA_VERSION=\"$V\" -c src/better_facial_animations.cc -o build/better_facial_animations.o &&
+$CXX -Wall -c src/player_speech.cc -o build/player_speech.o &&
 $CXX -Wall -c src/pose.cc -o build/pose.o &&
 $CXX -Wall -c src/net_keeper.cc -o build/net_keeper.o &&
 $CXX -Wall -c src/settings.cc -o build/settings.o &&
@@ -31,7 +32,7 @@ $CXX -Wall -c src/skse.cc -o build/skse.o &&
 $CXX -Wall -c src/direct.cc -o build/direct.o &&
 $CXX -Wall -isystem "$FFMPEG/include" -c src/live_core.cc -o build/live_core.o &&
 $CXX -Wall -isystem "$ORT/build/native/include" -c src/ort_net.cc -o build/ort_net.o &&
-$CXX -shared -s build/better_facial_animations.o build/settings.o build/pose.o build/net_keeper.o build/head_cache.o build/menu.o build/skse.o build/direct.o build/live_core.o build/ort_net.o -o build/BetterFacialAnimations.dll \
+$CXX -shared -s build/better_facial_animations.o build/player_speech.o build/settings.o build/pose.o build/net_keeper.o build/head_cache.o build/menu.o build/skse.o build/direct.o build/live_core.o build/ort_net.o -o build/BetterFacialAnimations.dll \
     -L$FFMPEG/lib -lavformat -lavcodec -lswresample -lavutil -lbcrypt -lshell32 -lole32 -luuid -ldxgi -static -static-libgcc -static-libstdc++ || exit 1
 
 PKG=build/mod; P=$PKG/SKSE/Plugins; L=$P/BetterFacialAnimations/licenses
@@ -74,6 +75,8 @@ test)
     $CXX -Wall -static tests/emotion_test.cc build/live_core.o -o $T/emotion_test.exe \
         -L$FFMPEG/lib -lavformat -lavcodec -lswresample -lavutil -lbcrypt -lole32 &&
     WINEDEBUG=-all ${WINE-wine64} $T/emotion_test.exe &&
+    $CXX -Wall -static src/player_speech.cc tests/player_speech_test.cc -o $T/player_speech_test.exe &&
+    WINEDEBUG=-all ${WINE-wine64} $T/player_speech_test.exe &&
     $CXX -Wall -static tests/voice_sync_test.cc -o $T/voice_sync_test.exe &&
     $CXX -Wall -static tests/call_sites_test.cc -o $T/call_sites_test.exe &&
     $CXX -Wall -static src/net_keeper.cc tests/net_keeper_test.cc -o $T/net_keeper_test.exe &&

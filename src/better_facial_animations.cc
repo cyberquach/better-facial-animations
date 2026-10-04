@@ -32,6 +32,7 @@
 #include "menu.h"
 #include "net_keeper.h"
 #include "ort_net.h"
+#include "player_speech.h"
 #include "plugin.h"
 #include "pose.h"
 #include "scoped_lock.h"
@@ -118,6 +119,8 @@ struct Playing {
   // none, the pointer is trusted
   uint32_t actor_handle = 0;
   double seen = 0;  // last update (play_clock)
+  bool player = false;
+  PlayerSpeechPtr external;
   a2f::VoiceStart voice;
   a2f::LipClock lip_clock;
   float ready_at = -1;
@@ -166,6 +169,7 @@ struct Face {
   // checked and the face is not given up to a scene.
   uint8_t* actor = nullptr;
   uint32_t actor_handle = 0;
+  bool player = false;
   a2f::PoseTransition transition;
 };
 // Times on play_clock:
@@ -279,6 +283,16 @@ bool SpeakerOk(uint8_t* ref) {
     return false;
   uint32_t race_id = Field<uint32_t>(race, kFormId);
   return race_id != kArgonianRace && race_id != kArgonianRaceVampire;
+}
+
+bool IsPlayer(uint8_t* actor) {
+  return Field<uint32_t>(actor, kFormId) == kPlayerFormId;
+}
+
+// The plugin animates this face: Enabled and, for the player's, the player
+// setting.
+bool EnabledFor(const Tune& tune, bool player) {
+  return tune.enabled && (!player || tune.player);
 }
 
 // The factions SexLab (all versions, P+ too) and OStim (NG, Standalone) keep
@@ -763,6 +777,65 @@ int ActorVoice(uint8_t* actor, uint32_t& sound) {
   return !handle || !is_playing ? -1 : is_playing(handle);
 }
 
+// Shared entry for engine speech and optional provider notifications.
+void BeginSpeech(uint8_t* actor, const std::string& stem, uint32_t sound_id,
+                 float dur, int emo_type, int emo_value, const Tune& tune,
+                 PlayerSpeechPtr external = {}) {
+  auto get_fg = reinterpret_cast<uint8_t* (*)(uint8_t*)>(
+      Field<void**>(actor, 0)[kVfGetFaceGenAnimationData]);
+  uint8_t* fg = get_fg(actor);
+  if (!fg) return;
+  skse::ResId r{};
+  Engine<GenerateFromPathFn, kIdGenerateFromPath>()(&r,
+                                                    (stem + ".lip").c_str());
+  const uint64_t lip_key = skse::KeyOf(r);
+  if (external) {
+    // The engine hook may already have seen this same playback (the lip
+    // resource tells, whatever the path's case and separators): its line
+    // keeps its clock and pose and takes on the provider's cancellation.
+    ScopedLock guard(lock);
+    auto old = playing.find(fg);
+    if (old != playing.end() && !old->second.external &&
+        old->second.lip_key == lip_key) {
+      old->second.external = std::move(external);
+      return;
+    }
+  }
+  auto e = Request(stem, emo_type, emo_value, true, tune);
+  Playing p;
+  p.entry = e;
+  p.name = stem;
+  p.lip_key = lip_key;
+  p.actor = actor;
+  p.actor_handle = HandleOf(actor);
+  static std::atomic<int> no_handle;
+  if (!p.actor_handle && LogMore(no_handle))
+    Log("speak %s: the actor has no handle", stem.c_str());
+  p.player = IsPlayer(actor);
+  p.external = std::move(external);
+  p.voice = {sound_id, Now(), dur};
+  if (p.external) {
+    // The provider's line started when it said so. Its sound is not known
+    // (the actor may still be playing the line before), so none is followed.
+    p.voice.requested_at = p.voice.at = p.external->started_at;
+    p.voice.seen = true;
+  } else {
+    uint32_t sound;
+    int playing_now = ActorVoice(actor, sound);
+    p.voice.Observe(sound, playing_now, p.voice.requested_at);
+  }
+  ScopedLock guard(lock);
+  // The other way around: the engine's line replaces the provider's and
+  // keeps its cancellation.
+  auto old = playing.find(fg);
+  if (!p.external && old != playing.end() && old->second.lip_key == lip_key &&
+      old->second.external && !old->second.external->stopped)
+    p.external = old->second.external;
+  p.seen = play_clock;
+  playing[fg] = std::move(p);
+  Count();
+}
+
 __attribute__((noinline)) float SpeakHook(
     uint8_t* actor, const char* voice, void* handle, uint64_t emo_type,
     uint64_t emo_value, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9,
@@ -785,7 +858,7 @@ __attribute__((noinline)) float SpeakHook(
   const Tune tune = SnapshotTune();
   std::string stem;
   if (!(tune.enabled || net_loaded) || !voice || !ready || !SpeakerOk(actor) ||
-      !VoiceStem(voice, stem)) {
+      !VoiceStem(voice, stem) || (!tune.player && IsPlayer(actor))) {
     note("not for the plugin");
     return dur;
   }
@@ -794,33 +867,8 @@ __attribute__((noinline)) float SpeakHook(
     return dur;
   }
   note("taken");
-  auto get_fg = reinterpret_cast<uint8_t* (*)(uint8_t*)>(
-      Field<void**>(actor, 0)[kVfGetFaceGenAnimationData]);
-  uint8_t* fg = get_fg(actor);
-  if (!fg) return dur;
-  auto e =
-      Request(stem, static_cast<int>(static_cast<uint32_t>(emo_type)),
-              static_cast<int>(static_cast<uint32_t>(emo_value)), true, tune);
-  skse::ResId r{};
-  Engine<GenerateFromPathFn, kIdGenerateFromPath>()(&r,
-                                                    (stem + ".lip").c_str());
-  Playing p;
-  p.entry = e;
-  p.name = stem;
-  p.lip_key = skse::KeyOf(r);
-  p.actor = actor;
-  p.actor_handle = HandleOf(actor);
-  static std::atomic<int> no_handle;
-  if (!p.actor_handle && LogMore(no_handle))
-    Log("speak %s: the actor has no handle", voice);
-  p.voice = {SoundId(handle), Now(), dur};
-  uint32_t sound;
-  int playing_now = ActorVoice(actor, sound);
-  p.voice.Observe(sound, playing_now, p.voice.requested_at);
-  ScopedLock guard(lock);
-  p.seen = play_clock;
-  playing[fg] = std::move(p);
-  Count();
+  BeginSpeech(actor, stem, SoundId(handle), dur, static_cast<int>(emo_type),
+              static_cast<int>(emo_value), tune);
   return dur;
 }
 
@@ -920,6 +968,11 @@ float LineClock(uint8_t* fg, Playing& p, double now, bool& lip,
   bool hold = p.voice.Holding(voice_state);  // until the line's sound plays
   float t = hold ? 0 : static_cast<float>(p.voice.Elapsed(now));
   why = now - p.voice.requested_at > 120 ? "timed out" : nullptr;
+  if (p.external && p.external->stopped)
+    why = "the provider ended or replaced the line";
+  // A provider's own line (BeginSpeech) has no sound to follow: it ends with
+  // the provider's notification or audio length, never the delay after it.
+  const bool followed = !p.external || p.voice.sound_id != a2f::kNoSound;
   lip = act && skse::KeyOf(*act) == p.lip_key;
   if (lip) {  // engine lip clock
     t = p.lip_clock.Update(Field<float>(fg, skse::kFgPhon1Timer), now, p.voice,
@@ -927,9 +980,12 @@ float LineClock(uint8_t* fg, Playing& p, double now, bool& lip,
     p.lip_seen = true;
   } else if (p.lip_seen) {
     why = "the engine ended or replaced its lip line";
-  } else if (p.voice.Ended(voice_state, now)) {
+  } else if (followed && p.voice.Ended(voice_state, now)) {
     why = "the voice ended";  // no .lip: wall clock while the voice plays
   }
+  if (!why && p.external && p.external->duration > 0 &&
+      t >= p.external->duration)
+    why = "the player audio ended";
   if (!why && p.entry->state == State::kFailed)
     why = "the line could not be generated";
   if (!why && p.entry->state == State::kReady &&
@@ -997,20 +1053,22 @@ int Apply(uint8_t* fg, const Tune& tune, bool in_scene) {
   const char* why;
   const float t = LineClock(fg, p, now, lip, why);
   const bool done = why != nullptr;
+  const bool enabled = EnabledFor(tune, p.player);
   const Face* face = LiveFace(fg);
   const State head_state = face ? face->head_state : State::kPending;
   const bool generated = p.entry->state == State::kReady;
   // holding (t = 0) too: the engine's .lip already runs before the sound
-  if (done || !generated || !tune.enabled || head_state != State::kReady) {
+  if (done || !generated || !enabled || head_state != State::kReady) {
     p.direct_frame = -1;
-    if (!tune.enabled) p.snap = true;
+    if (!enabled) p.snap = true;
     bool tail = p.direct_tail > 0;
     if (tail) --p.direct_tail;
     // the mapping is found in the morph hook: keep it coming
-    if (!done && tune.enabled && head_state == State::kPending) tail = true;
-    if (!done && generated && !tune.enabled && !p.logged && tune.logging) {
+    if (!done && enabled && head_state == State::kPending) tail = true;
+    if (!done && generated && !enabled && !p.logged && tune.logging) {
       p.logged = true;
-      Log("vanilla %s: Enabled is off", p.name.c_str());
+      Log("vanilla %s: %s is off", p.name.c_str(),
+          tune.enabled ? "PlayerFacialAnimations" : "Enabled");
     }
     if (done && !tail) {
       LogEnd(p, head_state, why, t);
@@ -1176,8 +1234,12 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene) {
       fg == partner_fg && partner_ref && PartnerRef() == partner_ref;
   auto pit = playing.find(fg);
   const bool in_line = pit != playing.end();
-  const bool wanted =
-      tune.enabled && !in_scene && (in_line || (partner && has_ex));
+  auto existing = faces.find(fg);
+  const bool player = in_line ? pit->second.player
+                              : existing != faces.end() &&
+                                    existing->second.player;
+  const bool enabled = EnabledFor(tune, player);
+  const bool wanted = enabled && !in_scene && (in_line || (partner && has_ex));
   Face* found = FaceFor(fg, wanted, clock);
   if (!found) {
     return kNoUpdate;
@@ -1193,6 +1255,7 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene) {
                                    : nullptr;
   if (actor && (actor != f.actor || !f.actor_handle)) {
     f.actor = actor;
+    f.player = IsPlayer(actor);
     f.actor_handle = HandleOf(actor);
   }
   if (wanted) {
@@ -1200,7 +1263,7 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene) {
   } else if (in_scene) {
     f.until = 0;  // back to the engine's
   }
-  const bool owns_expressions = tune.enabled && clock < f.until;
+  const bool owns_expressions = enabled && clock < f.until;
   f.ownership_blend = std::clamp(
       f.ownership_blend + (owns_expressions ? dt / kOwnIn : -dt / kOwnOut), 0.f,
       1.f);
@@ -1209,7 +1272,7 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene) {
   // as the network's input) and back in after it; from the moment it is
   // spoken, while it is still being generated too (not on a head that keeps
   // vanilla lip-sync)
-  const bool speaking = in_line && tune.enabled &&
+  const bool speaking = in_line && enabled &&
                         (pit->second.direct_frame >= 0 ||
                          (pit->second.entry->state == State::kPending &&
                           f.head_state != State::kFailed));
@@ -1329,6 +1392,7 @@ void AddDirect(uint8_t* node, bool reset) {
     if (!LiveFace(fg)) return;
   }
   const Tune tune = SnapshotTune();
+  bool enabled = false;
   const std::string key = HeadKey(node);
   std::shared_ptr<const a2f::Line> line;
   std::shared_ptr<const direct::Head> head;
@@ -1340,6 +1404,7 @@ void AddDirect(uint8_t* node, bool reset) {
     ScopedLock guard(lock);
     Face* face = LiveFace(fg);
     if (!face) return;
+    enabled = EnabledFor(tune, face->player);
     if (face->head_key != key) {
       face->head_key = key;
       face->head_state = State::kPending;
@@ -1351,7 +1416,7 @@ void AddDirect(uint8_t* node, bool reset) {
     head = face->head;
     std::copy_n(face->level, direct::kNumExpressions, levels);
     auto it = playing.find(fg);
-    if (tune.enabled && state == State::kReady && it != playing.end() &&
+    if (enabled && state == State::kReady && it != playing.end() &&
         it->second.direct_frame >= 0) {
       line = it->second.entry->line;
       frame = it->second.direct_frame;
@@ -1384,8 +1449,8 @@ void AddDirect(uint8_t* node, bool reset) {
     const float fade = !line  ? tune.face_out
                        : late ? tune.blend_in
                               : tune.face_in;
-    speaking = face->transition.Blend(line, Now(), fade, tune.enabled, snap,
-                                      coefficients);
+    speaking =
+        face->transition.Blend(line, Now(), fade, enabled, snap, coefficients);
   }
   // a head made for smaller facial motion takes the speech scaled down
   float scales[direct::kNumRegions];
@@ -1421,6 +1486,7 @@ __attribute__((noinline)) uint64_t ApplyMorphsHook(uint8_t* node,
 
 // ---------------- SKSE ----------------
 void OnMessage(skse::SKSEMessage* m) {
+  PlayerSpeechMessage(m->type);
   if (m->type != skse::kMessageDataLoaded) return;
   LoadHeadPartTypes();  // before the worker, which turns Direct on
   LoadSceneFactions();
@@ -1435,6 +1501,7 @@ void OnMessage(skse::SKSEMessage* m) {
 
 bool Load(const skse::SKSEInterface* iface) {
   skse::SetRuntime(iface->runtimeVersion);
+  InitPlayerSpeech(iface);
   LoadIni();  // turns the log on when Logging=1
   skse::Report("Better Facial Animations %s, game runtime %08X", kVersion,
                iface->runtimeVersion);
@@ -1471,6 +1538,22 @@ bool Load(const skse::SKSEInterface* iface) {
 }
 
 }  // namespace
+
+void StartPlayerSpeech(PlayerSpeechPtr speech) {
+  const Tune tune = SnapshotTune();
+  if (!ready || !tune.enabled || !tune.player) return;
+  const auto address = Addr(kIdPlayer);
+  auto* actor = address ? *reinterpret_cast<uint8_t**>(address) : nullptr;
+  if (!SpeakerOk(actor) || InScene(actor)) return;
+  std::string stem;
+  if (!VoiceStem(("Sound/" + speech->path).c_str(), stem)) return;
+  // as the engine's own paths, so both share one generated line
+  std::replace(stem.begin(), stem.end(), '/', '\\');
+  Log("player speech: %s (audio %.3f s)", stem.c_str(), speech->duration);
+  const float duration = speech->duration;
+  BeginSpeech(actor, stem, a2f::kNoSound, duration, 0, 0, tune,
+              std::move(speech));
+}
 }  // namespace bfa
 
 // SE 1.5.97's and VR's SKSE ask this instead of reading SKSEPlugin_Version.

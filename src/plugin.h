@@ -32,6 +32,7 @@ struct Config {  // fixed after load
 };
 struct Tune {  // menu; defaults as dist/BetterFacialAnimations.ini
   bool enabled = true;
+  bool player = true;
   bool prefetch = true;
   bool logging = true;
   // how much louder speech adds to a line's emotion
