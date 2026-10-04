@@ -7,8 +7,7 @@
 #   ./build.sh test               also check every supported runtime (tests/runtimes_test.cc) and the
 #                                 Direct mesh placement, voice-start gating, losing and regaining the GPU
 #                                 session (tests/net_keeper_test.cc) and the CPU session
-#                                 (tests/ort_net_test.cc: the packaged network loads and runs), the model's
-#                                 own process (tests/proc_net_test.cc) and the
+#                                 (tests/ort_net_test.cc: the packaged network loads and runs) and the
 #                                 line's emotion and call sites shared with another plugin, under $WINE
 # Dependency locations (see README) can be overridden with these variables:
 cd "$(dirname "$0")" || exit 1
@@ -32,16 +31,13 @@ $CXX -Wall -c src/skse.cc -o build/skse.o &&
 $CXX -Wall -c src/direct.cc -o build/direct.o &&
 $CXX -Wall -isystem "$FFMPEG/include" -c src/live_core.cc -o build/live_core.o &&
 $CXX -Wall -isystem "$ORT/build/native/include" -c src/ort_net.cc -o build/ort_net.o &&
-$CXX -Wall -c src/proc_net.cc -o build/proc_net.o &&
-# the model's own process (src/proc_net.h)
-$CXX -Wall -static -s -municode src/model_process.cc build/ort_net.o -o build/BetterFacialAnimationsModel.exe -ldxgi &&
-$CXX -shared -s build/better_facial_animations.o build/settings.o build/pose.o build/net_keeper.o build/head_cache.o build/menu.o build/skse.o build/direct.o build/live_core.o build/ort_net.o build/proc_net.o -o build/BetterFacialAnimations.dll \
+$CXX -shared -s build/better_facial_animations.o build/settings.o build/pose.o build/net_keeper.o build/head_cache.o build/menu.o build/skse.o build/direct.o build/live_core.o build/ort_net.o -o build/BetterFacialAnimations.dll \
     -L$FFMPEG/lib -lavformat -lavcodec -lswresample -lavutil -lbcrypt -lshell32 -lole32 -luuid -ldxgi -static -static-libgcc -static-libstdc++ || exit 1
 
 PKG=build/mod; P=$PKG/SKSE/Plugins; L=$P/BetterFacialAnimations/licenses
 rm -rf $PKG; mkdir -p $L
 cp build/BetterFacialAnimations.dll dist/BetterFacialAnimations.ini $P/
-cp build/BetterFacialAnimationsModel.exe $ORT/runtimes/win-x64/native/onnxruntime.dll $ORT/runtimes/win-x64/native/onnxruntime_providers_shared.dll \
+cp $ORT/runtimes/win-x64/native/onnxruntime.dll $ORT/runtimes/win-x64/native/onnxruntime_providers_shared.dll \
    $DML/bin/x64-win/DirectML.dll $MODEL dist/A2FDirect.bin dist/NOTICE.txt $P/BetterFacialAnimations/ || exit 1
 sed "s/@VERSION@/$V/" dist/README.txt > $P/BetterFacialAnimations/README.txt
 cp LICENSE $L/BetterFacialAnimations-GPL-3.0.txt
@@ -82,12 +78,10 @@ test)
     $CXX -Wall -static tests/call_sites_test.cc -o $T/call_sites_test.exe &&
     $CXX -Wall -static src/net_keeper.cc tests/net_keeper_test.cc -o $T/net_keeper_test.exe &&
     $CXX -Wall -static tests/ort_net_test.cc build/ort_net.o -o $T/ort_net_test.exe -ldxgi &&
-    $CXX -Wall -static tests/proc_net_test.cc build/proc_net.o build/ort_net.o -o $T/proc_net_test.exe -ldxgi &&
     WINEDEBUG=-all ${WINE-wine64} $T/runtimes_test.exe build/BetterFacialAnimations.dll $T &&
     WINEDEBUG=-all ${WINE-wine64} $T/direct_test.exe &&
     WINEDEBUG=-all ${WINE-wine64} $T/voice_sync_test.exe &&
     WINEDEBUG=-all ${WINE-wine64} $T/call_sites_test.exe &&
     WINEDEBUG=-all ${WINE-wine64} $T/net_keeper_test.exe &&
-    WINEDEBUG=-all ${WINE-wine64} $T/ort_net_test.exe $P/BetterFacialAnimations "$P/BetterFacialAnimations/$(basename "$MODEL")" "$MODEL_FP32" &&
-    WINEDEBUG=-all ${WINE-wine64} $T/proc_net_test.exe $P/BetterFacialAnimations "$P/BetterFacialAnimations/$(basename "$MODEL")" ;;
+    WINEDEBUG=-all ${WINE-wine64} $T/ort_net_test.exe $P/BetterFacialAnimations "$P/BetterFacialAnimations/$(basename "$MODEL")" "$MODEL_FP32" ;;
 esac

@@ -83,14 +83,15 @@ int main(int argc, char** argv) {
     Expect(mean < 0.003 * (hi - lo) && max < 0.08 * (hi - lo),
            "FP16 output matches FP32");
   }
+  Expect(a2f::DeviceRedirected(),
+         "onnxruntime creates its Direct3D 12 device through the plugin");
   // Must not crash without a GPU; under Wine it may know nothing.
   a2f::GpuState g = a2f::QueryGpu();
   printf("  adapter 0: \"%s\", %.0f MB dedicated, %.0f / %.0f MB in use%s\n",
          g.adapter.c_str(), g.dedicated_mb, g.used_mb, g.budget_mb,
          g.known ? "" : " (unknown)");
   // The report for the log: must not crash either.
-  for (auto report : {a2f::SystemReport, a2f::DeviceReport, a2f::ModuleReport})
-    for (const auto& line : report()) printf("  %s\n", line.c_str());
+  for (const auto& line : a2f::GpuReport()) printf("  %s\n", line.c_str());
   printf(failures ? "%d FAILED\n" : "all ok\n", failures);
   return failures != 0;
 }

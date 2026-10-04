@@ -12,8 +12,7 @@ When an actor with a FaceGen head speaks, the plugin runs the voice file through
 - `src/live_core.*`: audio decoding, the line's emotion (game, loudness), Audio2Face network windows, Direct coefficients
 - `src/direct.*`: A2FDirect.bin (Mark), the head -> Mark mapping (skin, jaw, tongue) and per-frame vertex deltas
 - `tools/mark_export.py`: writes A2FDirect.bin from the Audio2Face Mark package
-- `src/ort_net.*`, `src/net_keeper.*`, `src/gpu_state.h`: ONNX Runtime C API wrapper (loaded at runtime), keeping and regaining the GPU session
-- `src/proc_net.*`, `src/model_process.cc`, `src/net_wire.h`: the session in a process of its own (`BetterFacialAnimationsModel.exe`), out of reach of what hooks the game's Direct3D (ReShade, ENB), and the messages between the two
+- `src/ort_net.*`, `src/net_keeper.*`, `src/gpu_state.h`: ONNX Runtime C API wrapper (loaded at runtime), keeping and regaining the GPU session; the session gets Direct3D's own device where ReShade hands out a wrapper of it
 - `src/skse.*`: SKSE ABI, log, Address Library, engine layout
 - `dist/`: ini, Direct face data (`A2FDirect.bin`), player readme, notices, model license
 
