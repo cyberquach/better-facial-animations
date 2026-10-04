@@ -12,6 +12,7 @@ emotion strength are in the settings page. Vanilla, DLC and modded voices all wo
 
 Requirements
   Skyrim Special Edition 1.6.1170, 1.6.1179 (GOG), 1.7.99 or 1.7.104 (AE), matching SKSE, Address Library for SKSE Plugins.
+  Or Skyrim VR 1.4.15 with SKSEVR (no Address Library needed; not yet looked at in a headset).
   Not the Epic Games Store version: SKSE does not support it.
   A DirectX 12 GPU (~100 MB of VRAM, held from the main menu until the game exits). If the model cannot
   be loaded on the GPU the settings window says why, it is retried and lines run on the CPU meanwhile (slow).
@@ -20,7 +21,7 @@ Requirements
 Settings
   Data/SKSE/Plugins/BetterFacialAnimations.ini, or in game through SKSE Menu Framework.
 Log
-  Documents/My Games/Skyrim Special Edition/SKSE/BetterFacialAnimations.log
+  Documents/My Games/Skyrim Special Edition/SKSE/BetterFacialAnimations.log (Skyrim VR/SKSE/ on VR)
   The GPU, the driver and what went wrong loading the model are always written there: attach it to a bug
   report. Logging (menu Debug section or [Debug] Logging=1, on by default) adds the generated and played lines.
 

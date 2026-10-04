@@ -684,7 +684,7 @@ uint8_t* PartnerRef() {
 // The node is in the reference's 3D.
 bool OfRef(uint8_t* node, const uint8_t* ref) {
   for (int i = 0; node && i < 32; node = Field<uint8_t*>(node, kAvParent), ++i)
-    if (Field<uint8_t*>(node, kAvUserData) == ref) return true;
+    if (Field<uint8_t*>(node, kAvUserData.Get()) == ref) return true;
   return false;
 }
 
@@ -1197,7 +1197,7 @@ bool AddDeltas(uint8_t* node, const direct::Head& head,
 // the base and the morphs: reset) adds the line's Direct frame and the
 // expressions to every dynamic face shape of the node.
 void AddDirect(uint8_t* node, bool reset) {
-  uint8_t* fg = Field<uint8_t*>(node, kNodeFg);
+  uint8_t* fg = Field<uint8_t*>(node, kNodeFg.Get());
   if (!fg) return;
   TrackPartner(node, fg);
   {
@@ -1288,7 +1288,7 @@ __attribute__((noinline)) uint64_t ApplyMorphsHook(uint8_t* node,
                                                    uint8_t force) {
   auto orig =
       SiteOrig<ApplyMorphsFn>(__builtin_return_address(0), kIdApplyMorphs);
-  bool reset = force || (Field<uint16_t>(node, kNodeFlags) & 1);
+  bool reset = force || (Field<uint16_t>(node, kNodeFlags.Get()) & 1);
   uint64_t r = orig(node, force);
   if (ready && (num_playing || num_faces || PartnerRef() != partner_ref))
     AddDirect(node, reset);
@@ -1348,13 +1348,15 @@ bool Load(const skse::SKSEInterface* iface) {
 }  // namespace
 }  // namespace bfa
 
-// SE 1.5.97's SKSE asks this instead of reading SKSEPlugin_Version.
+// SE 1.5.97's and VR's SKSE ask this instead of reading SKSEPlugin_Version.
 extern "C" __declspec(dllexport) bool SKSEPlugin_Query(
     const skse::SKSEInterface* iface, skse::PluginInfo* info) {
   info->infoVersion = 1;
   info->name = SKSEPlugin_Version.name;
   info->version = SKSEPlugin_Version.pluginVersion;
-  return !iface->isEditor && iface->runtimeVersion == skse::Version(1, 5, 97);
+  return !iface->isEditor &&
+         (iface->runtimeVersion == skse::Version(1, 5, 97) ||
+          iface->runtimeVersion == skse::kVrRuntime);
 }
 
 extern "C" __declspec(dllexport) bool SKSEPlugin_Load(

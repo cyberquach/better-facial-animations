@@ -1,5 +1,5 @@
-// SKSE ABI, log, Address Library and engine layout (SE 1.5.97, AE 1.6.640 and
-// 1.6.1170+).
+// SKSE ABI, log, Address Library and engine layout (VR 1.4.15, SE 1.5.97, AE
+// 1.6.640 and 1.6.1170+).
 #ifndef SRC_SKSE_H_
 #define SRC_SKSE_H_
 
@@ -23,7 +23,7 @@ struct SKSEPluginVersionData {
 };
 static_assert(sizeof(SKSEPluginVersionData) == 0x350, "SKSEPluginVersionData");
 
-// SE's SKSE (1.5.97) asks SKSEPlugin_Query for this instead.
+// SE's (1.5.97) and VR's SKSE ask SKSEPlugin_Query for this instead.
 struct PluginInfo {
   uint32_t infoVersion;
   const char* name;
@@ -60,12 +60,15 @@ constexpr uint32_t Version(uint32_t major, uint32_t minor, uint32_t build,
                            Store store = kSteam) {
   return (major << 24) | (minor << 16) | (build << 4) | store;
 }
+// VR's one runtime; SKSEVR sets the last field to 1 (not a store there).
+constexpr uint32_t kVrRuntime = Version(1, 4, 15) | 1;
 
 // Records the runtime: the My Games folder per store and the Address Library
 // file. Call first in SKSEPlugin_Load.
 void SetRuntime(uint32_t runtime_version);
-// The runtime set above is SE (1.5.x) rather than AE (1.6+); AE until set.
+// The runtime set above is SE (1.5.x) / VR (1.4.x); neither (AE) until set.
 bool IsSe();
+bool IsVr();
 // <plugin name>.log in that folder's SKSE directory, created (truncated) by
 // the first line written. Log is a no-op while logging is off; Report always
 // writes (what a bug report needs), up to kMaxReportLines.
@@ -74,17 +77,18 @@ void Log(const char* fmt, ...);
 void Report(const char* fmt, ...);
 constexpr int kMaxReportLines = 3000;
 
-// A value that differs between SE and AE, like CommonLibSSE-NG's
+// A value that differs between SE, AE and VR, like CommonLibSSE-NG's
 // RelocationID: an Address Library id or a member offset. An id of 0 does not
-// exist on that runtime.
+// exist on that runtime. VR's ids are offsets into SkyrimVR.exe itself: it has
+// one version, and its Address Library lacks most of the ids.
 struct Rel {
-  uint64_t se, ae;
-  uint64_t Get() const { return IsSe() ? se : ae; }
+  uint64_t se, ae, vr;
+  uint64_t Get() const { return IsVr() ? vr : IsSe() ? se : ae; }
 };
 
 // Address Library for the runtime set above (version format 1 on SE,
-// versionlib format 2, or 5 from 1.7.99). Also records the executable's image
-// base; Addr returns 0 for unknown ids.
+// versionlib format 2, or 5 from 1.7.99; none on VR). Also records the
+// executable's image base; Addr returns 0 for unknown ids.
 bool LoadAddressLibrary();
 uint64_t ImageBase();
 uint64_t Addr(uint64_t id);

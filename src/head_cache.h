@@ -43,17 +43,17 @@ void ClearHeads();
 // The node's dynamic face shapes the mapping covers.
 template <typename Fn>
 void ForFaceShapes(uint8_t* node, Fn fn) {
-  uint8_t** kids = Field<uint8_t**>(node, kNodeChildren);
-  uint16_t n = Field<uint16_t>(node, kNodeNumChildren);
+  uint8_t** kids = Field<uint8_t**>(node, kNodeChildren.Get());
+  uint16_t n = Field<uint16_t>(node, kNodeNumChildren.Get());
   for (uint16_t i = 0; kids && i < n; ++i) {
     uint8_t* shape = kids[i];
-    if (!shape || shape[kGeomType] != 4) continue;
+    if (!shape || shape[kGeomType.Get()] != 4) continue;
     const char* name = Field<const char*>(shape, kObjName);
     bool skin = false;
     direct::Part part = name ? Classify(name, skin) : direct::Part::kNone;
     if (part == direct::Part::kNone) continue;
-    uint32_t nv = Field<uint16_t>(shape, kDynNumVerts);
-    if (Field<uint32_t>(shape, kDynDataSize) != nv * 16) continue;
+    uint32_t nv = Field<uint16_t>(shape, kDynNumVerts.Get());
+    if (Field<uint32_t>(shape, kDynDataSize.Get()) != nv * 16) continue;
     uint32_t nb = 0;
     const float* base = BaseVerts(shape, nb);
     if (!base || nb != nv) continue;
