@@ -66,11 +66,13 @@ constexpr uint32_t Version(uint32_t major, uint32_t minor, uint32_t build,
 void SetRuntime(uint32_t runtime_version);
 // The runtime set above is SE (1.5.x) rather than AE (1.6+); AE until set.
 bool IsSe();
-// <plugin name>.log in that folder's SKSE directory, created (truncated) the
-// first time logging is turned on; Log is a no-op while it is off. True when
-// this call created the file.
-bool SetLogging(bool on);
+// <plugin name>.log in that folder's SKSE directory, created (truncated) by
+// the first line written. Log is a no-op while logging is off; Report always
+// writes (what a bug report needs), up to kMaxReportLines.
+void SetLogging(bool on);
 void Log(const char* fmt, ...);
+void Report(const char* fmt, ...);
+constexpr int kMaxReportLines = 3000;
 
 // A value that differs between SE and AE, like CommonLibSSE-NG's
 // RelocationID: an Address Library id or a member offset. An id of 0 does not

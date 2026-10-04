@@ -33,7 +33,7 @@ struct Config {  // fixed after load
 struct Tune {  // menu; defaults as dist/BetterFacialAnimations.ini
   bool enabled = true;
   bool prefetch = true;
-  bool logging = false;
+  bool logging = true;
   // how much louder speech adds to a line's emotion
   float voice_swell = 0.25f;
   // s for the game's expressions to fade out when a line starts (the face
@@ -99,6 +99,9 @@ struct Stats {
   int net_attempts = 0;
   double net_retry_at = 0;
   bool net_gpu = false;  // the loaded session is the GPU one
+  // The driver's metacommands and the GPU session, one line
+  // (a2f::DescribeMetacommands).
+  std::string net_metacommands;
   // Why the plugin is not running (A2FDirect.bin).
   std::string startup_error;
   // The last network events (loads, failures, losses) and when (Now()).

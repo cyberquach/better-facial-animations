@@ -357,6 +357,12 @@ std::wstring PluginDir() {
   return full;
 }
 
+void NetEvent(const std::string& text);
+
+// Worker thread only: what the GPU sessions found out about the driver's
+// metacommands.
+a2f::Metacommands metacommands;
+
 std::unique_ptr<a2f::Net> CreateNet(bool gpu, std::string& err,
                                     std::string& info) {
   const std::wstring dir = PluginDir(), file = dir + L"\\" + config.model;
@@ -367,8 +373,8 @@ std::unique_ptr<a2f::Net> CreateNet(bool gpu, std::string& err,
     dml_loaded = LoadLibraryExW((dir + L"\\DirectML.dll").c_str(), nullptr,
                                 LOAD_WITH_ALTERED_SEARCH_PATH) != nullptr;
     if (!dml_loaded)
-      Log("DirectML.dll not loaded from %ls (error %lu)", dir.c_str(),
-          GetLastError());
+      skse::Report("DirectML.dll not loaded from %ls (error %lu)", dir.c_str(),
+                   GetLastError());
   }
   a2f::OrtOptions o;
   o.gpu = gpu;
@@ -380,7 +386,19 @@ std::unique_ptr<a2f::Net> CreateNet(bool gpu, std::string& err,
     err = std::string("model file not found: ") + name;
     return nullptr;
   }
-  return a2f::CreateOrtNet(dir, file, o, err, info);
+  if (!gpu) return a2f::CreateOrtNet(dir, file, o, err, info);
+  // with the driver's metacommands, and without them when that fails
+  return a2f::CreateGpuNet(
+      [&](bool with, std::string& e, std::string& i) {
+        o.metacommands = with;
+        const double t = Now();
+        auto net = a2f::CreateOrtNet(dir, file, o, e, i);
+        skse::Report("GPU session with metacommands %s: %s after %.0f ms",
+                     with ? "on" : "off", net ? "loaded" : "failed",
+                     (Now() - t) * 1e3);
+        return net;
+      },
+      metacommands, err, info, NetEvent);
 }
 
 // Worker thread only; created by the worker once the ini is read. Loads the
@@ -389,7 +407,7 @@ a2f::NetKeeper* keeper;
 
 // Network events go to the log and to the settings window.
 void NetEvent(const std::string& text) {
-  Log("%s", text.c_str());
+  skse::Report("%s", text.c_str());
   ScopedLock guard(lock);
   stats.events.emplace_back(Now(), text);
   if (stats.events.size() > kMaxEvents) stats.events.pop_front();
@@ -406,7 +424,16 @@ void PublishNet() {
     diagnosed = keeper->attempts();
     why = a2f::DiagnoseNet(config.gpu, keeper->error(), diagnosed,
                            a2f::QueryGpu());
-    for (const auto& line : why) Log("%s", line.c_str());
+    for (const auto& line : why) skse::Report("%s", line.c_str());
+    // the system as it is at the first failure (the report at startup is
+    // from the main menu)
+    static bool reported;
+    if (config.gpu && !reported) {
+      reported = true;
+      skse::Report("-- at the first failure");
+      for (const auto& line : a2f::GpuReport())
+        skse::Report("%s", line.c_str());
+    }
   }
   net_loaded = keeper->loaded();
   ScopedLock guard(lock);
@@ -416,6 +443,9 @@ void PublishNet() {
   stats.net_attempts = keeper->attempts();
   stats.net_retry_at = keeper->retry_at();
   stats.net_gpu = keeper->on_gpu();
+  stats.net_metacommands = config.gpu
+                               ? a2f::DescribeMetacommands(metacommands)
+                               : "not used (GPU=0: the CPU runs the model)";
 }
 
 // Generates one queued line and stores the result in the cache.
@@ -505,12 +535,16 @@ void Process(const Job& j) {
 DWORD WINAPI Worker(void*) {
   std::string err;
   if (!model.Load(PluginDir() + L"\\A2FDirect.bin", err)) {
-    Log("A2FDirect.bin: %s", err.c_str());
+    skse::Report("A2FDirect.bin: %s", err.c_str());
     ScopedLock guard(lock);
     stats.startup_error = "A2FDirect.bin: " + err;
     return 1;
   }
   ready = true;
+  skse::Report("settings: GPU=%d, batch %d, model %ls", config.gpu,
+               config.batch, config.model.c_str());
+  for (const auto& line : a2f::GpuReport()) skse::Report("%s", line.c_str());
+  a2f::SetOrtLog([](const std::string& s) { skse::Report("%s", s.c_str()); });
   keeper = new a2f::NetKeeper(config.gpu, CreateNet, Now, NetEvent);
   auto load = [] {
     keeper->Ensure();
@@ -1277,14 +1311,15 @@ void OnMessage(skse::SKSEMessage* m) {
 bool Load(const skse::SKSEInterface* iface) {
   skse::SetRuntime(iface->runtimeVersion);
   LoadIni();  // turns the log on when Logging=1
-  Log("runtime %08X", iface->runtimeVersion);
+  skse::Report("Better Facial Animations %s, game runtime %08X", kVersion,
+               iface->runtimeVersion);
   if (!skse::LoadAddressLibrary()) {
-    Log("address library not loaded");
+    skse::Report("address library not loaded");
     return false;
   }
   if (!Addr(kIdGenerateFromPath) || !Addr(kIdStreamCtor) ||
       !Addr(kIdStreamDtor)) {
-    Log("address ids not found");
+    skse::Report("address ids not found");
     return false;
   }
   if (!HookCalls("speak", kIdSpeakVoiceLine, kSpeakCallers,

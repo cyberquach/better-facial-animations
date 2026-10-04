@@ -88,6 +88,8 @@ int main(int argc, char** argv) {
   printf("  adapter 0: \"%s\", %.0f MB dedicated, %.0f / %.0f MB in use%s\n",
          g.adapter.c_str(), g.dedicated_mb, g.used_mb, g.budget_mb,
          g.known ? "" : " (unknown)");
+  // The report for the log: must not crash either.
+  for (const auto& line : a2f::GpuReport()) printf("  %s\n", line.c_str());
   printf(failures ? "%d FAILED\n" : "all ok\n", failures);
   return failures != 0;
 }

@@ -23,16 +23,46 @@ const wchar_t* my_games = L"Skyrim Special Edition";
 uint64_t image_base;
 std::vector<std::pair<uint64_t, uint64_t>> ids;  // id -> offset, sorted by id
 
+// Opens the log on first use; false when there is none.
+bool OpenLog() {
+  static std::atomic<bool> tried{false};
+  if (log_file || tried.exchange(true)) return log_file != nullptr;
+  wchar_t* docs = nullptr;
+  wchar_t path[MAX_PATH];
+  if (SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &docs) != S_OK)
+    return false;
+  _snwprintf(path, MAX_PATH, L"%ls\\My Games\\%ls\\SKSE\\%hs.log", docs,
+             my_games, SKSEPlugin_Version.name);
+  CoTaskMemFree(docs);
+  log_file = _wfopen(path, L"w");
+  return log_file != nullptr;
+}
+
+void Write(const char* fmt, va_list a) {
+  vfprintf(log_file, fmt, a);
+  fputc('\n', log_file);
+  fflush(log_file);
+}
 }  // namespace
 
 void Log(const char* fmt, ...) {
-  if (!log_on || !log_file) return;
+  if (!log_on || !OpenLog()) return;
   va_list a;
   va_start(a, fmt);
-  vfprintf(log_file, fmt, a);
+  Write(fmt, a);
   va_end(a);
-  fputc('\n', log_file);
-  fflush(log_file);
+}
+
+void Report(const char* fmt, ...) {
+  static std::atomic<int> lines{0};
+  if (!OpenLog()) return;
+  const int n = ++lines;
+  if (n > kMaxReportLines) return;
+  if (n == kMaxReportLines) fmt = "(no more diagnostics are written)";
+  va_list a;
+  va_start(a, fmt);
+  Write(fmt, a);
+  va_end(a);
 }
 
 void SetRuntime(uint32_t runtime_version) {
@@ -50,19 +80,7 @@ void SetRuntime(uint32_t runtime_version) {
 
 bool IsSe() { return runtime && runtime < Version(1, 6, 0); }
 
-bool SetLogging(bool on) {
-  log_on = on;
-  if (!on || log_file) return false;
-  wchar_t* docs = nullptr;
-  wchar_t path[MAX_PATH];
-  if (SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &docs) != S_OK)
-    return false;
-  _snwprintf(path, MAX_PATH, L"%ls\\My Games\\%ls\\SKSE\\%hs.log", docs,
-             my_games, SKSEPlugin_Version.name);
-  CoTaskMemFree(docs);
-  log_file = _wfopen(path, L"w");
-  return log_file != nullptr;
-}
+void SetLogging(bool on) { log_on = on; }
 
 // version format 1 (SE), versionlib format 2 (CommonLibSSE-NG REL/ID.h; same
 // encoding) or format 5.

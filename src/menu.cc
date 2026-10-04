@@ -150,6 +150,10 @@ void RenderMenu() {
   ig.SeparatorText("Status");
   ig.Text("Version: %s", kVersion);
   ig.Text("Model: %s", st.net_info.c_str());
+  if (!st.net_metacommands.empty())
+    Notice(st.net_metacommands.rfind("off", 0) == 0 ? kYellow
+                                                     : ImVec4{1, 1, 1, 1},
+           "Driver metacommands: ", st.net_metacommands);
   ig.Text("Lines generated: %u (%u failed / no audio), cached %zu, queued %zu",
           st.lines, st.failed, cached, queued);
   if (st.lines)
