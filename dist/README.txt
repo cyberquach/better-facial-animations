@@ -25,11 +25,6 @@ Log
   report. Logging (menu Debug section or [Debug] Logging=1, on by default) adds the generated and played lines.
 
 Contents of this folder
-  BetterFacialAnimationsModel.exe                      runs the model in a process of its own, started by the plugin and
-                                                       closed with the game: ReShade, ENB, overlays and other mods that hook
-                                                       the game's graphics are not in it and cannot break the model. If it
-                                                       cannot be started (e.g. an antivirus blocks it) the model runs inside
-                                                       the game as before; the log says which.
   onnxruntime.dll, onnxruntime_providers_shared.dll   ONNX Runtime 1.24.4, DirectML build (MIT)
   DirectML.dll                                         Microsoft DirectML 1.15.4 (licenses/DirectML-LICENSE.txt)
   network_fp16.onnx                                    Audio2Face-3D v2.3 Mark, FP16 (NOTICE.txt)

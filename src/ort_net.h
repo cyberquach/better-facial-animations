@@ -1,6 +1,5 @@
 // a2f::Net on ONNX Runtime (DirectML build) through its C API, loaded at
-// runtime from the plugin folder. The plugin runs it in a process of its own
-// (proc_net.h).
+// runtime from the plugin folder.
 #ifndef SRC_ORT_NET_H_
 #define SRC_ORT_NET_H_
 
@@ -36,20 +35,17 @@ std::unique_ptr<Net> CreateOrtNet(const std::wstring& dll_dir,
 // Adapter 0 (the one DirectML uses) and this process's video memory there.
 GpuState QueryGpu();
 
-// What a bug report about the GPU session needs, one line each.
-// Windows, the adapters and their drivers, the game's VRAM on adapter 0.
-std::vector<std::string> SystemReport();
-// What Direct3D 12 offers on adapter 0 in this process (the driver's
-// metacommands among it). Creates a Direct3D 12 device: for the process the
-// GPU session runs in.
-std::vector<std::string> DeviceReport();
-// The modules loaded in this process that are not Windows' own (mods,
-// overlays, wrappers of Direct3D) and those the model runs on, with their
-// versions.
-std::vector<std::string> ModuleReport();
+// What a bug report about the GPU session needs, one line each: Windows, the
+// adapters and their drivers, what Direct3D 12 offers on adapter 0 (the
+// driver's metacommands among it) and the modules loaded in the game that
+// are not Windows' own, with their versions.
+std::vector<std::string> GpuReport();
 
-// Where onnxruntime's own warnings and errors go (the first 200 of this
-// process: a caller that hears from several processes caps them itself; any
+// True once onnxruntime.dll creates its Direct3D 12 device through the plugin
+// (the test checks the import is still there).
+bool DeviceRedirected();
+
+// Where onnxruntime's own warnings and errors go (the first 200; any
 // thread). Set before the first session.
 void SetOrtLog(void (*log)(const std::string&));
 

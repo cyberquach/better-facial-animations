@@ -52,25 +52,99 @@ bool Check(OrtStatus* s, std::string& err, const char* what) {
   return false;
 }
 
-// Adapter 0's Direct3D 12 device: one per adapter per process, so the very
-// device DirectML runs on. Null without Direct3D 12 (d3d12.dll is not
-// imported: the plugin loads without it).
-ID3D12Device* OpenDevice() {
-  using CreateFn =
-      HRESULT(WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
+// An export of d3d12.dll (not imported: the plugin loads without it).
+FARPROC D3d12Export(const char* id) {
   static const HMODULE d3d12 = LoadLibraryW(L"d3d12.dll");
-  auto create = d3d12 ? reinterpret_cast<CreateFn>(reinterpret_cast<void*>(
-                            GetProcAddress(d3d12, "D3D12CreateDevice")))
-                      : nullptr;
+  return d3d12 ? GetProcAddress(d3d12, id) : nullptr;
+}
+
+// Set when D3D12CreateDevice handed out a wrapper of the device.
+bool device_wrapped;
+// Set when onnxruntime.dll creates its device with CreateRealDevice.
+bool device_redirected;
+
+// D3D12CreateDevice, returning the device Direct3D itself made. ReShade hooks
+// that function and hands out a wrapper of the device, on which DirectML
+// loses the device on some systems (887A0005). A wrapper passes fence
+// creation on to the device, and the fence names the device that made it.
+HRESULT WINAPI CreateRealDevice(IUnknown* adapter, D3D_FEATURE_LEVEL level,
+                                REFIID riid, void** out) {
+  using Fn = HRESULT(WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
+  static const auto create = reinterpret_cast<Fn>(
+      reinterpret_cast<void*>(D3d12Export("D3D12CreateDevice")));
+  if (!create) return E_NOINTERFACE;
+  const HRESULT hr = create(adapter, level, riid, out);
+  if (FAILED(hr) || !out) return hr;  // no out: only asked whether it can
+  IUnknown* const got = static_cast<IUnknown*>(*out);
+  ID3D12Device* device = nullptr;
+  ID3D12Fence* fence = nullptr;
+  void* real = nullptr;
+  if (SUCCEEDED(got->QueryInterface(__uuidof(ID3D12Device),
+                                    reinterpret_cast<void**>(&device))) &&
+      SUCCEEDED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
+                                    __uuidof(ID3D12Fence),
+                                    reinterpret_cast<void**>(&fence))) &&
+      SUCCEEDED(fence->GetDevice(riid, &real))) {
+    device_wrapped |= real != *out;
+    got->Release();
+    *out = real;
+  }
+  if (fence) fence->Release();
+  if (device) device->Release();
+  return hr;
+}
+
+// Makes onnxruntime.dll create its Direct3D 12 device with CreateRealDevice,
+// by replacing the entry of its delay-load import table for D3D12CreateDevice
+// (imported by ordinal). False when it has no such import.
+bool RedirectCreateDevice(HMODULE ort) {
+  const FARPROC create = D3d12Export("D3D12CreateDevice");
+  if (!create) return false;
+  auto* base = reinterpret_cast<uint8_t*>(ort);
+  auto* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(
+      base + reinterpret_cast<IMAGE_DOS_HEADER*>(base)->e_lfanew);
+  const IMAGE_DATA_DIRECTORY& dir =
+      nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT];
+  if (!dir.VirtualAddress) return false;
+  for (auto* d = reinterpret_cast<IMAGE_DELAYLOAD_DESCRIPTOR*>(
+           base + dir.VirtualAddress);
+       d->DllNameRVA; ++d) {
+    if (_stricmp(reinterpret_cast<char*>(base + d->DllNameRVA), "d3d12.dll"))
+      continue;
+    auto* name =
+        reinterpret_cast<IMAGE_THUNK_DATA*>(base + d->ImportNameTableRVA);
+    auto* slot =
+        reinterpret_cast<IMAGE_THUNK_DATA*>(base + d->ImportAddressTableRVA);
+    for (; name->u1.AddressOfData; ++name, ++slot) {
+      const char* const id =
+          IMAGE_SNAP_BY_ORDINAL(name->u1.Ordinal)
+              ? reinterpret_cast<const char*>(IMAGE_ORDINAL(name->u1.Ordinal))
+              : reinterpret_cast<IMAGE_IMPORT_BY_NAME*>(
+                    base + name->u1.AddressOfData)
+                    ->Name;
+      if (D3d12Export(id) != create) continue;
+      DWORD protect;
+      if (!VirtualProtect(slot, sizeof *slot, PAGE_READWRITE, &protect))
+        return false;
+      slot->u1.Function = reinterpret_cast<ULONGLONG>(&CreateRealDevice);
+      VirtualProtect(slot, sizeof *slot, protect, &protect);
+      return true;
+    }
+  }
+  return false;
+}
+
+// Adapter 0's Direct3D 12 device: one per adapter per process, so the very
+// device DirectML runs on. Null without Direct3D 12.
+ID3D12Device* OpenDevice() {
   IDXGIFactory1* factory = nullptr;
   IDXGIAdapter* adapter = nullptr;
   ID3D12Device* device = nullptr;
-  if (create &&
-      SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory1),
+  if (SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory1),
                                    reinterpret_cast<void**>(&factory))) &&
       SUCCEEDED(factory->EnumAdapters(0, &adapter)))
-    create(adapter, D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device),
-           reinterpret_cast<void**>(&device));
+    CreateRealDevice(adapter, D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device),
+                     reinterpret_cast<void**>(&device));
   if (adapter) adapter->Release();
   if (factory) factory->Release();
   return device;
@@ -213,6 +287,10 @@ bool LoadApi(const std::wstring& dll_dir, std::string& err) {
   }
   // The successful module and environment live as long as the worker.
   version = base()->GetVersionString();
+  device_redirected = RedirectCreateDevice(h);
+  if (!device_redirected && ort_log)
+    ort_log("onnxruntime.dll does not import D3D12CreateDevice as expected: "
+            "a wrapper of Direct3D 12 (ReShade) stays in the model's way");
   return true;
 }
 
@@ -292,16 +370,6 @@ std::unique_ptr<Net> CreateOrtNet(const std::wstring& dll_dir,
                                   const std::wstring& model,
                                   const OrtOptions& o, std::string& err,
                                   std::string& info) {
-  static bool dml_loaded;
-  if (o.gpu && !dml_loaded) {
-    // onnxruntime delay-loads DirectML.dll by name: load ours first so that
-    // is the one it gets
-    dml_loaded = LoadLibraryExW((dll_dir + L"\\DirectML.dll").c_str(), nullptr,
-                                LOAD_WITH_ALTERED_SEARCH_PATH) != nullptr;
-    if (!dml_loaded && ort_log)
-      ort_log("DirectML.dll not loaded from the plugin folder (error " +
-              std::to_string(GetLastError()) + ")");
-  }
   if (!LoadApi(dll_dir, err)) return nullptr;
   const int batch = std::max(1, o.batch);
   OrtSession* sess;
@@ -367,7 +435,9 @@ std::string FileVersion(const wchar_t* path) {
 
 void SetOrtLog(void (*log)(const std::string&)) { ort_log = log; }
 
-std::vector<std::string> SystemReport() {
+bool DeviceRedirected() { return device_redirected; }
+
+std::vector<std::string> GpuReport() {
   std::vector<std::string> out;
   char b[900];
   // Windows (and Wine / Proton, where Direct3D 12 is vkd3d-proton)
@@ -424,12 +494,7 @@ std::vector<std::string> SystemReport() {
              g.used_mb, g.budget_mb);
     out.push_back(b);
   }
-  return out;
-}
-
-std::vector<std::string> DeviceReport() {
-  std::vector<std::string> out;
-  char b[200];
+  // what Direct3D 12 offers DirectML on adapter 0
   if (ID3D12Device* device = OpenDevice()) {
     const D3D_FEATURE_LEVEL levels[] = {
         D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_12_0,
@@ -469,11 +534,11 @@ std::vector<std::string> DeviceReport() {
   } else {
     out.push_back("Direct3D 12 on adapter 0: no device");
   }
-  return out;
-}
-
-std::vector<std::string> ModuleReport() {
-  std::vector<std::string> out;
+  if (device_wrapped)
+    out.push_back("Direct3D 12 hands out a wrapper of its device (ReShade "
+                  "does): the model runs on the device itself");
+  // The modules in the game that are not Windows' own (mods, overlays,
+  // wrappers of Direct3D) and those the model runs on, with their versions.
   wchar_t windows[MAX_PATH] = L"";
   const size_t wlen = GetWindowsDirectoryW(windows, MAX_PATH);
   std::vector<HMODULE> mods(4096);
