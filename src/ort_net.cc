@@ -16,6 +16,7 @@
 #include <cwctype>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "live_core.h"
@@ -52,6 +53,43 @@ bool Check(OrtStatus* s, std::string& err, const char* what) {
   return false;
 }
 
+// Owns a reference to a COM object.
+struct ComRelease {
+  void operator()(IUnknown* p) const { p->Release(); }
+};
+template <typename T>
+using ComPtr = std::unique_ptr<T, ComRelease>;
+
+// The object's interface T, or null when it has none.
+template <typename T>
+ComPtr<T> As(IUnknown* object) {
+  T* out = nullptr;
+  if (FAILED(object->QueryInterface(__uuidof(T),
+                                    reinterpret_cast<void**>(&out))))
+    out = nullptr;
+  return ComPtr<T>(out);
+}
+
+ComPtr<IDXGIFactory1> DxgiFactory() {
+  IDXGIFactory1* factory = nullptr;
+  if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1),
+                                reinterpret_cast<void**>(&factory))))
+    factory = nullptr;
+  return ComPtr<IDXGIFactory1>(factory);
+}
+
+// Owns an onnxruntime object.
+struct OrtRelease {
+  void operator()(OrtSessionOptions* p) const {
+    api->ReleaseSessionOptions(p);
+  }
+  void operator()(OrtSession* p) const { api->ReleaseSession(p); }
+  void operator()(OrtMemoryInfo* p) const { api->ReleaseMemoryInfo(p); }
+  void operator()(OrtValue* p) const { api->ReleaseValue(p); }
+};
+template <typename T>
+using OrtPtr = std::unique_ptr<T, OrtRelease>;
+
 // An export of d3d12.dll (not imported: the plugin loads without it).
 FARPROC D3d12Export(const char* id) {
   static const HMODULE d3d12 = LoadLibraryW(L"d3d12.dll");
@@ -76,21 +114,19 @@ HRESULT WINAPI CreateRealDevice(IUnknown* adapter, D3D_FEATURE_LEVEL level,
   const HRESULT hr = create(adapter, level, riid, out);
   if (FAILED(hr) || !out) return hr;  // no out: only asked whether it can
   IUnknown* const got = static_cast<IUnknown*>(*out);
-  ID3D12Device* device = nullptr;
-  ID3D12Fence* fence = nullptr;
+  const ComPtr<ID3D12Device> device = As<ID3D12Device>(got);
+  ID3D12Fence* made = nullptr;
+  if (!device || FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
+                                            __uuidof(ID3D12Fence),
+                                            reinterpret_cast<void**>(&made))))
+    return hr;
+  const ComPtr<ID3D12Fence> fence(made);
   void* real = nullptr;
-  if (SUCCEEDED(got->QueryInterface(__uuidof(ID3D12Device),
-                                    reinterpret_cast<void**>(&device))) &&
-      SUCCEEDED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE,
-                                    __uuidof(ID3D12Fence),
-                                    reinterpret_cast<void**>(&fence))) &&
-      SUCCEEDED(fence->GetDevice(riid, &real))) {
+  if (SUCCEEDED(fence->GetDevice(riid, &real))) {
     device_wrapped |= real != *out;
     got->Release();
     *out = real;
   }
-  if (fence) fence->Release();
-  if (device) device->Release();
   return hr;
 }
 
@@ -136,18 +172,17 @@ bool RedirectCreateDevice(HMODULE ort) {
 
 // Adapter 0's Direct3D 12 device: one per adapter per process, so the very
 // device DirectML runs on. Null without Direct3D 12.
-ID3D12Device* OpenDevice() {
-  IDXGIFactory1* factory = nullptr;
-  IDXGIAdapter* adapter = nullptr;
+ComPtr<ID3D12Device> OpenDevice() {
+  const ComPtr<IDXGIFactory1> factory = DxgiFactory();
+  IDXGIAdapter* first = nullptr;
+  if (!factory || FAILED(factory->EnumAdapters(0, &first))) return nullptr;
+  const ComPtr<IDXGIAdapter> adapter(first);
   ID3D12Device* device = nullptr;
-  if (SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory1),
-                                   reinterpret_cast<void**>(&factory))) &&
-      SUCCEEDED(factory->EnumAdapters(0, &adapter)))
-    CreateRealDevice(adapter, D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device),
-                     reinterpret_cast<void**>(&device));
-  if (adapter) adapter->Release();
-  if (factory) factory->Release();
-  return device;
+  if (FAILED(CreateRealDevice(adapter.get(), D3D_FEATURE_LEVEL_11_0,
+                              __uuidof(ID3D12Device),
+                              reinterpret_cast<void**>(&device))))
+    device = nullptr;
+  return ComPtr<ID3D12Device>(device);
 }
 
 // IDMLDevice::GetDeviceRemovedReason (DirectML.h is not included: the 16th
@@ -183,61 +218,60 @@ class OrtNet : public Net {
  public:
   // device, dml (may be null): held to ask why they were lost when a run
   // fails.
-  OrtNet(OrtSession* sess, OrtMemoryInfo* mem, int batch, ID3D12Device* device,
-         IUnknown* dml)
-      : sess_(sess), mem_(mem), batch_(batch), device_(device), dml_(dml) {}
-  ~OrtNet() override {
-    api->ReleaseSession(sess_);
-    api->ReleaseMemoryInfo(mem_);
-    if (dml_) dml_->Release();
-    // released last and at once: a lost device held on would be handed out
-    // again to the next session
-    if (device_) device_->Release();
-  }
+  OrtNet(OrtPtr<OrtSession> sess, OrtPtr<OrtMemoryInfo> mem, int batch,
+         ComPtr<ID3D12Device> device, ComPtr<IUnknown> dml)
+      : device_(std::move(device)),
+        dml_(std::move(dml)),
+        mem_(std::move(mem)),
+        sess_(std::move(sess)),
+        batch_(batch) {}
   int Batch() const override { return batch_; }
   bool Run(const float* x, const float* emo, int b, float* out,
            std::string& err) override {
-    int64_t sx[3] = {b, 1, kWindow}, se[3] = {b, 1, kNumEmo};
-    OrtValue *vx = nullptr, *ve = nullptr, *vy = nullptr;
-    bool ok = Check(api->CreateTensorWithDataAsOrtValue(
-                        mem_, const_cast<float*>(x),
-                        static_cast<size_t>(b) * kWindow * sizeof(float), sx, 3,
-                        ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &vx),
-                    err, "input") &&
-              Check(api->CreateTensorWithDataAsOrtValue(
-                        mem_, const_cast<float*>(emo),
-                        static_cast<size_t>(b) * kNumEmo * sizeof(float), se, 3,
-                        ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &ve),
-                    err, "emotion");
-    if (ok) {
-      const char* in[] = {"input", "emotion"};
-      const char* outn[] = {"result"};
-      const OrtValue* ins[] = {vx, ve};
-      ok =
-          Check(api->Run(sess_, nullptr, in, ins, 2, outn, 1, &vy), err, "run");
-      if (!ok) {
-        failed = true;
-        err += RemovedReason(device_, dml_);
-      }
+    // null (with err) when it cannot be made
+    const auto tensor = [&](const float* data, int width, const char* what) {
+      const int64_t shape[3] = {b, 1, width};
+      OrtValue* value = nullptr;
+      if (!Check(api->CreateTensorWithDataAsOrtValue(
+                     mem_.get(), const_cast<float*>(data),
+                     static_cast<size_t>(b) * width * sizeof(float), shape, 3,
+                     ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &value),
+                 err, what))
+        value = nullptr;
+      return OrtPtr<OrtValue>(value);
+    };
+    const OrtPtr<OrtValue> vx = tensor(x, kWindow, "input");
+    if (!vx) return false;
+    const OrtPtr<OrtValue> ve = tensor(emo, kNumEmo, "emotion");
+    if (!ve) return false;
+    const char* in[] = {"input", "emotion"};
+    const char* outn[] = {"result"};
+    const OrtValue* ins[] = {vx.get(), ve.get()};
+    OrtValue* result = nullptr;
+    if (!Check(api->Run(sess_.get(), nullptr, in, ins, 2, outn, 1, &result),
+               err, "run")) {
+      failed = true;
+      err += RemovedReason(device_.get(), dml_.get());
+      return false;
     }
-    if (ok) {
-      float* p = nullptr;
-      ok = Check(api->GetTensorMutableData(vy, reinterpret_cast<void**>(&p)),
-                 err, "output");
-      if (ok) memcpy(out, p, static_cast<size_t>(b) * kNumOut * sizeof(float));
-    }
-    if (vy) api->ReleaseValue(vy);
-    if (vx) api->ReleaseValue(vx);
-    if (ve) api->ReleaseValue(ve);
-    return ok;
+    const OrtPtr<OrtValue> vy(result);
+    float* p = nullptr;
+    if (!Check(api->GetTensorMutableData(vy.get(),
+                                         reinterpret_cast<void**>(&p)),
+               err, "output"))
+      return false;
+    memcpy(out, p, static_cast<size_t>(b) * kNumOut * sizeof(float));
+    return true;
   }
 
  private:
-  OrtSession* sess_;
-  OrtMemoryInfo* mem_;
+  // Destroyed in reverse: the session first, the device last and at once (a
+  // lost device held on would be handed out again to the next session).
+  ComPtr<ID3D12Device> device_;
+  ComPtr<IUnknown> dml_;
+  OrtPtr<OrtMemoryInfo> mem_;
+  OrtPtr<OrtSession> sess_;
   int batch_;
-  ID3D12Device* device_;
-  IUnknown* dml_;
 };
 
 void (*ort_log)(const std::string&);
@@ -294,74 +328,92 @@ bool LoadApi(const std::wstring& dll_dir, std::string& err) {
   return true;
 }
 
+// What a session is made of. Destroyed in reverse: the session first, the
+// device last.
+struct Session {
+  ComPtr<ID3D12Device> device;  // held to ask why it was lost; null on the CPU
+  ComPtr<IUnknown> dml_device;  // the session's DirectML device, or null
+  OrtPtr<OrtMemoryInfo> mem;
+  OrtPtr<OrtSession> sess;
+};
+
 // A session of model on DirectML (adapter 0, with the driver's metacommands
-// or without; device receives its Direct3D device, held to ask why it was
-// lost) or the CPU, with the named free
-// dimensions fixed: let DirectML plan one static shape (also 4x faster at
-// batch 1-2).
+// or without) or the CPU, with the named free dimensions fixed: let DirectML
+// plan one static shape (also 4x faster at batch 1-2). False (with err, and
+// out empty) when it cannot be made.
 bool CreateSession(const std::wstring& model, bool gpu, bool metacommands,
-                   int batch, OrtSession*& sess, OrtMemoryInfo*& mem,
-                   ID3D12Device*& device, IUnknown*& dml_device,
-                   std::string& err) {
-  OrtSessionOptions* so = nullptr;
-  sess = nullptr;
-  mem = nullptr;
-  dml_device = nullptr;
-  device = gpu ? OpenDevice() : nullptr;
-  bool ok = Check(api->CreateSessionOptions(&so), err, "options");
+                   int batch, Session& out, std::string& err) {
+  Session s;
+  if (gpu) s.device = OpenDevice();
+  OrtSessionOptions* options = nullptr;
+  bool ok = Check(api->CreateSessionOptions(&options), err, "options");
+  const OrtPtr<OrtSessionOptions> so(options);
   if (ok && gpu) {
     const OrtDmlApi* dml = nullptr;
-    ok =
-        Check(api->DisableMemPattern(so), err, "mem pattern") &&
-        Check(api->SetSessionExecutionMode(so, ORT_SEQUENTIAL), err, "mode") &&
-        Check(api->GetExecutionProviderApi(
-                  "DML", ORT_API_VERSION, reinterpret_cast<const void**>(&dml)),
-              err, "DML api");
+    ok = Check(api->DisableMemPattern(so.get()), err, "mem pattern") &&
+         Check(api->SetSessionExecutionMode(so.get(), ORT_SEQUENTIAL), err,
+               "mode") &&
+         Check(api->GetExecutionProviderApi(
+                   "DML", ORT_API_VERSION,
+                   reinterpret_cast<const void**>(&dml)),
+               err, "DML api");
     if (ok && metacommands) {
-      ok = Check(dml->SessionOptionsAppendExecutionProvider_DML(so, 0), err,
-                 "DirectML");
+      ok = Check(dml->SessionOptionsAppendExecutionProvider_DML(so.get(), 0),
+                 err, "DirectML");
     } else if (ok) {
       // only the provider's key / value form can turn them off
       const char* const keys[] = {"device_id", "disable_metacommands"};
       const char* const values[] = {"0", "true"};
-      ok = Check(
-          api->SessionOptionsAppendExecutionProvider(so, "DML", keys, values, 2),
-          err, "DirectML");
+      ok = Check(api->SessionOptionsAppendExecutionProvider(so.get(), "DML",
+                                                            keys, values, 2),
+                 err, "DirectML");
     }
-    // the session's DirectML device, to ask it why it stopped
-    if (ok && !dml->GetDMLDevice(so, &dml_device) && dml_device)
+    // the session's DirectML device (handed out without a reference), to ask
+    // it why it stopped
+    IUnknown* dml_device = nullptr;
+    if (ok && !dml->GetDMLDevice(so.get(), &dml_device) && dml_device) {
       dml_device->AddRef();
+      s.dml_device.reset(dml_device);
+    }
     // DML's memory arena stays on: it keeps the work buffers of a run
     // allocated between runs (~16 MB more resident than freeing them), so a
     // loaded session never has to find VRAM again.
-    for (const char* name : {"input_dynamic_axes_1", "emotion_dynamic_axes_1"})
-      if (ok)
-        ok = Check(api->AddFreeDimensionOverrideByName(so, name, batch), err,
-                   "shape override");
+    for (const char* name :
+         {"input_dynamic_axes_1", "emotion_dynamic_axes_1"}) {
+      if (ok) {
+        ok = Check(api->AddFreeDimensionOverrideByName(so.get(), name, batch),
+                   err, "shape override");
+      }
+    }
   } else if (ok) {
     // Not ORT_ENABLE_ALL: its layout optimizations fail on the casts the CPU
     // provider inserts around the FP16 network's operators
     // (SimplifiedLayerNormFusion looks up a node argument that is gone).
-    ok = Check(api->SetIntraOpNumThreads(so, 2), err, "threads") &&
-         Check(api->SetInterOpNumThreads(so, 1), err, "threads") &&
-         Check(api->SetSessionGraphOptimizationLevel(so, ORT_ENABLE_EXTENDED),
+    ok = Check(api->SetIntraOpNumThreads(so.get(), 2), err, "threads") &&
+         Check(api->SetInterOpNumThreads(so.get(), 1), err, "threads") &&
+         Check(api->SetSessionGraphOptimizationLevel(so.get(),
+                                                     ORT_ENABLE_EXTENDED),
                err, "optimization");
   }
-  if (ok)
-    ok = Check(api->CreateSession(env, model.c_str(), so, &sess), err,
+  if (ok) {
+    OrtSession* sess = nullptr;
+    ok = Check(api->CreateSession(env, model.c_str(), so.get(), &sess), err,
                "session");
-  if (ok)
+    s.sess.reset(sess);
+  }
+  if (ok) {
+    OrtMemoryInfo* mem = nullptr;
     ok = Check(
         api->CreateCpuMemoryInfo(OrtArenaAllocator, OrtMemTypeDefault, &mem),
         err, "memory info");
-  if (so) api->ReleaseSessionOptions(so);
-  if (ok) return true;
-  if (sess) api->ReleaseSession(sess);
-  if (mem) api->ReleaseMemoryInfo(mem);
-  err += RemovedReason(device, dml_device);
-  if (dml_device) dml_device->Release();
-  if (device) device->Release();
-  return false;
+    s.mem.reset(mem);
+  }
+  if (!ok) {
+    err += RemovedReason(s.device.get(), s.dml_device.get());
+    return false;
+  }
+  out = std::move(s);
+  return true;
 }
 
 }  // namespace
@@ -372,20 +424,18 @@ std::unique_ptr<Net> CreateOrtNet(const std::wstring& dll_dir,
                                   std::string& info) {
   if (!LoadApi(dll_dir, err)) return nullptr;
   const int batch = std::max(1, o.batch);
-  OrtSession* sess;
-  OrtMemoryInfo* mem;
-  ID3D12Device* device;
-  IUnknown* dml;
+  Session s;
   // The batch is always the same.
-  if (!CreateSession(model, o.gpu, o.metacommands, batch, sess, mem, device,
-                     dml, err))
+  if (!CreateSession(model, o.gpu, o.metacommands, batch, s, err))
     return nullptr;
   info = std::string("onnxruntime ") + version +
          (!o.gpu ? ", CPU 2 threads"
           : o.metacommands ? ", DirectML device 0, metacommands on"
                            : ", DirectML device 0, metacommands off") +
          ", batch " + std::to_string(batch);
-  auto net = std::make_unique<OrtNet>(sess, mem, batch, device, dml);
+  auto net = std::make_unique<OrtNet>(std::move(s.sess), std::move(s.mem),
+                                      batch, std::move(s.device),
+                                      std::move(s.dml_device));
   // One run now: a session that cannot run fails here and not on the first
   // line, and DirectML allocates its work buffers.
   std::vector<float> x(static_cast<size_t>(batch) * kWindow),
@@ -463,11 +513,10 @@ std::vector<std::string> GpuReport() {
            ram.ullAvailPageFile / 1048576.0, ram.ullTotalPageFile / 1048576.0);
   out.push_back(b);
   // every adapter, with its driver version
-  IDXGIFactory1* factory = nullptr;
-  if (SUCCEEDED(CreateDXGIFactory1(__uuidof(IDXGIFactory1),
-                                   reinterpret_cast<void**>(&factory)))) {
-    IDXGIAdapter1* adapter = nullptr;
-    for (UINT i = 0; factory->EnumAdapters1(i, &adapter) == S_OK; ++i) {
+  if (const ComPtr<IDXGIFactory1> factory = DxgiFactory()) {
+    IDXGIAdapter1* next = nullptr;
+    for (UINT i = 0; factory->EnumAdapters1(i, &next) == S_OK; ++i) {
+      const ComPtr<IDXGIAdapter1> adapter(next);
       DXGI_ADAPTER_DESC1 d{};
       adapter->GetDesc1(&d);
       LARGE_INTEGER v{};
@@ -482,9 +531,7 @@ std::vector<std::string> GpuReport() {
                d.DedicatedVideoMemory / 1048576.0,
                d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE ? ", software" : "");
       out.push_back(b);
-      adapter->Release();
     }
-    factory->Release();
   }
   const GpuState g = QueryGpu();
   if (g.known) {
@@ -495,7 +542,7 @@ std::vector<std::string> GpuReport() {
     out.push_back(b);
   }
   // what Direct3D 12 offers DirectML on adapter 0
-  if (ID3D12Device* device = OpenDevice()) {
+  if (const ComPtr<ID3D12Device> device = OpenDevice()) {
     const D3D_FEATURE_LEVEL levels[] = {
         D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_12_0,
         D3D_FEATURE_LEVEL_12_1};
@@ -513,11 +560,9 @@ std::vector<std::string> GpuReport() {
              !has4 ? "unknown" : o4.Native16BitShaderOpsSupported ? "yes" : "no",
              static_cast<unsigned long>(device->GetDeviceRemovedReason()));
     out.push_back(b);
-    ID3D12Device5* device5 = nullptr;
+    const ComPtr<ID3D12Device5> device5 = As<ID3D12Device5>(device.get());
     UINT n = 0;
-    if (SUCCEEDED(device->QueryInterface(__uuidof(ID3D12Device5),
-                                         reinterpret_cast<void**>(&device5))) &&
-        SUCCEEDED(device5->EnumerateMetaCommands(&n, nullptr))) {
+    if (device5 && SUCCEEDED(device5->EnumerateMetaCommands(&n, nullptr))) {
       std::vector<D3D12_META_COMMAND_DESC> descs(n);
       std::string names;
       if (n && SUCCEEDED(device5->EnumerateMetaCommands(&n, descs.data())))
@@ -529,8 +574,6 @@ std::vector<std::string> GpuReport() {
     } else {
       out.push_back("driver metacommands offered: unknown");
     }
-    if (device5) device5->Release();
-    device->Release();
   } else {
     out.push_back("Direct3D 12 on adapter 0: no device");
   }
@@ -578,12 +621,11 @@ std::vector<std::string> GpuReport() {
 
 GpuState QueryGpu() {
   GpuState g;
-  IDXGIFactory1* factory = nullptr;
-  if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1),
-                                reinterpret_cast<void**>(&factory))))
-    return g;
-  IDXGIAdapter1* adapter = nullptr;
-  for (UINT i = 0; factory->EnumAdapters1(i, &adapter) == S_OK; ++i) {
+  const ComPtr<IDXGIFactory1> factory = DxgiFactory();
+  if (!factory) return g;
+  IDXGIAdapter1* next = nullptr;
+  for (UINT i = 0; factory->EnumAdapters1(i, &next) == S_OK; ++i) {
+    const ComPtr<IDXGIAdapter1> adapter(next);
     DXGI_ADAPTER_DESC1 d{};
     adapter->GetDesc1(&d);
     char name[256] = "";
@@ -593,25 +635,22 @@ GpuState QueryGpu() {
     if (i == 0) {
       g.adapter = name;
       g.dedicated_mb = mb;
-      IDXGIAdapter3* adapter3 = nullptr;
+      const ComPtr<IDXGIAdapter3> adapter3 =
+          As<IDXGIAdapter3>(adapter.get());
       DXGI_QUERY_VIDEO_MEMORY_INFO vm{};
-      if (SUCCEEDED(adapter->QueryInterface(
-              __uuidof(IDXGIAdapter3), reinterpret_cast<void**>(&adapter3))) &&
+      if (adapter3 &&
           SUCCEEDED(adapter3->QueryVideoMemoryInfo(
               0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &vm))) {
         g.budget_mb = vm.Budget / 1048576.0;
         g.used_mb = vm.CurrentUsage / 1048576.0;
         g.known = vm.Budget != 0;
       }
-      if (adapter3) adapter3->Release();
     } else if (!(d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) &&
                mb > std::max(g.dedicated_mb, g.bigger_mb)) {
       g.bigger_adapter = name;
       g.bigger_mb = mb;
     }
-    adapter->Release();
   }
-  factory->Release();
   return g;
 }
 

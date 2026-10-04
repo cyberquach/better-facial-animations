@@ -161,6 +161,11 @@ struct Face {
   State head_state = State::kPending;
   std::shared_ptr<const direct::Head> head;
   std::string head_key;  // geometry and morph identity used by head
+  // whose face it is and its handle, to tell when the actor joins a scene
+  // (FaceInScene); null: not known. Without a handle the pointer cannot be
+  // checked and the face is not given up to a scene.
+  uint8_t* actor = nullptr;
+  uint32_t actor_handle = 0;
   a2f::PoseTransition transition;
 };
 // Times on play_clock:
@@ -274,6 +279,67 @@ bool SpeakerOk(uint8_t* ref) {
     return false;
   uint32_t race_id = Field<uint32_t>(race, kFormId);
   return race_id != kArgonianRace && race_id != kArgonianRaceVampire;
+}
+
+// The factions SexLab (all versions, P+ too) and OStim (NG, Standalone) keep
+// an actor in for as long as it is in one of their scenes. Those scenes
+// shape the face themselves (open mouths, expressions) and other mods read
+// it, while their moans and comments are voiced lines: the plugin leaves
+// such an actor's face alone.
+struct SceneFaction {
+  const char* file;
+  uint32_t id;  // in the file
+};
+constexpr SceneFaction kSceneFactions[] = {
+    {"SexLab.esm", 0xE50F},  // SexLabAnimatingFaction
+    {"OStim.esp", 0xECA},    // OStimActorCountFaction
+    {"OStim.esp", 0xD93},    // OStimExcitementFaction
+};
+// The factions of kSceneFactions that are loaded: the first
+// num_scene_factions; fixed after LoadSceneFactions.
+const uint8_t* scene_factions[std::size(kSceneFactions)];
+size_t num_scene_factions;
+
+// At kMessageDataLoaded.
+void LoadSceneFactions() {
+  const BSTArray* factions = FormArray(kFtFaction);
+  if (!factions) {
+    Log("scene factions: no form array");
+    return;
+  }
+  for (uint32_t i = 0; i < factions->n; ++i) {
+    uint8_t* f = factions->items[i];
+    if (!f || f[kFormType] != kFtFaction) continue;
+    const uint32_t id = Field<uint32_t>(f, kFormId);
+    for (const SceneFaction& sf : kSceneFactions) {
+      // the id in a light file (12 bits) or a full one; the file tells
+      if ((id & 0xFFF) != sf.id && (id & 0xFFFFFF) != sf.id) continue;
+      uint8_t* files = Field<uint8_t*>(f, kFormFiles);
+      uint8_t** file = files ? Field<uint8_t**>(files, 0) : nullptr;
+      if (!file || !Field<uint32_t>(files, 8) || !file[0]) continue;
+      const char* name = reinterpret_cast<const char*>(file[0] + kFileName);
+      if (_stricmp(name, sf.file) ||
+          num_scene_factions == std::size(scene_factions)) {
+        continue;
+      }
+      scene_factions[num_scene_factions++] = f;
+      Log("scene faction %s %X found (%08X)", sf.file, sf.id, id);
+    }
+  }
+  if (!num_scene_factions) Log("scene factions: none (no SexLab or OStim)");
+}
+
+// The actor is in a SexLab or OStim scene. Asks the engine: not to be called
+// with the plugin's or a face's lock held.
+bool InScene(const uint8_t* actor) {
+  if (!num_scene_factions || !actor || actor[kFormType] != kFtActor)
+    return false;
+  const auto in_faction = reinterpret_cast<IsInFactionFn>(
+      (*reinterpret_cast<void* const* const*>(actor))[kVfIsInFaction.Get()]);
+  for (size_t i = 0; i < num_scene_factions; ++i) {
+    if (in_faction(actor, scene_factions[i])) return true;
+  }
+  return false;
 }
 
 // Queue a line unless it is cached or in flight (with the emotion settings
@@ -401,10 +467,6 @@ std::unique_ptr<a2f::Net> CreateNet(bool gpu, std::string& err,
       metacommands, err, info, NetEvent);
 }
 
-// Worker thread only; created by the worker once the ini is read. Loads the
-// network at the main menu (little VRAM in use) and never unloads it.
-a2f::NetKeeper* keeper;
-
 // Network events go to the log and to the settings window.
 void NetEvent(const std::string& text) {
   skse::Report("%s", text.c_str());
@@ -414,15 +476,15 @@ void NetEvent(const std::string& text) {
 }
 
 // Copies the keeper's state to the settings window.
-void PublishNet() {
+void PublishNet(const a2f::NetKeeper& keeper) {
   static int diagnosed;  // attempts the diagnosis was made for
   static auto& why = *new std::vector<std::string>;
-  if (keeper->error().empty()) {
+  if (keeper.error().empty()) {
     diagnosed = 0;
     why.clear();
-  } else if (keeper->attempts() != diagnosed) {
-    diagnosed = keeper->attempts();
-    why = a2f::DiagnoseNet(config.gpu, keeper->error(), diagnosed,
+  } else if (keeper.attempts() != diagnosed) {
+    diagnosed = keeper.attempts();
+    why = a2f::DiagnoseNet(config.gpu, keeper.error(), diagnosed,
                            a2f::QueryGpu());
     for (const auto& line : why) skse::Report("%s", line.c_str());
     // the system as it is at the first failure (the report at startup is
@@ -435,21 +497,21 @@ void PublishNet() {
         skse::Report("%s", line.c_str());
     }
   }
-  net_loaded = keeper->loaded();
+  net_loaded = keeper.loaded();
   ScopedLock guard(lock);
-  stats.net_info = keeper->info();
+  stats.net_info = keeper.info();
   stats.net_error = why;
-  stats.net_detail = keeper->error();
-  stats.net_attempts = keeper->attempts();
-  stats.net_retry_at = keeper->retry_at();
-  stats.net_gpu = keeper->on_gpu();
+  stats.net_detail = keeper.error();
+  stats.net_attempts = keeper.attempts();
+  stats.net_retry_at = keeper.retry_at();
+  stats.net_gpu = keeper.on_gpu();
   stats.net_metacommands = config.gpu
                                ? a2f::DescribeMetacommands(metacommands)
                                : "not used (GPU=0: the CPU runs the model)";
 }
 
 // Generates one queued line and stores the result in the cache.
-void Process(const Job& j) {
+void Process(const Job& j, a2f::NetKeeper& keeper) {
   static std::atomic<int> logged;
   std::vector<uint8_t> bytes;
   std::string err, file;
@@ -468,7 +530,7 @@ void Process(const Job& j) {
     if (a2f::DecodeAudio(bytes.data(), bytes.size(), pcm, err)) {
       audio_sec = pcm.size() / static_cast<double>(a2f::kSampleRate);
       line = std::make_shared<a2f::Line>();
-      if (!keeper->Run(
+      if (!keeper.Run(
               [&](a2f::Net& net, std::string& e) {
                 return a2f::Generate(net, pcm.data(), pcm.size(), j.emotion,
                                      model.mark.proj.data(), model.rest.data(),
@@ -476,7 +538,7 @@ void Process(const Job& j) {
               },
               err, no_net))
         line.reset();
-      PublishNet();
+      PublishNet(keeper);
     }
   }
   double ms = (Now() - t) * 1e3;
@@ -545,10 +607,12 @@ DWORD WINAPI Worker(void*) {
                config.batch, config.model.c_str());
   for (const auto& line : a2f::GpuReport()) skse::Report("%s", line.c_str());
   a2f::SetOrtLog([](const std::string& s) { skse::Report("%s", s.c_str()); });
-  keeper = new a2f::NetKeeper(config.gpu, CreateNet, Now, NetEvent);
-  auto load = [] {
-    keeper->Ensure();
-    PublishNet();
+  // Loads the network at the main menu (little VRAM in use) and never
+  // unloads it: the worker does not end.
+  a2f::NetKeeper keeper(config.gpu, CreateNet, Now, NetEvent);
+  auto load = [&keeper] {
+    keeper.Ensure();
+    PublishNet(keeper);
   };
   if (SnapshotTune().enabled) load();
   for (;;) {
@@ -556,8 +620,8 @@ DWORD WINAPI Worker(void*) {
     while (queue.empty()) {
       // Without the wanted session: wake up to try it again.
       SleepConditionVariableSRW(&queue_cv, &lock,
-                                keeper->Wanted() ? INFINITE : 1000, 0);
-      if (queue.empty() && SnapshotTune().enabled && !keeper->Wanted()) {
+                                keeper.Wanted() ? INFINITE : 1000, 0);
+      if (queue.empty() && SnapshotTune().enabled && !keeper.Wanted()) {
         worker_guard.Unlock();
         load();
         worker_guard.Lock();
@@ -566,7 +630,7 @@ DWORD WINAPI Worker(void*) {
     Job j = queue.front();
     queue.pop_front();
     worker_guard.Unlock();
-    Process(j);
+    Process(j, keeper);
   }
 }
 
@@ -725,6 +789,10 @@ __attribute__((noinline)) float SpeakHook(
     note("not for the plugin");
     return dur;
   }
+  if (InScene(actor)) {
+    note("the actor is in a scene");
+    return dur;
+  }
   note("taken");
   auto get_fg = reinterpret_cast<uint8_t* (*)(uint8_t*)>(
       Field<void**>(actor, 0)[kVfGetFaceGenAnimationData]);
@@ -766,7 +834,7 @@ __attribute__((noinline)) uint8_t* ResponseHook(uint8_t* self, void* topic,
   const Tune tune = SnapshotTune();
   const char* voice = r ? Field<const char*>(r, kRespVoice) : nullptr;
   if ((tune.enabled || net_loaded) && tune.prefetch && voice && ready &&
-      SpeakerOk(speaker) && VoiceStem(voice, stem))
+      SpeakerOk(speaker) && !InScene(speaker) && VoiceStem(voice, stem))
     Request(stem, static_cast<int>(Field<uint32_t>(r, kRespEmoType)),
             static_cast<int>(Field<uint32_t>(r, kRespEmoValue)), false, tune);
   return r;
@@ -870,9 +938,34 @@ float LineClock(uint8_t* fg, Playing& p, double now, bool& lip,
   return t;
 }
 
-// Plays the current line. kFaceChanged requests a mesh reset;
-// kKeepUpdating schedules another face update, including the final resets.
-int Apply(uint8_t* fg, const Tune& tune) {
+// The face's actor is in a scene (InScene): its line's actor, else the one
+// its Face was made for, else the conversation partner whose face it is.
+// Called before the face's and the plugin's locks are taken.
+bool FaceInScene(uint8_t* fg) {
+  if (!num_scene_factions) return false;
+  const uint8_t* actor = nullptr;
+  {
+    ScopedLock guard(lock, ScopedLock::kShared);
+    const auto line = playing.find(fg);
+    const auto face = faces.find(fg);
+    if (line != playing.end()) {
+      const Playing& p = line->second;
+      // without a handle the pointer is trusted, as Apply does
+      if (!p.actor_handle || RefOf(p.actor_handle) == p.actor) actor = p.actor;
+    } else if (face != faces.end() && face->second.actor) {
+      const Face& f = face->second;
+      if (f.actor_handle && RefOf(f.actor_handle) == f.actor) actor = f.actor;
+    } else if (fg == partner_fg && PartnerRef() == partner_ref) {
+      actor = partner_ref;
+    }
+  }
+  return InScene(actor);
+}
+
+// Plays the current line, unless its actor is in a scene (in_scene: the line
+// is dropped). kFaceChanged requests a mesh reset; kKeepUpdating schedules
+// another face update, including the final resets.
+int Apply(uint8_t* fg, const Tune& tune, bool in_scene) {
   double now = Now();
   ScopedLock guard(lock);
   Tick(now);
@@ -889,6 +982,16 @@ int Apply(uint8_t* fg, const Tune& tune) {
     playing.erase(it);
     Count();
     return kNoUpdate;
+  }
+  // the actor joined a scene: the line is dropped (what it showed eases out
+  // on its Face)
+  if (in_scene) {
+    if (LogMore(logged_ends))
+      Log("drop %s: its actor is in a scene", p.name.c_str());
+    const bool played = p.direct_frames != 0;
+    playing.erase(it);
+    Count();
+    return played ? kFaceChanged | kKeepUpdating : kNoUpdate;
   }
   bool lip;
   const char* why;
@@ -1060,8 +1163,9 @@ int ShowExpressions(Face& f, const float* lv, skse::KeyframeMultiple* ex) {
 // emotion expressions (direct::PlaysExpression: dialogue, mood, combat)
 // itself, scaled per region; while a line plays they are all faded out (the
 // network carries the emotion). Fades in and out (Face::ownership_blend).
+// A face whose actor is in a scene (in_scene) goes back to the engine.
 // Returns like Apply.
-int Expressions(uint8_t* fg, float dt, const Tune& tune) {
+int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene) {
   auto& ex = Field<skse::KeyframeMultiple>(fg, skse::kFgExpr3);
   const bool has_ex = ex.values && ex.count >= direct::kNumExpressions;
   if (fg != partner_fg && !num_faces && !num_playing) return kNoUpdate;
@@ -1072,7 +1176,8 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune) {
       fg == partner_fg && partner_ref && PartnerRef() == partner_ref;
   auto pit = playing.find(fg);
   const bool in_line = pit != playing.end();
-  const bool wanted = tune.enabled && (in_line || (partner && has_ex));
+  const bool wanted =
+      tune.enabled && !in_scene && (in_line || (partner && has_ex));
   Face* found = FaceFor(fg, wanted, clock);
   if (!found) {
     return kNoUpdate;
@@ -1083,7 +1188,18 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune) {
   f.seen = clock;
   for (int i = 0; i < direct::kNumExpressions; ++i)
     f.src[i] = has_ex && direct::PlaysExpression(i) ? ex.values[i] : 0.f;
-  if (wanted) f.until = clock + kFaceLinger;
+  uint8_t* const actor = in_line   ? pit->second.actor
+                         : partner ? partner_ref.load()
+                                   : nullptr;
+  if (actor && (actor != f.actor || !f.actor_handle)) {
+    f.actor = actor;
+    f.actor_handle = HandleOf(actor);
+  }
+  if (wanted) {
+    f.until = clock + kFaceLinger;
+  } else if (in_scene) {
+    f.until = 0;  // back to the engine's
+  }
   const bool owns_expressions = tune.enabled && clock < f.until;
   f.ownership_blend = std::clamp(
       f.ownership_blend + (owns_expressions ? dt / kOwnIn : -dt / kOwnOut), 0.f,
@@ -1117,12 +1233,18 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune) {
       p.shown = std::fmax(p.shown, f.ownership_blend * lv[i]);
   }
   int updates = ShowExpressions(f, lv, has_ex ? &ex : nullptr);
-  if (f.transition.moving() && !f.transition.stale(now))
-    updates |= kFaceChanged;
+  // the speech pose is still easing out (AddDirect)
+  const bool easing = f.transition.moving() && !f.transition.stale(now);
+  if (easing) updates |= kFaceChanged;
   if (f.ownership_blend > 0 && f.ownership_blend < 1)
     updates |= kFaceChanged | kKeepUpdating;  // fading
-  if (!owns_expressions && f.ownership_blend <= 0)
-    DropFace(fg);  // back to the engine's
+  if (!owns_expressions && f.ownership_blend <= 0) {
+    if (easing) {
+      updates |= kKeepUpdating;  // dropped once the pose has eased out
+    } else {
+      DropFace(fg);  // back to the engine's
+    }
+  }
   return updates;
 }
 
@@ -1136,11 +1258,13 @@ __attribute__((noinline)) bool AnimUpdateHook(uint8_t* fg, float dt,
   if (fg && num_faces && ready) RestoreExpressions(fg);
   bool changed = orig(fg, dt, flag);
   if (fg && ready) {
+    const bool in_scene =
+        (num_playing || num_faces || fg == partner_fg) && FaceInScene(fg);
     auto& face_lock = Field<skse::SpinLock>(fg, skse::kFgLock);
     face_lock.Lock();
     const Tune tune = SnapshotTune();
-    int updates = num_playing ? Apply(fg, tune) : kNoUpdate;
-    updates |= Expressions(fg, dt, tune);
+    int updates = num_playing ? Apply(fg, tune, in_scene) : kNoUpdate;
+    updates |= Expressions(fg, dt, tune, in_scene);
     face_lock.Unlock();
     changed |= updates != 0;
     // "changed" makes the node reset its meshes; keep the update coming
@@ -1299,6 +1423,7 @@ __attribute__((noinline)) uint64_t ApplyMorphsHook(uint8_t* node,
 void OnMessage(skse::SKSEMessage* m) {
   if (m->type != skse::kMessageDataLoaded) return;
   LoadHeadPartTypes();  // before the worker, which turns Direct on
+  LoadSceneFactions();
   RetakeSites();
   RegisterMenu();
   HANDLE h = CreateThread(nullptr, 0, Worker, nullptr, 0, nullptr);

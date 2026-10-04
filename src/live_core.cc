@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -56,6 +57,21 @@ int64_t MemSeek(void* o, int64_t off, int whence) {
   m->pos = static_cast<size_t>(np);
   return np;
 }
+
+// Frees an FFmpeg object as its type asks.
+struct AvDelete {
+  void operator()(AVIOContext* p) const {
+    av_freep(&p->buffer);  // the one in use: avio may have replaced it
+    avio_context_free(&p);
+  }
+  void operator()(AVFormatContext* p) const { avformat_close_input(&p); }
+  void operator()(AVCodecContext* p) const { avcodec_free_context(&p); }
+  void operator()(SwrContext* p) const { swr_free(&p); }
+  void operator()(AVPacket* p) const { av_packet_free(&p); }
+  void operator()(AVFrame* p) const { av_frame_free(&p); }
+};
+template <typename T>
+using AvPtr = std::unique_ptr<T, AvDelete>;
 }  // namespace
 
 bool DecodeAudio(const uint8_t* data, size_t n, std::vector<float>& pcm,
@@ -83,27 +99,23 @@ bool DecodeAudio(const uint8_t* data, size_t n, std::vector<float>& pcm,
   Mem mem{data, n, 0};
   const int iosz = 32768;
   uint8_t* iobuf = static_cast<uint8_t*>(av_malloc(iosz));
-  AVIOContext* io =
-      avio_alloc_context(iobuf, iosz, 0, &mem, MemRead, nullptr, MemSeek);
-  AVFormatContext* fmt = avformat_alloc_context();
-  AVCodecContext* dec = nullptr;
-  SwrContext* swr = nullptr;
-  AVPacket* pkt = av_packet_alloc();
-  AVFrame* fr = av_frame_alloc();
+  // declared before the format context, which reads through it
+  const AvPtr<AVIOContext> io(
+      avio_alloc_context(iobuf, iosz, 0, &mem, MemRead, nullptr, MemSeek));
+  const AvPtr<AVPacket> pkt(av_packet_alloc());
+  const AvPtr<AVFrame> fr(av_frame_alloc());
+  AvPtr<AVCodecContext> dec;
+  AvPtr<SwrContext> swr;
   std::vector<int16_t> s16;
-  bool ok = false;
-  int st = -1;
-  fmt->pb = io;
-  fmt->flags |= AVFMT_FLAG_CUSTOM_IO;
   auto drain = [&](AVFrame* in) -> bool {  // in == nullptr flushes
-    int cap = in ? swr_get_out_samples(swr, in->nb_samples)
-                 : swr_get_out_samples(swr, 0);
+    int cap = in ? swr_get_out_samples(swr.get(), in->nb_samples)
+                 : swr_get_out_samples(swr.get(), 0);
     if (cap <= 0 && !in) return true;
     size_t at = s16.size();
     s16.resize(at + std::max(cap, 0) + 256);
     uint8_t* outp = reinterpret_cast<uint8_t*>(s16.data() + at);
     int got = swr_convert(
-        swr, &outp, static_cast<int>(s16.size() - at),
+        swr.get(), &outp, static_cast<int>(s16.size() - at),
         in ? const_cast<const uint8_t**>(in->extended_data) : nullptr,
         in ? in->nb_samples : 0);
     if (got < 0) {
@@ -115,89 +127,88 @@ bool DecodeAudio(const uint8_t* data, size_t n, std::vector<float>& pcm,
   };
   auto receive = [&]() -> bool {
     while (true) {
-      int r = avcodec_receive_frame(dec, fr);
+      int r = avcodec_receive_frame(dec.get(), fr.get());
       if (r == AVERROR(EAGAIN) || r == AVERROR_EOF) return true;
       if (r < 0) {
         err = "decode failed";
         return false;
       }
-      bool k = drain(fr);
-      av_frame_unref(fr);
+      bool k = drain(fr.get());
+      av_frame_unref(fr.get());
       if (!k) return false;
     }
   };
-  do {
-    if (avformat_open_input(&fmt, nullptr, nullptr, nullptr) < 0) {
-      fmt = nullptr;
-      err = "unknown audio format";
-      break;
-    }
-    if (avformat_find_stream_info(fmt, nullptr) < 0) {
-      err = "no stream info";
-      break;
-    }
-    st = av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
-    if (st < 0) {
-      err = "no audio stream";
-      break;
-    }
-    const AVCodecParameters* par = fmt->streams[st]->codecpar;
-    const AVCodec* codec = avcodec_find_decoder(par->codec_id);
-    if (!codec) {
-      err = "unsupported codec";
-      break;
-    }
-    dec = avcodec_alloc_context3(codec);
-    if (avcodec_parameters_to_context(dec, par) < 0 ||
-        avcodec_open2(dec, codec, nullptr) < 0) {
-      err = "cannot open decoder";
-      break;
-    }
-    AVChannelLayout mono = AV_CHANNEL_LAYOUT_MONO;
-    if (swr_alloc_set_opts2(&swr, &mono, AV_SAMPLE_FMT_S16, kSampleRate,
-                            &dec->ch_layout, dec->sample_fmt, dec->sample_rate,
-                            0, nullptr) < 0 ||
-        swr_init(swr) < 0) {
-      err = "cannot create resampler";
-      break;
-    }
-    bool bad = false;
-    int read_result = 0;
-    while (!bad && (read_result = av_read_frame(fmt, pkt)) >= 0) {
-      if (pkt->stream_index == st) {
-        if (avcodec_send_packet(dec, pkt) < 0) {
-          err = "audio packet rejected";
-          bad = true;
-        } else {
-          bad = !receive();
-        }
-      }
-      av_packet_unref(pkt);
-    }
-    if (bad) break;
-    if (read_result != AVERROR_EOF) {
-      err = "audio read failed";
-      break;
-    }
-    if (avcodec_send_packet(dec, nullptr) < 0) {
-      err = "audio decoder flush failed";
-      break;
-    }
-    if (!receive() || !drain(nullptr)) break;
-    ok = !s16.empty();
-    if (!ok) err = "no audio decoded";
-  } while (false);
-  av_frame_free(&fr);
-  av_packet_free(&pkt);
-  swr_free(&swr);
-  avcodec_free_context(&dec);
-  if (fmt) avformat_close_input(&fmt);
-  avio_context_free(&io);  // the buffer may have been reallocated by avio
-  if (ok) {
-    pcm.resize(s16.size());
-    for (size_t i = 0; i < s16.size(); ++i) pcm[i] = s16[i] * (1.0f / 32768.0f);
+  AVFormatContext* opening = avformat_alloc_context();
+  opening->pb = io.get();
+  opening->flags |= AVFMT_FLAG_CUSTOM_IO;
+  // frees the context when it fails
+  if (avformat_open_input(&opening, nullptr, nullptr, nullptr) < 0) {
+    err = "unknown audio format";
+    return false;
   }
-  return ok;
+  const AvPtr<AVFormatContext> fmt(opening);
+  if (avformat_find_stream_info(fmt.get(), nullptr) < 0) {
+    err = "no stream info";
+    return false;
+  }
+  const int st =
+      av_find_best_stream(fmt.get(), AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+  if (st < 0) {
+    err = "no audio stream";
+    return false;
+  }
+  const AVCodecParameters* par = fmt->streams[st]->codecpar;
+  const AVCodec* codec = avcodec_find_decoder(par->codec_id);
+  if (!codec) {
+    err = "unsupported codec";
+    return false;
+  }
+  dec.reset(avcodec_alloc_context3(codec));
+  if (avcodec_parameters_to_context(dec.get(), par) < 0 ||
+      avcodec_open2(dec.get(), codec, nullptr) < 0) {
+    err = "cannot open decoder";
+    return false;
+  }
+  AVChannelLayout mono = AV_CHANNEL_LAYOUT_MONO;
+  SwrContext* resampler = nullptr;
+  const int allocated = swr_alloc_set_opts2(
+      &resampler, &mono, AV_SAMPLE_FMT_S16, kSampleRate, &dec->ch_layout,
+      dec->sample_fmt, dec->sample_rate, 0, nullptr);
+  swr.reset(resampler);
+  if (allocated < 0 || swr_init(swr.get()) < 0) {
+    err = "cannot create resampler";
+    return false;
+  }
+  int read_result = 0;
+  while ((read_result = av_read_frame(fmt.get(), pkt.get())) >= 0) {
+    bool ok = true;
+    if (pkt->stream_index == st) {
+      if (avcodec_send_packet(dec.get(), pkt.get()) < 0) {
+        err = "audio packet rejected";
+        ok = false;
+      } else {
+        ok = receive();
+      }
+    }
+    av_packet_unref(pkt.get());
+    if (!ok) return false;
+  }
+  if (read_result != AVERROR_EOF) {
+    err = "audio read failed";
+    return false;
+  }
+  if (avcodec_send_packet(dec.get(), nullptr) < 0) {
+    err = "audio decoder flush failed";
+    return false;
+  }
+  if (!receive() || !drain(nullptr)) return false;
+  if (s16.empty()) {
+    err = "no audio decoded";
+    return false;
+  }
+  pcm.resize(s16.size());
+  for (size_t i = 0; i < s16.size(); ++i) pcm[i] = s16[i] * (1.0f / 32768.0f);
+  return true;
 }
 
 namespace {
