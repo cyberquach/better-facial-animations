@@ -34,6 +34,7 @@
 #include "ort_net.h"
 #include "plugin.h"
 #include "pose.h"
+#include "proc_net.h"
 #include "scoped_lock.h"
 #include "skse.h"
 #include "voice_sync.h"
@@ -363,19 +364,51 @@ void NetEvent(const std::string& text);
 // metacommands.
 a2f::Metacommands metacommands;
 
+// onnxruntime's warnings and errors, the first 200.
+void NetLog(const std::string& text) {
+  static std::atomic<int> lines;
+  if (++lines <= 200) skse::Report("%s", text.c_str());
+}
+
+// The model's process did not come up: said once per reason.
+void ReportInGame(const std::string& why) {
+  static auto& said = *new std::string;
+  if (why != said) skse::Report("%s: the model runs inside the game", why.c_str());
+  said = why;
+}
+
+// A session in the model's own process, out of reach of what hooks the
+// game's Direct3D; inside the game when that process does not come up.
+std::unique_ptr<a2f::Net> CreateModelNet(const std::wstring& dir,
+                                         const std::wstring& file,
+                                         const a2f::OrtOptions& o,
+                                         std::string& err, std::string& info) {
+  bool started = false;
+  auto net = a2f::CreateProcNet(dir, file, o, NetLog, started, err, info);
+  if (started) return net;
+  ReportInGame(err);
+  return a2f::CreateOrtNet(dir, file, o, err, info);
+}
+
+// Windows, the adapters and the game's modules, then the Direct3D 12 device
+// and the modules of the process the model runs in.
+void ReportSystem() {
+  for (auto report : {a2f::SystemReport, a2f::ModuleReport})
+    for (const auto& line : report()) skse::Report("%s", line.c_str());
+  std::string err;
+  std::vector<std::string> lines;
+  if (a2f::ProcReport(PluginDir(), lines, err)) {
+    skse::Report("-- the model's process");
+  } else {
+    ReportInGame(err);
+    lines = a2f::DeviceReport();
+  }
+  for (const auto& line : lines) skse::Report("%s", line.c_str());
+}
+
 std::unique_ptr<a2f::Net> CreateNet(bool gpu, std::string& err,
                                     std::string& info) {
   const std::wstring dir = PluginDir(), file = dir + L"\\" + config.model;
-  static bool dml_loaded;
-  if (gpu && !dml_loaded) {
-    // onnxruntime delay-loads DirectML.dll by name: load ours first so that
-    // is the one it gets
-    dml_loaded = LoadLibraryExW((dir + L"\\DirectML.dll").c_str(), nullptr,
-                                LOAD_WITH_ALTERED_SEARCH_PATH) != nullptr;
-    if (!dml_loaded)
-      skse::Report("DirectML.dll not loaded from %ls (error %lu)", dir.c_str(),
-                   GetLastError());
-  }
   a2f::OrtOptions o;
   o.gpu = gpu;
   o.batch = config.batch;
@@ -386,13 +419,13 @@ std::unique_ptr<a2f::Net> CreateNet(bool gpu, std::string& err,
     err = std::string("model file not found: ") + name;
     return nullptr;
   }
-  if (!gpu) return a2f::CreateOrtNet(dir, file, o, err, info);
+  if (!gpu) return CreateModelNet(dir, file, o, err, info);
   // with the driver's metacommands, and without them when that fails
   return a2f::CreateGpuNet(
       [&](bool with, std::string& e, std::string& i) {
         o.metacommands = with;
         const double t = Now();
-        auto net = a2f::CreateOrtNet(dir, file, o, e, i);
+        auto net = CreateModelNet(dir, file, o, e, i);
         skse::Report("GPU session with metacommands %s: %s after %.0f ms",
                      with ? "on" : "off", net ? "loaded" : "failed",
                      (Now() - t) * 1e3);
@@ -431,8 +464,7 @@ void PublishNet() {
     if (config.gpu && !reported) {
       reported = true;
       skse::Report("-- at the first failure");
-      for (const auto& line : a2f::GpuReport())
-        skse::Report("%s", line.c_str());
+      ReportSystem();
     }
   }
   net_loaded = keeper->loaded();
@@ -543,8 +575,8 @@ DWORD WINAPI Worker(void*) {
   ready = true;
   skse::Report("settings: GPU=%d, batch %d, model %ls", config.gpu,
                config.batch, config.model.c_str());
-  for (const auto& line : a2f::GpuReport()) skse::Report("%s", line.c_str());
-  a2f::SetOrtLog([](const std::string& s) { skse::Report("%s", s.c_str()); });
+  ReportSystem();
+  a2f::SetOrtLog(NetLog);
   keeper = new a2f::NetKeeper(config.gpu, CreateNet, Now, NetEvent);
   auto load = [] {
     keeper->Ensure();
