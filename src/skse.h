@@ -51,6 +51,20 @@ struct SKSEMessagingInterface {
                            void (*cb)(SKSEMessage*));
 };
 
+// SKSE GameThreads.h: no virtual destructor; Dispose owns deletion.
+struct TaskDelegate {
+  virtual void Run() = 0;
+  virtual void Dispose() = 0;
+};
+struct SKSETaskInterface {
+  uint32_t interfaceVersion;
+  void (*AddTask)(TaskDelegate*);
+  void (*AddUITask)(void*);
+};
+constexpr uint32_t kInterfaceTask = 4;
+constexpr uint32_t kMessagePostLoad = 0;
+constexpr uint32_t kMessagePreLoadGame = 2;
+constexpr uint32_t kMessageNewGame = 7;
 constexpr uint32_t kInterfaceMessaging = 5;
 constexpr uint32_t kMessageDataLoaded = 8;
 

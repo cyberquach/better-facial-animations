@@ -18,6 +18,15 @@ Requirements
   be loaded on the GPU the settings window says why, it is retried and lines run on the CPU meanwhile (slow).
   Optional: SKSE Menu Framework, for the in-game settings page (Better Facial Animations -> Settings).
 
+Player dialogue (optional)
+  Dragonborn ReVoiced (DBReV) 1.4.4+ with a compatible voice pack animates the player through BFA.
+  Select the voice in DBReV's MCM. A third-person/cinematic camera lets you see the player's face.
+  General -> Player facial animations toggles this separately from NPC faces; the INI equivalent is
+  [General] PlayerFacialAnimations=0. The master Enabled setting still applies.
+  With Cinematic Conversation Camera, use [Performance] bSynthLipSync=0 in SKSE/Plugins/SD_user.ini
+  to disable its synthesized fallback lips. Turning off BFA's player feature leaves DBReV's own lip sync.
+  The same supported-head/race requirements apply. DBReV is optional, and its DLL is not patched.
+
 Settings
   Data/SKSE/Plugins/BetterFacialAnimations.ini, or in game through SKSE Menu Framework.
 Log

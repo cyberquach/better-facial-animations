@@ -16,6 +16,14 @@ When an actor with a FaceGen head speaks, the plugin runs the voice file through
 - `src/skse.*`: SKSE ABI, log, Address Library, engine layout
 - `dist/`: ini, Direct face data (`A2FDirect.bin`), player readme, notices, model license
 
+## Player dialogue
+
+[Dragonborn ReVoiced](https://www.nexusmods.com/skyrimspecialedition/mods/184221) 1.4.4 or newer can drive the player's face through the same Audio2Face pipeline. Install DBReV and a compatible voice pack, then select the voice in its MCM. BFA's **Player facial animations** setting (General) is independent of NPC animation; the INI equivalent is `[General] PlayerFacialAnimations=0` to disable it. The master Enabled setting still applies. Use a third-person or cinematic dialogue camera to see the player's face. The usual head/race requirements apply.
+
+For Cinematic Conversation Camera, disable its synthesized fallback lips with `[Performance] bSynthLipSync=0` in `SKSE/Plugins/SD_user.ini`. DBReV retains its own authored lip track when BFA's player feature is off.
+
+`src/player_speech.cc` is the optional provider adapter; `src/player_speech.h` is the small owned speech-session interface shared with the renderer. The adapter registers at SKSE PostLoad, checks the public append-only message layout, copies the voice path, and queues starts on the game thread. Ends, replacements and load transitions cancel even a start still waiting in the queue. It uses audio duration rather than the post-dialogue delay. No DBReV DLL linking, internal hooks, script replacements or voice-pack-specific code is needed. Future compatible API extensions are accepted; breaking changes outside that published contract cannot be guaranteed compatible.
+
 ## Building
 
 Requires `x86_64-w64-mingw32-g++`, `7z` (for releases) and these dependencies. The paths are defaults; override them with the variables in `build.sh`:

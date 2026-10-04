@@ -30,6 +30,7 @@ constexpr skse::Rel kActorProcess{0xF0, 0xF8, 0xF0};
 constexpr uint32_t kProcessHigh = 0x10;
 constexpr uint32_t kHighVoiceHandle = 0x2FC;
 constexpr uint32_t kFormId = 0x14;
+constexpr uint32_t kPlayerFormId = 0x14;  // the form id itself
 constexpr uint32_t kFormType = 0x1A;
 constexpr uint32_t kRefrBase = 0x40;
 // MenuTopicManager: the handle of the actor the player is talking to

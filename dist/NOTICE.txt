@@ -1,3 +1,7 @@
 network_fp16.onnx (NVIDIA Audio2Face-3D v2.3 Mark, converted to FP16):
 Licensed by NVIDIA Corporation under the NVIDIA Open Model License
 See licenses/NVIDIA-Open-Model-License.txt and https://huggingface.co/nvidia/Audio2Face-3D-v2.3-Mark
+
+DBReV_API.h: public integration header supplied with Dragonborn ReVoiced 1.4.4+.
+Its author permits use, modification and redistribution, including in closed-source projects.
+The original notice is retained in src/DBReV_API.h.
