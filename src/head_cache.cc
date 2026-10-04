@@ -45,26 +45,14 @@ bool mapper_started;
 // after; filled once at data loaded, empty if the forms didn't look right.
 auto& head_part_types = *new std::unordered_map<std::string, uint8_t>;
 
-// BSTArray<T*>: items, capacity, size.
-struct BSTArray {
-  uint8_t** items;
-  uint32_t cap, pad, n;
-  bool Ok() const { return n <= cap && n <= 1000000 && (items || !n); }
-};
-static_assert(sizeof(BSTArray) == 0x18, "BSTArray");
-
 }  // namespace
 
 // Extra parts (long beards' _1bit meshes, Khajiit mustache alphas, lashes,
 // hairlines, blind eyes) are mostly Misc: they take their parent's type.
 // Types past kEyebrows, which some mods use, are left to the shape name.
 void LoadHeadPartTypes() {
-  uint8_t** dh = reinterpret_cast<uint8_t**>(Addr(kIdDataHandler));
-  const BSTArray* parts =
-      dh && *dh ? &Field<const BSTArray>(
-                      *dh, kDhFormArrays + kFtHeadPart * sizeof(BSTArray))
-                : nullptr;
-  if (!parts || !parts->Ok()) {
+  const BSTArray* parts = FormArray(kFtHeadPart);
+  if (!parts) {
     Log("head parts: no form array, using shape names");
     return;
   }

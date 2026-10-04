@@ -5,6 +5,7 @@
 
 #include <cstdint>
 
+#include "ids.h"
 #include "skse.h"
 
 namespace bfa {
@@ -49,10 +50,17 @@ constexpr uint32_t kRaceFlags = 0x108;
 // human-trained model, so they keep vanilla lip-sync.
 constexpr uint32_t kArgonianRace = 0x00013740;
 constexpr uint32_t kArgonianRaceVampire = 0x0008883A;
+constexpr uint8_t kFtFaction = 0x0B;
 constexpr uint8_t kFtHeadPart = 0x0C;
 constexpr uint8_t kFtNpc = 0x2B;
 constexpr uint8_t kFtActor = 0x3E;
 constexpr uint32_t kVfGetFaceGenAnimationData = 0x63;
+// Actor::IsInFaction(const TESFaction*), as {SE, AE, VR}
+constexpr skse::Rel kVfIsInFaction{0xF9, 0xF9, 0xFB};
+// TESForm::sourceFiles: TESFileArray* {TESFile** files; u32 count}, the
+// first being the file the form is from; TESFile::fileName
+constexpr uint32_t kFormFiles = 0x08;
+constexpr uint32_t kFileName = 0x58;
 // TESDataHandler::formArrays, one BSTArray per form type
 constexpr uint32_t kDhFormArrays = 0x10;
 // BGSHeadPart
@@ -89,6 +97,7 @@ using MorphDataFn = void* (*)(uint8_t* shape);
 using LockDynamicFn = float* (*)(uint8_t* shape);
 using UnlockDynamicFn = void (*)(uint8_t* shape);
 using UpdateDynamicFn = void (*)(uint8_t* shape, float* xyz, bool);
+using IsInFactionFn = bool (*)(const uint8_t* actor, const uint8_t* faction);
 
 // An engine object's field at byte offset off.
 template <typename T>
@@ -101,6 +110,25 @@ template <typename Fn, const skse::Rel& kId>
 Fn Engine() {
   static const Fn fn = reinterpret_cast<Fn>(skse::Addr(kId));
   return fn;
+}
+
+// BSTArray<T*>: items, capacity, size.
+struct BSTArray {
+  uint8_t** items;
+  uint32_t cap, pad, n;
+  bool Ok() const { return n <= cap && n <= 1000000 && (items || !n); }
+};
+static_assert(sizeof(BSTArray) == 0x18, "BSTArray");
+
+// The game's forms of a type (TESDataHandler::formArrays), or null when the
+// array is not there or does not look right.
+inline const BSTArray* FormArray(uint8_t type) {
+  const auto* handler =
+      reinterpret_cast<uint8_t* const*>(skse::Addr(kIdDataHandler));
+  if (!handler || !*handler) return nullptr;
+  const BSTArray& forms =
+      Field<const BSTArray>(*handler, kDhFormArrays + type * sizeof(BSTArray));
+  return forms.Ok() ? &forms : nullptr;
 }
 
 }  // namespace bfa
