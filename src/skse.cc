@@ -76,9 +76,13 @@ void SetRuntime(uint32_t runtime_version) {
       my_games = L"Skyrim Special Edition EPIC";
       break;
   }
+  if (IsVr()) my_games = L"Skyrim VR";  // its last field (1) is not a store
 }
 
-bool IsSe() { return runtime && runtime < Version(1, 6, 0); }
+bool IsSe() {
+  return runtime >= Version(1, 5, 0) && runtime < Version(1, 6, 0);
+}
+bool IsVr() { return runtime && runtime < Version(1, 5, 0); }
 
 void SetLogging(bool on) { log_on = on; }
 
@@ -86,6 +90,7 @@ void SetLogging(bool on) { log_on = on; }
 // encoding) or format 5.
 bool LoadAddressLibrary() {
   image_base = reinterpret_cast<uint64_t>(GetModuleHandleA(nullptr));
+  if (IsVr()) return true;  // ids are offsets
   // The last field is always 0, also on GOG (SKSE CheckAddressLibrary).
   char path[64];
   snprintf(path, sizeof(path), "Data\\SKSE\\Plugins\\%s-%u-%u-%u-0.bin",
@@ -210,6 +215,7 @@ bool LoadAddressLibrary() {
 uint64_t ImageBase() { return image_base; }
 
 uint64_t Addr(uint64_t id) {
+  if (IsVr()) return id ? image_base + id : 0;
   auto it =
       std::lower_bound(ids.begin(), ids.end(), std::make_pair(id, uint64_t{0}));
   return (it != ids.end() && it->first == id) ? image_base + it->second : 0;

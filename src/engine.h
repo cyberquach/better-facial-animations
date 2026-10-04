@@ -9,21 +9,23 @@
 
 namespace bfa {
 
-// BSFaceGenNiNode / BSDynamicTriShape / NiObjectNET
-constexpr uint32_t kNodeChildren = 0x118;
-constexpr uint32_t kNodeNumChildren = 0x122;
-constexpr uint32_t kNodeFg = 0x150;
-constexpr uint32_t kNodeFlags = 0x160;  // u16, bit0 = reset needed
+// BSFaceGenNiNode / BSDynamicTriShape / NiObjectNET. skse::Rel offsets are
+// {SE, AE, VR}: VR's NiAVObject and BSGeometry are larger.
+constexpr skse::Rel kNodeChildren{0x118, 0x118, 0x140};
+constexpr skse::Rel kNodeNumChildren{0x122, 0x122, 0x14A};
+constexpr skse::Rel kNodeFg{0x150, 0x150, 0x178};
+// u16, bit0 = reset needed
+constexpr skse::Rel kNodeFlags{0x160, 0x160, 0x188};
 constexpr uint32_t kObjName = 0x10;
 constexpr uint32_t kObjExtra = 0x20;
 constexpr uint32_t kObjNumExtra = 0x28;
-constexpr uint32_t kGeomType = 0x150;  // 4 = BSDynamicTriShape
-constexpr uint32_t kDynNumVerts = 0x15A;
-constexpr uint32_t kDynDataSize = 0x170;
+constexpr skse::Rel kGeomType{0x150, 0x150, 0x190};  // 4 = BSDynamicTriShape
+constexpr skse::Rel kDynNumVerts{0x15A, 0x15A, 0x19A};
+constexpr skse::Rel kDynDataSize{0x170, 0x170, 0x1B0};
 constexpr uint32_t kBaseVerts = 0x18;  // BSFaceGenBaseMorphExtraData ("FOD")
 constexpr uint32_t kBaseNumVerts = 0x24;
 constexpr uint32_t kFgDirty = 0x218;  // byte: run the face update next frame
-constexpr skse::Rel kActorProcess{0xF0, 0xF8};
+constexpr skse::Rel kActorProcess{0xF0, 0xF8, 0xF0};
 constexpr uint32_t kProcessHigh = 0x10;
 constexpr uint32_t kHighVoiceHandle = 0x2FC;
 constexpr uint32_t kFormId = 0x14;
@@ -39,8 +41,9 @@ constexpr uint32_t kRefrHandleObj = 0x20;  // TESObjectREFR's BSHandleRefObject
 constexpr uint32_t kRefrRefCount = kRefrHandleObj + 8;
 constexpr uint32_t kRefCountHasHandle = 0x400, kRefCountIndexShift = 11;
 // NiAVObject: parent NiNode, and the reference a 3D root belongs to
-constexpr uint32_t kAvParent = 0x30, kAvUserData = 0xF8;
-constexpr skse::Rel kActorRace{0x1F0, 0x1F8};
+constexpr uint32_t kAvParent = 0x30;
+constexpr skse::Rel kAvUserData{0xF8, 0xF8, 0x110};
+constexpr skse::Rel kActorRace{0x1F0, 0x1F8, 0x1F0};
 constexpr uint32_t kRaceFlags = 0x108;
 // Skyrim.esm ArgonianRace / ArgonianRaceVampire: their snout doesn't match the
 // human-trained model, so they keep vanilla lip-sync.

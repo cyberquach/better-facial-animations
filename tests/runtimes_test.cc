@@ -1,5 +1,7 @@
 // Checks every supported runtime: SKSE would load the built plugin there, and
-// each Address Library id in ids.h resolves in that runtime's file.
+// each Address Library id in ids.h resolves in that runtime's file. VR has no
+// file (its ids are exe offsets), so there only the single ids are checked:
+// each has an offset.
 //   runtimes_test <BetterFacialAnimations.dll> <dir with Data\SKSE\Plugins>
 // ./build.sh test builds and runs it (under wine on Linux).
 #include <windows.h>
@@ -20,12 +22,15 @@ namespace {
 using skse::Version;
 
 constexpr uint32_t kSupported[] = {
-    Version(1, 5, 97),   Version(1, 6, 640),
-    Version(1, 6, 1170), Version(1, 6, 1179, skse::kGog),
+    skse::kVrRuntime,    Version(1, 5, 97),
+    Version(1, 6, 640),  Version(1, 6, 1170),
+    Version(1, 6, 1179, skse::kGog),
     Version(1, 7, 99),   Version(1, 7, 104),
 };
 // Neighbours of the supported ones, which the plugin has no ids or layout for.
 constexpr uint32_t kUnsupported[] = {
+    Version(1, 3, 64),
+    Version(1, 4, 15),
     Version(1, 5, 80),
     Version(1, 6, 629),
     Version(1, 6, 659, skse::kGog),
@@ -43,8 +48,9 @@ void Check(bool ok, const char* what, uint32_t runtime, uint64_t id = 0) {
          what, static_cast<unsigned long long>(id));
 }
 
-// What SKSE does with the plugin: SE's calls SKSEPlugin_Query, AE's matches
-// the runtime against SKSEPlugin_Version (whose versionIndependence is 0).
+// What SKSE does with the plugin: SE's and VR's call SKSEPlugin_Query, AE's
+// matches the runtime against SKSEPlugin_Version (whose versionIndependence is
+// 0).
 bool SkseLoads(HMODULE dll, uint32_t runtime) {
   if (runtime < Version(1, 6, 0)) {
     auto query = reinterpret_cast<bool (*)(const skse::SKSEInterface*,
@@ -100,6 +106,7 @@ int main(int argc, char** argv) {
       continue;
     }
     CheckIds(kIds, runtime);
+    for (const skse::Rel& id : kIds) Check(id.Get(), "id missing", runtime);
     CheckIds(kSpeakCallers, runtime);
     CheckIds(kResponseCallers, runtime);
     CheckIds(kFaceCallers, runtime);
