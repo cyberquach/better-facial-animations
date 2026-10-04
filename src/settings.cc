@@ -69,9 +69,10 @@ extern const Param kParams[] = {
      "in.",
      Sec::kEmotion, nullptr},
     {"Logging", nullptr, 0, 0, "Logging",
-     "Write BetterFacialAnimations.log (SKSE log folder in My Games). Turn "
-     "on to report a problem; startup is only logged when it is on at "
-     "launch.",
+     "Also write the generated and played lines to "
+     "BetterFacialAnimations.log (SKSE log folder in My Games). The GPU, "
+     "the driver and problems loading the model are written there either "
+     "way.",
      Sec::kDebug, &tune.logging},
 };
 extern const size_t kNumParams = std::size(kParams);
@@ -82,8 +83,10 @@ constexpr char kIni[] = "Data\\SKSE\\Plugins\\BetterFacialAnimations.ini";
 constexpr wchar_t kIniW[] = L"Data\\SKSE\\Plugins\\BetterFacialAnimations.ini";
 
 // Version 2 renamed Direct to LocalAnimationStrength and changed its defaults.
+// Version 3 turned Logging on by default: an older ini's Logging=0 was that
+// version's default, not a choice, so it is turned on once.
 // Preserve unrelated keys, including startup configuration, during migration.
-constexpr int kIniVersion = 2;
+constexpr int kIniVersion = 3;
 
 const char* Section(const Param& p) {
   static const char* const kNames[] = {
@@ -105,10 +108,7 @@ void ResetTune() {
   tune.logging = logging;
 }
 
-void ApplyLogging() {
-  if (skse::SetLogging(SnapshotTune().logging))
-    skse::Log("Better Facial Animations %s", kVersion);
-}
+void ApplyLogging() { skse::SetLogging(SnapshotTune().logging); }
 
 bool LogMore(std::atomic<int>& written) {
   return SnapshotTune().logging && ++written <= config.log_lines;
@@ -117,9 +117,11 @@ bool LogMore(std::atomic<int>& written) {
 void LoadIni() {
   // Startup only: no readers or menu callbacks exist yet.
   tune = Tune();
-  const bool migrate =
-      GetFileAttributesA(kIni) != INVALID_FILE_ATTRIBUTES &&
-      GetPrivateProfileIntA("General", "IniVersion", 0, kIni) < kIniVersion;
+  const int version =
+      GetFileAttributesA(kIni) == INVALID_FILE_ATTRIBUTES
+          ? kIniVersion
+          : GetPrivateProfileIntA("General", "IniVersion", 0, kIni);
+  const bool migrate = version < 2;  // the Direct section is dropped
   config.gpu = GetPrivateProfileIntA("General", "GPU", 1, kIni) != 0;
   config.batch = std::max(
       1, static_cast<int>(GetPrivateProfileIntA("General", "Batch", 2, kIni)));
@@ -145,10 +147,9 @@ void LoadIni() {
     if (end != b && *end == '\0' && std::isfinite(value))
       *p.value = std::clamp(value, p.lo, p.hi);
   }
-  if (migrate) {
-    SaveIni();
-    WritePrivateProfileStringA("Direct", nullptr, nullptr, kIni);
-  }
+  if (version < 3) tune.logging = true;
+  if (version < kIniVersion) SaveIni();
+  if (migrate) WritePrivateProfileStringA("Direct", nullptr, nullptr, kIni);
   ApplyLogging();
 }
 void SaveIni() {

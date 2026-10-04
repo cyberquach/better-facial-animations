@@ -80,6 +80,12 @@ std::vector<std::string> DiagnoseNet(bool gpu, const std::string& err,
   const char kReason[] = "device removed reason ";
   size_t at = err.find(kReason);
   if (at != std::string::npos) reason = err.substr(at + sizeof kReason - 1, 8);
+  // The reason DirectML gives when its own device stopped.
+  std::string dml_reason;
+  const char kDmlReason[] = "DirectML removed reason ";
+  at = err.find(kDmlReason);
+  if (at != std::string::npos)
+    dml_reason = err.substr(at + sizeof kDmlReason - 1, 8);
   // E_OUTOFMEMORY; DXGI device removed / hung / reset / driver error
   const bool oom = has("8007000E") || (g.known && free_mb < kNetVramMb);
   const bool lost =
@@ -129,21 +135,86 @@ std::vector<std::string> DiagnoseNet(bool gpu, const std::string& err,
       out.push_back("Windows: the device ran out of memory.");
     else if (!reason.empty())
       out.push_back("Windows: device removed, reason " + reason + ".");
+    else if (!dml_reason.empty())
+      out.push_back(
+          "Direct3D 12 reports its device as working: DirectML stopped by "
+          "itself (reason " + dml_reason + "), on a step that failed inside "
+          "DirectML or the graphics driver.");
     else
       out.push_back(
-          "Windows gave no reason for the loss (the device was "
-          "already released).");
-    if (attempts >= 3) {
+          "Direct3D 12 reports its device as working and DirectML gave no "
+          "reason: a step failed inside DirectML or the graphics driver.");
+    if (attempts >= 3 && !reason.empty()) {
       snprintf(b, sizeof b,
-               "Still lost after %d attempts: the game process keeps the dead "
-               "Direct3D 12 device (another mod that uses Direct3D 12, such "
-               "as frame generation, can hold it). Restart the game to get "
-               "the GPU back.",
+               "Still lost after %d attempts: restart the game to get the GPU "
+               "back.",
+               attempts);
+      out.push_back(b);
+    } else if (attempts >= 3) {
+      snprintf(b, sizeof b,
+               "Still failing after %d attempts, each on a new device: the "
+               "cause is in this system's driver, DirectML or a program that "
+               "hooks Direct3D 12, not in VRAM. Attach "
+               "BetterFacialAnimations.log to a bug report.",
                attempts);
       out.push_back(b);
     }
   }
   return out;
+}
+
+std::string DescribeMetacommands(const Metacommands& m) {
+  switch (m.state) {
+    case Metacommands::kOn:
+      return "on (the GPU session loaded with them)";
+    case Metacommands::kOff:
+      return "off: the GPU session failed with them and loaded without them";
+    case Metacommands::kFailed:
+      return "not the cause: the GPU session fails with them and without "
+             "them";
+    default:
+      return "not tried yet";
+  }
+}
+
+std::unique_ptr<Net> CreateGpuNet(
+    const CreateGpu& create, Metacommands& meta, std::string& err,
+    std::string& info, const std::function<void(const std::string&)>& log) {
+  auto say = [&log](const std::string& s) {
+    if (log) log(s);
+  };
+  if (meta.state != Metacommands::kOff) {
+    if (auto net = create(true, err, info)) {
+      if (meta.state != Metacommands::kOn)
+        say("driver metacommands work: the GPU session loaded with them");
+      meta.state = Metacommands::kOn;
+      meta.error.clear();
+      return net;
+    }
+    // the runtime itself did not load: the same without them
+    for (const char* other :
+         {"cannot load onnxruntime.dll", "onnxruntime.dll: wrong version"})
+      if (err.find(other) != std::string::npos) return nullptr;
+    say("GPU session with driver metacommands failed (" + err +
+        "): trying without them");
+    meta.error = err;
+  }
+  std::string err_off;
+  if (auto net = create(false, err_off, info)) {
+    if (meta.state != Metacommands::kOff)
+      say("driver metacommands are off from now on: the GPU session loaded "
+          "without them");
+    meta.state = Metacommands::kOff;
+    return net;
+  }
+  if (meta.state == Metacommands::kOff) {
+    err = err_off;  // the only attempt
+  } else {
+    say("GPU session without driver metacommands failed too (" + err_off +
+        ")");
+    meta.state = Metacommands::kFailed;
+  }
+  return nullptr;
 }
 
 Net* NetKeeper::Ensure() {

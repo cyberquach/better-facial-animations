@@ -20,8 +20,9 @@ Requirements
 Settings
   Data/SKSE/Plugins/BetterFacialAnimations.ini, or in game through SKSE Menu Framework.
 Log
-  Off by default. Turn on Logging (menu Debug section or [Debug] Logging=1), then see
   Documents/My Games/Skyrim Special Edition/SKSE/BetterFacialAnimations.log
+  The GPU, the driver and what went wrong loading the model are always written there: attach it to a bug
+  report. Logging (menu Debug section or [Debug] Logging=1, on by default) adds the generated and played lines.
 
 Contents of this folder
   onnxruntime.dll, onnxruntime_providers_shared.dll   ONNX Runtime 1.24.4, DirectML build (MIT)

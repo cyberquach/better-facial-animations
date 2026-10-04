@@ -182,6 +182,117 @@ int main() {
     m.now = 6;
     Expect(Line(k) && k.on_gpu(), "GPU recovers without the CPU");
   }
+  printf("-- driver metacommands\n");
+  {
+    // What a GPU whose driver's metacommands fail reported (RTX 3080).
+    const std::string kMeta =
+        "session: Exception during initialization: E:\\_work\\1\\s\\"
+        "onnxruntime\\core\\providers\\dml\\DmlExecutionProvider\\src\\"
+        "DmlGraphFusionHelper.cpp(906)\\onnxruntime.dll!00007FFB3F1F833A: "
+        "(caller: 00007FFB3F284FEE) Exception(12) tid(18ac) 887A0005 The GPU "
+        "device instance has been suspended.";
+    std::string with_error, without_error;  // empty: that session loads
+    int with = 0, without = 0;
+    std::vector<std::string> said;
+    a2f::CreateGpu create = [&](bool meta, std::string& err, std::string& info)
+        -> std::unique_ptr<a2f::Net> {
+      ++(meta ? with : without);
+      const std::string& e = meta ? with_error : without_error;
+      if (!e.empty()) {
+        err = e;
+        return nullptr;
+      }
+      info = meta ? "on" : "off";
+      static Machine machine;
+      return std::make_unique<FakeNet>(&machine, true);
+    };
+    auto log = [&](const std::string& s) { said.push_back(s); };
+    auto make = [&](a2f::Metacommands& m, std::string& err, std::string& info) {
+      return a2f::CreateGpuNet(create, m, err, info, log);
+    };
+    std::string err, info;
+    {
+      a2f::Metacommands m;
+      Expect(Has(a2f::DescribeMetacommands(m), "not tried"), "untried at first");
+      Expect(make(m, err, info) && info == "on" && with == 1 && without == 0 &&
+                 m.state == a2f::Metacommands::kOn,
+             "a healthy driver: loaded with them, nothing tried without");
+      Expect(said.size() == 1 && Has(said[0], "metacommands work"),
+             "logged that they work");
+      Expect(make(m, err, info) && said.size() == 1, "logged once");
+      Expect(Has(a2f::DescribeMetacommands(m), "on ("), "shown as on");
+    }
+    {
+      with = without = 0;
+      said.clear();
+      a2f::Metacommands m;
+      with_error = kMeta;
+      Expect(make(m, err, info) && info == "off" && with == 1 && without == 1 &&
+                 m.state == a2f::Metacommands::kOff && m.error == kMeta,
+             "they fail: the session is loaded without them at once");
+      Expect(said.size() == 2 && Has(said[0], "failed") &&
+                 Has(said[0], "887A0005") && Has(said[1], "off from now on"),
+             "logged the failure and the fallback");
+      Expect(Has(a2f::DescribeMetacommands(m), "off:"), "shown as off");
+      Expect(make(m, err, info) && with == 1 && without == 2 && said.size() == 2,
+             "the next session does not try them again");
+      without_error = kHung;
+      err.clear();
+      Expect(!make(m, err, info) && err == kHung && with == 1 &&
+                 m.state == a2f::Metacommands::kOff,
+             "a later loss is reported as itself; they stay off");
+    }
+    {
+      with = without = 0;
+      said.clear();
+      a2f::Metacommands m;
+      with_error = kMeta;
+      without_error = kOom;
+      Expect(!make(m, err, info) && err == kMeta && with == 1 && without == 1 &&
+                 m.state == a2f::Metacommands::kFailed,
+             "fails both ways: reported with the first reason");
+      Expect(said.size() == 2 && Has(said[1], "failed too") &&
+                 Has(said[1], "8007000E"),
+             "logged that they are not the cause");
+      Expect(Has(a2f::DescribeMetacommands(m), "not the cause"),
+             "shown as not the cause");
+      Expect(!make(m, err, info) && with == 2 && without == 2,
+             "the retry tries both again");
+      with_error.clear();
+      Expect(make(m, err, info) && info == "on" &&
+                 m.state == a2f::Metacommands::kOn && m.error.empty(),
+             "and takes them when they work");
+    }
+    {
+      with = without = 0;
+      a2f::Metacommands m;
+      with_error = "cannot load onnxruntime.dll (error 126)";
+      Expect(!make(m, err, info) && with == 1 && without == 0 &&
+                 m.state == a2f::Metacommands::kUntried,
+             "a runtime that does not load is not tried twice");
+    }
+    {
+      // inside the keeper: no CPU fallback, no error left
+      with = without = 0;
+      with_error = kMeta;
+      without_error.clear();
+      a2f::Metacommands m;
+      double now = 0;
+      int cpu = 0;
+      a2f::NetKeeper k(
+          true,
+          [&](bool gpu, std::string& e,
+              std::string& i) -> std::unique_ptr<a2f::Net> {
+            if (gpu) return a2f::CreateGpuNet(create, m, e, i, log);
+            ++cpu;
+            return nullptr;
+          },
+          [&] { return now; });
+      Expect(k.Ensure() && k.on_gpu() && k.error().empty() && cpu == 0 &&
+                 k.attempts() == 0 && k.info() == "off",
+             "the keeper holds the GPU session without them");
+    }
+  }
   printf("-- a failure that is not the session's\n");
   {
     Machine m;
@@ -223,20 +334,24 @@ int main() {
       if (Has(l, what)) return true;
     return false;
   };
+  const std::string removed = kRemoved;
   Expect(Has(first(DiagnoseNet(true, kOom, 1, roomy)), "no VRAM left"),
          "out of memory: no VRAM left");
   Expect(Has(first(DiagnoseNet(true, kRemoved, 1, full)),
              "no VRAM left (50 MB free of 8000 MB"),
          "device removed with VRAM full: no VRAM left, with the numbers");
-  Expect(any(DiagnoseNet(true, kRemoved, 1, full), "gave no reason"),
+  Expect(any(DiagnoseNet(true, kRemoved, 1, full), "DirectML gave no reason"),
          "and still says the device was lost");
+  Expect(any(DiagnoseNet(true, removed + " [DirectML removed reason 887A0020]",
+                         1, roomy),
+             "DirectML stopped by itself (reason 887A0020)"),
+         "reason from DirectML alone: Direct3D 12 is not blamed");
   for (const char* e : {kRemoved, kHung, kReset, kDriver})
     Expect(
         Has(first(DiagnoseNet(true, e, 1, roomy)),
             "graphics device was lost (6000 MB free") &&
             Has(first(DiagnoseNet(true, e, 1, unknown)), "free VRAM unknown"),
         "device lost with VRAM free: device lost");
-  const std::string removed = kRemoved;
   Expect(any(DiagnoseNet(true, removed + " [device removed reason 887A0006]", 1,
                          roomy),
              "stopped responding"),
@@ -257,9 +372,14 @@ int main() {
                            1, roomy))
                  .find("no VRAM left") != std::string::npos,
          "reason from Windows: out of memory");
-  Expect(!any(DiagnoseNet(true, kRemoved, 2, roomy), "Restart the game") &&
+  Expect(!any(DiagnoseNet(true, kRemoved, 2, roomy), "Still failing") &&
              any(DiagnoseNet(true, kRemoved, 3, roomy),
-                 "Still lost after 3 attempts"),
+                 "Still failing after 3 attempts") &&
+             !any(DiagnoseNet(true, kRemoved, 3, roomy), "estart the game"),
+         "a session that keeps failing on a working device: send the log");
+  Expect(any(DiagnoseNet(true, removed + " [device removed reason 887A0006]", 3,
+                         roomy),
+             "Still lost after 3 attempts: restart the game"),
          "a device that stays lost: restart the game");
   Expect(Has(first(DiagnoseNet(true, kOther, 1, roomy)),
              "DirectML is not available"),

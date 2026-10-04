@@ -24,6 +24,35 @@ std::vector<std::string> GpuWarnings(const GpuState& gpu);
 std::vector<std::string> DiagnoseNet(bool gpu, const std::string& error,
                                      int attempts, const GpuState& state);
 
+// The graphics driver's metacommands (its own versions of the network's
+// operations, which DirectML uses when the driver has them) and the GPU
+// session: a driver whose metacommands fail takes the session with it, and
+// DirectML's own shaders run the network without them.
+struct Metacommands {
+  enum State {
+    kUntried,  // no GPU session was created yet
+    kOn,       // the session loaded with them
+    kOff,      // it failed with them and loaded without: they stay off
+    kFailed,   // it failed with them and without: they are not the cause
+  };
+  State state = kUntried;
+  // What the session with them failed with (kOff, kFailed).
+  std::string error;
+};
+// One line for the settings window.
+std::string DescribeMetacommands(const Metacommands& m);
+
+// A GPU session by create, with the driver's metacommands and, when that
+// fails, again without them (at once without, after they failed and the
+// session loaded without). On failure returns null with the reason in err:
+// the one with metacommands when both were tried. log receives what was
+// found out about them.
+using CreateGpu = std::function<std::unique_ptr<Net>(
+    bool metacommands, std::string& err, std::string& info)>;
+std::unique_ptr<Net> CreateGpuNet(
+    const CreateGpu& create, Metacommands& meta, std::string& err,
+    std::string& info, const std::function<void(const std::string&)>& log);
+
 class NetKeeper {
  public:
   // Creates a session; on failure returns null with the reason in err.
