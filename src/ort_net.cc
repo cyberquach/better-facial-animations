@@ -292,6 +292,16 @@ std::unique_ptr<Net> CreateOrtNet(const std::wstring& dll_dir,
                                   const std::wstring& model,
                                   const OrtOptions& o, std::string& err,
                                   std::string& info) {
+  static bool dml_loaded;
+  if (o.gpu && !dml_loaded) {
+    // onnxruntime delay-loads DirectML.dll by name: load ours first so that
+    // is the one it gets
+    dml_loaded = LoadLibraryExW((dll_dir + L"\\DirectML.dll").c_str(), nullptr,
+                                LOAD_WITH_ALTERED_SEARCH_PATH) != nullptr;
+    if (!dml_loaded && ort_log)
+      ort_log("DirectML.dll not loaded from the plugin folder (error " +
+              std::to_string(GetLastError()) + ")");
+  }
   if (!LoadApi(dll_dir, err)) return nullptr;
   const int batch = std::max(1, o.batch);
   OrtSession* sess;
@@ -357,7 +367,7 @@ std::string FileVersion(const wchar_t* path) {
 
 void SetOrtLog(void (*log)(const std::string&)) { ort_log = log; }
 
-std::vector<std::string> GpuReport() {
+std::vector<std::string> SystemReport() {
   std::vector<std::string> out;
   char b[900];
   // Windows (and Wine / Proton, where Direct3D 12 is vkd3d-proton)
@@ -414,7 +424,12 @@ std::vector<std::string> GpuReport() {
              g.used_mb, g.budget_mb);
     out.push_back(b);
   }
-  // what Direct3D 12 offers DirectML on adapter 0
+  return out;
+}
+
+std::vector<std::string> DeviceReport() {
+  std::vector<std::string> out;
+  char b[200];
   if (ID3D12Device* device = OpenDevice()) {
     const D3D_FEATURE_LEVEL levels[] = {
         D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_12_0,
@@ -454,8 +469,11 @@ std::vector<std::string> GpuReport() {
   } else {
     out.push_back("Direct3D 12 on adapter 0: no device");
   }
-  // The modules in the game that are not Windows' own (mods, overlays,
-  // wrappers of Direct3D) and those the model runs on, with their versions.
+  return out;
+}
+
+std::vector<std::string> ModuleReport() {
+  std::vector<std::string> out;
   wchar_t windows[MAX_PATH] = L"";
   const size_t wlen = GetWindowsDirectoryW(windows, MAX_PATH);
   std::vector<HMODULE> mods(4096);
