@@ -1,4 +1,5 @@
-// Voice audio -> Audio2Face network -> 30 fps A2F Direct coefficients.
+// Voice audio -> Audio2Face network -> A2F Direct coefficients: 30 fps with
+// v2.3, 60 fps with v3.0.
 #ifndef SRC_LIVE_CORE_H_
 #define SRC_LIVE_CORE_H_
 
@@ -25,13 +26,39 @@ constexpr int kNumMod = 10;  // explicit emotions
 // Skyrim emotion type: 0 Neutral 1 Anger 2 Disgust 3 Fear 4 Sad 5 Happy
 // 6 Surprise 7 Puzzled
 
-// The network: x (b, 8320) audio windows, emo (b, 26) -> out (b, 301): the
-// skin's kNumPca PCA coefficients, the tongue's kNumTongue, kNumJaw jaw
-// values and the eyes (not used).
-// Implemented by OrtNet (ort_net.cc).
+// Audio2Face-3D v3.0, folded (tools/a2f3_fold.py): a 1 s window every 0.5 s,
+// the GRU state chained between windows, 30 frames at 60 fps per window.
+constexpr int kFps3 = 60;
+constexpr int kWindow3 = 16000;
+constexpr int kStride3 = 8000;
+constexpr int kFrames3 = 30;  // frames kept per window
+constexpr int kSkip3 = 45;    // frames emitted before the clip starts
+constexpr int kLatent3 = 512;
+constexpr int kJawEyes3 = kNumJaw + 4;  // the jaw's values, then the eyes
+constexpr int kNumOut3 = 2 * kLatent3 + kJawEyes3;
+constexpr int kState3 = 2 * 2 * 256;
+constexpr int kNumIdentity3 = 3;  // 0 Claire, 1 James, 2 Mark
+
+// The network. v2.3 (Run): x (b, 8320) audio windows, emo (b, 26) -> out
+// (b, 301): the skin's kNumPca PCA coefficients, the tongue's kNumTongue,
+// kNumJaw jaw values and the eyes (not used). v3.0 (Run3): one window
+// (kWindow3), the identity one-hot (kNumIdentity3), the emotion (kFrames3 x
+// kNumMod) and the GRU state (kState3) -> the skin and tongue latents
+// (kFrames3 x kLatent3 each), the jaw and eyes (kFrames3 x kJawEyes3) and the
+// next state.
+// Implemented by OrtNet and OrtNet3 (ort_net.cc).
 class Net {
  public:
   virtual ~Net() = default;
+  // 3: the folded v3.0 network, run with Run3; else v2.3, run with Run.
+  virtual int Version() const { return 2; }
+  virtual bool Run3(const float* window, const float* identity,
+                    const float* emotion, const float* state, float* skin,
+                    float* tongue, float* jaw_eyes, float* next_state,
+                    std::string& err) {
+    err = "not a v3.0 network";
+    return false;
+  }
   // Preferred batch; Generate pads the last batch to it (one shape, one DML
   // plan).
   virtual int Batch() const = 0;
@@ -44,6 +71,7 @@ class Net {
 
 struct Line {
   uint32_t frames = 0, direct_dim = 0;
+  float fps = kFps;  // of direct
   std::vector<float> direct;
   // log: the emotion the network was given, per explicit emotion (amazement
   // anger cheekiness disgust fear grief joy outofbreath pain sadness)
@@ -93,7 +121,21 @@ bool Generate(Net& net, const float* pcm, size_t n, const Emotion& emotion,
               const float* proj, const float* rest, uint32_t k, Line& out,
               std::string& err);
 
-// The emotion alone: frames x kNumMod.
+// v3.0: the same coefficients from the folded network's output, with d = y -
+// rest (rest: kNumOut3): the skin's d[0:kLatent3] . proj[k], the tongue's
+// d[kLatent3 : 2 kLatent3] . tongue_proj[j] (kNumTongue x kLatent3), then the
+// jaw's d[2 kLatent3 : + kNumJaw].
+struct Face3 {
+  int identity;  // 0 Claire, 2 Mark
+  const float* proj;
+  const float* tongue_proj;
+  const float* rest;
+  uint32_t k;
+};
+bool Generate3(Net& net, const float* pcm, size_t n, const Emotion& emotion,
+               const Face3& face, Line& out, std::string& err);
+
+// The emotion alone: frames (at kFps) x kNumMod.
 void EmotionTrack(const float* pcm, size_t n, int frames,
                   const Emotion& emotion, std::vector<float>& track);
 

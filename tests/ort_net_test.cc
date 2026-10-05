@@ -1,6 +1,7 @@
 // The CPU session (GPU=0 and the CPU fallback) loads and runs the shipped
 // FP16 network, and agrees with the FP32 network.
-// usage: ort_net_test <plugin dir> <model> [FP32 reference model]
+// usage: ort_net_test <plugin dir> <model> [FP32 reference model [3]]
+// 3: the models are the folded v3.0 network (else v2.3).
 #include "../src/ort_net.h"
 
 #include <windows.h>
@@ -23,6 +24,30 @@ std::wstring FullPath(const char* path) {
   return full;
 }
 constexpr int kBatch = 2;
+bool v3 = false;
+// v3.0: two chained windows of a 220 Hz tone spoken by Mark with a neutral
+// emotion: the second's skin and tongue latents and jaw; empty on failure.
+std::vector<float> Run3(a2f::Net& net) {
+  using namespace a2f;
+  std::vector<float> x(kWindow3), emo(kFrames3 * kNumMod), state(kState3),
+      next(kState3), y(kFrames3 * (2 * kLatent3 + kJawEyes3));
+  const float identity[kNumIdentity3] = {0, 0, 1};
+  for (size_t i = 0; i < x.size(); ++i)
+    x[i] = 0.3f *
+           static_cast<float>(std::sin(i * 2 * 3.14159265 * 220 / kSampleRate));
+  std::string err;
+  for (int run = 0; run < 2; ++run) {
+    if (!net.Run3(x.data(), identity, emo.data(), state.data(), y.data(),
+                  &y[kFrames3 * kLatent3], &y[kFrames3 * 2 * kLatent3],
+                  next.data(), err) ||
+        net.failed) {
+      printf("  %s\n", err.c_str());
+      return {};
+    }
+    state.swap(next);
+  }
+  return y;
+}
 // One batch of a 220 Hz tone with a neutral emotion; empty on failure.
 std::vector<float> Run(const std::wstring& dir, const std::wstring& model,
                        const char* label) {
@@ -30,13 +55,16 @@ std::vector<float> Run(const std::wstring& dir, const std::wstring& model,
   o.gpu = false;
   o.batch = kBatch;
   std::string err, info;
-  auto net = a2f::CreateOrtNet(dir, model, o, err, info);
+  auto net = v3 ? a2f::CreateOrtNet3(dir, model, o, err, info)
+                : a2f::CreateOrtNet(dir, model, o, err, info);
   Expect(net != nullptr, label);
   if (!net) {
     printf("  %s\n", err.c_str());
     return {};
   }
   printf("  %s\n", info.c_str());
+  Expect(net->Version() == (v3 ? 3 : 2), "the session is of that network");
+  if (v3) return Run3(*net);
   std::vector<float> x(kBatch * a2f::kWindow), emo(kBatch * a2f::kNumEmo),
       y(kBatch * a2f::kNumOut);
   for (size_t i = 0; i < x.size(); ++i)
@@ -52,9 +80,10 @@ std::vector<float> Run(const std::wstring& dir, const std::wstring& model,
 
 int main(int argc, char** argv) {
   if (argc < 3) {
-    printf("usage: ort_net_test <plugin dir> <model> [FP32 model]\n");
+    printf("usage: ort_net_test <plugin dir> <model> [FP32 model [3]]\n");
     return 2;
   }
+  v3 = argc > 4 && argv[4][0] == '3';
   const std::wstring dir = FullPath(argv[1]);
   std::vector<float> y = Run(dir, FullPath(argv[2]), "CPU session loads");
   Expect(!y.empty(), "CPU session runs");

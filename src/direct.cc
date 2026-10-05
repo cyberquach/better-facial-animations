@@ -647,6 +647,40 @@ void Mouth(const Mark& mk, const ShapeIn& sh, std::vector<float> pos, float s,
   }
 }
 
+// One face of the file (version 8 or 9), as the tool writes it.
+bool LoadFace(Reader& r, uint32_t version, const Model& model, Mark& m) {
+  m.nv = r.Get<uint32_t>();
+  if (!r.ok || !m.nv || m.nv > 1000000) return false;
+  r.Vec(m.verts, static_cast<size_t>(m.nv) * 3);
+  r.Halves(m.jaw, m.nv);
+  for (float& v : m.landmarks) v = r.Get<float>();
+  m.k = r.Get<uint32_t>();
+  uint32_t nm = r.Get<uint32_t>();
+  if (!r.ok || !m.k || m.k > 256 || nm > m.nv) return false;
+  std::vector<uint32_t> midx;
+  r.Vec(midx, nm);
+  r.Halves(m.basis, static_cast<size_t>(nm) * m.k * 3);
+  r.Vec(m.proj, static_cast<size_t>(m.k) * model.n_skin);
+  r.Vec(m.rest, model.n_out);
+  for (float& v : m.jaw_points) v = r.Get<float>();
+  m.jaw_strength = r.Get<float>();
+  m.tongue_nv = r.Get<uint32_t>();
+  if (!r.ok || m.tongue_nv > 1000000) return false;
+  r.Vec(m.tongue_verts, static_cast<size_t>(m.tongue_nv) * 3);
+  for (float& v : m.tongue_tip) v = r.Get<float>();
+  r.Halves(m.tongue_basis,
+           static_cast<size_t>(m.tongue_nv) * a2f::kNumTongue * 3);
+  if (version == 9)
+    r.Vec(m.tongue_proj, static_cast<size_t>(a2f::kNumTongue) * a2f::kLatent3);
+  if (!r.ok) return false;
+  m.row.assign(m.nv, -1);
+  for (uint32_t i = 0; i < nm; ++i) {
+    if (midx[i] >= m.nv) return false;
+    m.row[midx[i]] = static_cast<int32_t>(i);
+  }
+  return true;
+}
+
 }  // namespace
 
 bool Model::Load(const std::wstring& path, std::string& err) {
@@ -671,39 +705,28 @@ bool Model::Load(const std::wstring& path, std::string& err) {
   constexpr size_t kMagicSize = sizeof kMagic - 1;
   if (got < kMagicSize || memcmp(d.data(), kMagic, kMagicSize)) return false;
   Reader r{d.data() + kMagicSize, got - kMagicSize};
-  // version 8: Mark (tools/mark_export.py)
-  if (r.Get<uint32_t>() != 8) {
-    err = "not a version-8 A2FDirect.bin";
+  // version 8: Mark (tools/mark_export.py); version 9: the v3.0 network's
+  // faces (tools/mark_export3.py)
+  const uint32_t version = r.Get<uint32_t>();
+  if (version != 8 && version != 9) {
+    err = "not a version-8 or version-9 A2FDirect bin";
     return false;
   }
-  Mark& m = mark;
-  m.nv = r.Get<uint32_t>();
-  if (!r.ok || !m.nv || m.nv > 1000000) return false;
-  r.Vec(m.verts, static_cast<size_t>(m.nv) * 3);
-  r.Halves(m.jaw, m.nv);
-  for (float& v : m.landmarks) v = r.Get<float>();
-  m.k = r.Get<uint32_t>();
-  uint32_t nm = r.Get<uint32_t>();
-  if (!r.ok || !m.k || m.k > 256 || nm > m.nv) return false;
-  std::vector<uint32_t> midx;
-  r.Vec(midx, nm);
-  r.Halves(m.basis, static_cast<size_t>(nm) * m.k * 3);
-  r.Vec(m.proj, static_cast<size_t>(m.k) * a2f::kNumPca);
-  r.Vec(rest, a2f::kNumOut);
-  for (float& v : m.jaw_points) v = r.Get<float>();
-  m.jaw_strength = r.Get<float>();
-  m.tongue_nv = r.Get<uint32_t>();
-  if (!r.ok || m.tongue_nv > 1000000) return false;
-  r.Vec(m.tongue_verts, static_cast<size_t>(m.tongue_nv) * 3);
-  for (float& v : m.tongue_tip) v = r.Get<float>();
-  r.Halves(m.tongue_basis,
-           static_cast<size_t>(m.tongue_nv) * a2f::kNumTongue * 3);
-  if (!r.ok || r.left) return false;
-  m.row.assign(m.nv, -1);
-  for (uint32_t i = 0; i < nm; ++i) {
-    if (midx[i] >= m.nv) return false;
-    m.row[midx[i]] = static_cast<int32_t>(i);
+  network = version == 9 ? 3 : 2;
+  uint32_t count = 1;
+  if (version == 9) {
+    count = r.Get<uint32_t>();
+    n_skin = r.Get<uint32_t>();
+    const uint32_t n_tongue = r.Get<uint32_t>();
+    n_out = r.Get<uint32_t>();
+    if (!r.ok || count != 2 || n_skin != a2f::kLatent3 ||
+        n_tongue != a2f::kLatent3 || n_out != a2f::kNumOut3)
+      return false;
   }
+  faces.assign(count, Mark());
+  for (Mark& m : faces)
+    if (!LoadFace(r, version, *this, m)) return false;
+  if (r.left) return false;
   err.clear();
   return true;
 }
@@ -862,10 +885,9 @@ void MapJaw(const Mark& mk, const Registration& g, Head& out) {
 
 }  // namespace
 
-bool BuildHead(const Model& model, const std::vector<ShapeIn>& shapes,
+bool BuildHead(const Mark& mk, const std::vector<ShapeIn>& shapes,
                Head& out, std::string& why) {
   out = Head();
-  const Mark& mk = model.mark;
   const ShapeIn* skin = nullptr;
   for (const ShapeIn& s : shapes)
     if (s.skin && s.part == Part::kHead && !skin) skin = &s;

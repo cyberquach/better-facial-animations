@@ -1,4 +1,4 @@
-// Keeps the network loaded: the wanted session (GPU unless GPU=0) is created
+// Keeps the network loaded: the wanted session (GPU unless ForceCPU=1) is created
 // once and held; while it cannot be created, or after it was lost, it is
 // retried with a doubling wait and the CPU runs the lines meanwhile.
 #ifndef SRC_NET_KEEPER_H_
@@ -15,14 +15,16 @@
 
 namespace a2f {
 
-// VRAM of the loaded GPU session (FP16, batch 2); less free than this reads
-// as "no VRAM left".
-constexpr double kNetVramMb = 100;
+// VRAM of the loaded GPU session (FP16; v2.3 at batch 2, and v3.0); less free
+// than this reads as "no VRAM left".
+constexpr double kNetVramMb = 100, kNetVramMb3 = 250;
 
 // Human-readable diagnostics for the settings window.
 std::vector<std::string> GpuWarnings(const GpuState& gpu);
+// need_mb: the VRAM the session takes.
 std::vector<std::string> DiagnoseNet(bool gpu, const std::string& error,
-                                     int attempts, const GpuState& state);
+                                     int attempts, const GpuState& state,
+                                     double need_mb = kNetVramMb);
 
 // The graphics driver's metacommands (its own versions of the network's
 // operations, which DirectML uses when the driver has them) and the GPU
@@ -39,7 +41,7 @@ struct Metacommands {
   // What the session with them failed with (kOff, kFailed).
   std::string error;
 };
-// One line for the settings window.
+// One line.
 std::string DescribeMetacommands(const Metacommands& m);
 
 // A GPU session by create, with the driver's metacommands and, when that

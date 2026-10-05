@@ -1,6 +1,9 @@
 // A2F Direct: per-vertex deltas for the engine's dynamic face shapes. The
 // skin basis lives on Mark, the face the network animates (A2FDirect.bin,
-// tools/mark_export.py). Every head is mapped straight onto Mark from its own
+// tools/mark_export.py); with Audio2Face-3D v3.0 on Claire for women and on
+// its Mark for men (A2FDirect3.bin, tools/mark_export3.py), and "Mark" below
+// is whichever of them the head takes. Every head is mapped straight onto
+// Mark from its own
 // expression morphs (BuildHead); its brows, beard and eyes follow its skin,
 // and its mouth part takes Mark's jaw and tongue: the lower teeth and gums
 // turn with Mark's jaw, the tongue rides it and bends like Mark's. Shape-local
@@ -73,7 +76,8 @@ struct Mark {
   float landmarks[kNumLandmarks * 3];
   std::vector<int32_t> row;  // nv: basis row, -1 for a vertex that is still
   std::vector<float> basis;  // rows x k x 3
-  std::vector<float> proj;   // k x kNumPca
+  std::vector<float> proj;   // k x Model::n_skin
+  std::vector<float> rest;   // Model::n_out: the network's output for silence
   // the jaw: its points at rest; they move by jaw_strength times the
   // network's jaw output less its rest, and the lower teeth with them rigidly
   float jaw_points[a2f::kNumJaw], jaw_strength = 0;
@@ -83,12 +87,20 @@ struct Mark {
   std::vector<float> tongue_verts;  // tongue_nv x 3
   float tongue_tip[3];
   std::vector<float> tongue_basis;  // tongue_nv x kNumTongue x 3
+  // v3.0: the tongue's coefficients from its latent, kNumTongue x kLatent3
+  std::vector<float> tongue_proj;
 };
 
-// A2FDirect.bin.
+// A2FDirect.bin (version 8: Mark, for the v2.3 network) or A2FDirect3.bin
+// (version 9: Claire and Mark, for the folded v3.0 network).
 struct Model {
-  Mark mark;
-  std::vector<float> rest;  // kNumOut: the network's output for silence
+  int network = 2;          // 2: v2.3, 3: v3.0
+  std::vector<Mark> faces;  // v2.3: Mark; v3.0: female (Claire), male (Mark)
+  // the network's output per frame and the skin's share of it
+  uint32_t n_out = a2f::kNumOut, n_skin = a2f::kNumPca;
+  // The face a head of that sex is mapped onto.
+  int FaceIndex(bool female) const { return faces.size() > 1 && !female; }
+  const Mark& Face(bool female) const { return faces[FaceIndex(female)]; }
   bool Load(const std::wstring& path, std::string& err);
 };
 
@@ -160,7 +172,7 @@ constexpr float kAutoMin = 0.4f;
 // Maps one head (all its dynamic face shapes) onto Mark. False, with why,
 // when it has no skin shape or the skin lacks a morph of kMorphIds: such a
 // head is not animated.
-bool BuildHead(const Model& model, const std::vector<ShapeIn>& shapes,
+bool BuildHead(const Mark& mark, const std::vector<ShapeIn>& shapes,
                Head& out, std::string& why);
 
 // Per-shape float3 deltas from final speech coefficients (head.k +
@@ -170,7 +182,8 @@ bool BuildHead(const Model& model, const std::vector<ShapeIn>& shapes,
 bool Evaluate(const Head& head, const float* coefficients, const float* scales,
               const float* expressions, std::vector<std::vector<float>>& out);
 
-// The line's coefficients (head.k + kNumMouthCoef) at a fractional frame, as
+// The line's coefficients (head.k + kNumMouthCoef) at a fractional frame (of
+// the line's own rate), as
 // Evaluate takes them (past the end: the last frame's); zeros and false
 // without a line.
 bool Coefficients(const Head& head, const a2f::Line* line, float frame,

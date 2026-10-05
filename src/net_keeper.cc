@@ -38,7 +38,8 @@ std::vector<std::string> GpuWarnings(const GpuState& g) {
 // window: the problem first, then what Windows says caused it and what to do.
 // attempts: failures in a row.
 std::vector<std::string> DiagnoseNet(bool gpu, const std::string& err,
-                                     int attempts, const GpuState& g) {
+                                     int attempts, const GpuState& g,
+                                     double need_mb) {
   auto has = [&err](const char* what) {
     return err.find(what) != std::string::npos;
   };
@@ -47,7 +48,7 @@ std::vector<std::string> DiagnoseNet(bool gpu, const std::string& err,
   if (has("model file not found")) {
     out.push_back("FAILED: the model file is missing (" + err + ").");
     out.push_back(
-        "Reinstall the mod, or correct Model= in "
+        "Reinstall the mod, or choose the other model with UseOldModel= in "
         "BetterFacialAnimations.ini.");
     return out;
   }
@@ -87,7 +88,7 @@ std::vector<std::string> DiagnoseNet(bool gpu, const std::string& err,
   if (at != std::string::npos)
     dml_reason = err.substr(at + sizeof kDmlReason - 1, 8);
   // E_OUTOFMEMORY; DXGI device removed / hung / reset / driver error
-  const bool oom = has("8007000E") || (g.known && free_mb < kNetVramMb);
+  const bool oom = has("8007000E") || (g.known && free_mb < need_mb);
   const bool lost =
       has("887A0005") || has("887A0006") || has("887A0007") || has("887A0020");
   if (!lost && !oom && (has("DML api") || has("DirectML:"))) {
@@ -100,7 +101,7 @@ std::vector<std::string> DiagnoseNet(bool gpu, const std::string& err,
   if (oom) {
     snprintf(b, sizeof b,
              "GPU FAILED: no VRAM left (%s; the model needs about %.0f MB).",
-             vram, kNetVramMb);
+             vram, need_mb);
     out.push_back(b);
     out.push_back(
         "Free VRAM (smaller textures, close other programs that "

@@ -31,6 +31,7 @@ struct HeadEntry {
 };
 struct MapJob {
   std::string key;
+  bool female = false;  // the face it is mapped onto (direct::Model::Face)
   std::vector<direct::ShapeIn> shapes;
 };
 constexpr size_t kHeadCacheBytes = 128u << 20;
@@ -224,7 +225,7 @@ DWORD WINAPI Mapper(void*) {
     double t = Now();
     auto h = std::make_shared<direct::Head>();
     std::string why;
-    bool ok = direct::BuildHead(model, j.shapes, *h, why);
+    bool ok = direct::BuildHead(model.Face(j.female), j.shapes, *h, why);
     if (ok) {
       LogHead(j.key, *h, (Now() - t) * 1e3);
     } else {
@@ -244,8 +245,9 @@ DWORD WINAPI Mapper(void*) {
 
 // What tells one head from another: the number of shapes, the skin's
 // vertices and a hash (FNV-1a) of each shape's name, type, all base vertices
-// and morph resource. Empty: the node has no face shapes.
-std::string HeadKey(uint8_t* node) {
+// and morph resource, and with a face per sex the sex, which tells the face
+// it is mapped onto. Empty: the node has no face shapes.
+std::string HeadKey(uint8_t* node, bool female) {
   uint64_t h = 14695981039346656037ull;
   auto mix = [&h](const void* p, size_t n) {
     for (size_t i = 0; i < n; ++i)
@@ -266,12 +268,13 @@ std::string HeadKey(uint8_t* node) {
   });
   if (!shapes) return "";
   char key[48];
-  snprintf(key, sizeof key, "%u/%u/%016llx", shapes, skin_nv,
-           static_cast<unsigned long long>(h));
+  snprintf(key, sizeof key, "%u/%u/%016llx%s", shapes, skin_nv,
+           static_cast<unsigned long long>(h),
+           model.faces.size() < 2 ? "" : female ? "/f" : "/m");
   return key;
 }
 
-State FindHead(uint8_t* node, const std::string& key,
+State FindHead(uint8_t* node, const std::string& key, bool female,
                std::shared_ptr<const direct::Head>& out) {
   if (key.empty()) return State::kFailed;
   ScopedLock guard(map_lock);
@@ -284,7 +287,7 @@ State FindHead(uint8_t* node, const std::string& key,
   }
   heads.emplace(key, HeadEntry());
   guard.Unlock();
-  MapJob j{key, {}};
+  MapJob j{key, female, {}};
   ForFaceShapes(node, [&](uint8_t* shape, const char* name, direct::Part part,
                           bool skin, uint32_t nv, const float* base) {
     direct::ShapeIn s;

@@ -1,20 +1,21 @@
 # Better Facial Animations
 
-Real-time NVIDIA Audio2Face-3D (v2.3 Mark) lip-sync for Skyrim SE 1.6.1170, 1.6.1179 (GOG), 1.7.99 and 1.7.104, as an SKSE plugin. 1.6.640 is supported in theory: the plugin loads there and its hooks were checked against the 1.6.640 exe, but it hasn't been tested in-game yet. Skyrim VR 1.4.15 (SKSEVR) is supported too: its functions and layouts were matched against SkyrimVR.exe, whose offsets the plugin carries itself instead of using an Address Library. It was run there only on a simulated headset (lines are picked up, generated and played), so how the faces look in a headset is untested.
+Real-time NVIDIA Audio2Face-3D (v3.0, or v2.3 Mark) lip-sync for Skyrim SE 1.6.1170, 1.6.1179 (GOG), 1.7.99 and 1.7.104, as an SKSE plugin. 1.6.640 is supported in theory: the plugin loads there and its hooks were checked against the 1.6.640 exe, but it hasn't been tested in-game yet. Skyrim VR 1.4.15 (SKSEVR) is supported too: its functions and layouts were matched against SkyrimVR.exe, whose offsets the plugin carries itself instead of using an Address Library. It was run there only on a simulated headset (lines are picked up, generated and played), so how the faces look in a headset is untested.
 
-When an actor with a FaceGen head speaks, the plugin runs the voice file through the Audio2Face network on the GPU (ONNX Runtime + DirectML). The result deforms the head's face meshes directly (A2F Direct): each head is mapped onto Mark, the face the network animates, the first time it speaks, from its own expression morphs; its brows, beard and eyes follow its skin, and its mouth part takes Mark's jaw and tongue: the lower teeth and gums turn with the network's jaw, and the tongue rides it and bends like Mark's. A line's emotion is fed to the network per frame: the game's emotion value for the line, times `VoiceEmotion`, growing with the voice's loudness by `VoiceSwell`. A head whose .tri lacks a morph the mapping needs keeps vanilla lip-sync. The game's emotion expressions (dialogue, mood, combat) of the NPC the player talks to and of anyone speaking are played on the same meshes from each head's own expression morphs, at half strength on the mouth; they fade out while a line plays, when the network alone shapes the face and the game's emotion reaches it only as the network's emotion input, and back in after it. There is an optional settings page through SKSE Menu Framework.
+When an actor with a FaceGen head speaks, the plugin runs the voice file through the Audio2Face network on the GPU (ONNX Runtime + DirectML). The result deforms the head's face meshes directly (A2F Direct): each head is mapped onto the face the network animates for it (v3.0, the default: Claire for women, Mark for men, at 60 fps; v2.3 with `UseOldModel=1`: Mark for everyone, at 30 fps), the first time it speaks, from its own expression morphs; its brows, beard and eyes follow its skin, and its mouth part takes Mark's jaw and tongue: the lower teeth and gums turn with the network's jaw, and the tongue rides it and bends like Mark's. A line's emotion is fed to the network per frame: the game's emotion value for the line, times `VoiceEmotion`, growing with the voice's loudness by `VoiceSwell`. A head whose .tri lacks a morph the mapping needs keeps vanilla lip-sync. The game's emotion expressions (dialogue, mood, combat) of the NPC the player talks to and of anyone speaking are played on the same meshes from each head's own expression morphs, at half strength on the mouth; they fade out while a line plays, when the network alone shapes the face and the game's emotion reaches it only as the network's emotion input, and back in after it. There is an optional settings page through SKSE Menu Framework.
 
 - `src/better_facial_animations.cc`: hooks, worker thread, line cache, playback
-- `src/head_cache.*`: one head -> Mark mapping per distinct head, built on its own thread
+- `src/head_cache.*`: one head -> face mapping per distinct head (and sex, with v3.0), built on its own thread
 - `src/settings.cc`, `src/menu.*`, `src/plugin.h`: ini, settings page, what the plugin's files share
 - `src/engine.h`: engine object layouts and function types
 - `src/pose.*`: coefficient-space continuity across line starts, replacements and endings
 - `src/live_core.*`: audio decoding, the line's emotion (game, loudness), Audio2Face network windows, Direct coefficients
-- `src/direct.*`: A2FDirect.bin (Mark), the head -> Mark mapping (skin, jaw, tongue) and per-frame vertex deltas
-- `tools/mark_export.py`: writes A2FDirect.bin from the Audio2Face Mark package
+- `src/direct.*`: A2FDirect.bin (v2.3: Mark) and A2FDirect3.bin (v3.0: Claire and Mark), the head -> face mapping (skin, jaw, tongue) and per-frame vertex deltas
+- `tools/mark_export.py`: writes A2FDirect.bin from the Audio2Face v2.3 Mark package
+- `tools/a2f3_fold.py`, `tools/a2f3_ref.py`, `tools/a2f3_bake.py`, `tools/mark_export3.py`: fold the v3.0 network into one ONNX graph, its Python reference, its output for a set of voice lines, and A2FDirect3.bin from those
 - `src/ort_net.*`, `src/net_keeper.*`, `src/gpu_state.h`: ONNX Runtime C API wrapper (loaded at runtime), keeping and regaining the GPU session; the session gets Direct3D's own device where ReShade hands out a wrapper of it
 - `src/skse.*`: SKSE ABI, log, Address Library, engine layout
-- `dist/`: ini, Direct face data (`A2FDirect.bin`), player readme, notices, model license
+- `dist/`: ini, Direct face data (`A2FDirect.bin`, `A2FDirect3.bin`), player readme, notices, model license
 
 ## Player dialogue
 
@@ -34,6 +35,7 @@ Requires `x86_64-w64-mingw32-g++`, `7z` (for releases) and these dependencies. T
 - `deps/dml/microsoft.ai.directml` (`DML`): the NuGet package Microsoft.AI.DirectML 1.15.4, extracted
 - `models/mark/network_fp16.onnx` (`MODEL`): `network.onnx` from [nvidia/Audio2Face-3D-v2.3-Mark](https://huggingface.co/nvidia/Audio2Face-3D-v2.3-Mark), converted with
   `onnxconverter_common.float16.convert_float_to_float16(model, keep_io_types=True)`
+- `models/v3/network_fp16.onnx` (`MODEL3`): `network.onnx` from [nvidia/Audio2Face-3D-v3.0](https://huggingface.co/nvidia/Audio2Face-3D-v3.0), folded into one graph with `venv/bin/python tools/a2f3_fold.py models/v3` (`network_folded.onnx`) and converted the same way; shipped as `a2f3_fp16.onnx`. `dist/A2FDirect3.bin` is written by `tools/mark_export3.py`
 
 The version is in `VERSION`; `build.sh` builds it into the plugin and the packaged readme.
 
