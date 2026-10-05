@@ -36,13 +36,11 @@ constexpr uint32_t kRefrBase = 0x40;
 constexpr uint32_t kNpcFlags = 0x38;  // TESNPC actor data flags; bit 0: female
 // MenuTopicManager: the handle of the actor the player is talking to
 constexpr uint32_t kMtmSpeaker = 0x68;
-// BSPointerHandleManager entries: bits (in use, age), BSHandleRefObject*
-constexpr uint32_t kHandleIndexMask = 0xFFFFF, kHandleAgeMask = 0x3F00000,
-                   kHandleInUse = 0x4000000, kHandleEntrySize = 0x10;
-constexpr uint32_t kRefrHandleObj = 0x20;  // TESObjectREFR's BSHandleRefObject
-// its reference count: the count, "has a handle", the handle's entry index
+// TESObjectREFR's BSHandleRefObject and its reference count, whose low bits
+// are the count (the rest: "has a handle" and the handle's entry index)
+constexpr uint32_t kRefrHandleObj = 0x20;
 constexpr uint32_t kRefrRefCount = kRefrHandleObj + 8;
-constexpr uint32_t kRefCountHasHandle = 0x400, kRefCountIndexShift = 11;
+constexpr uint32_t kRefCountMask = 0x3FF;
 // NiAVObject: parent NiNode, and the reference a 3D root belongs to
 constexpr uint32_t kAvParent = 0x30;
 constexpr skse::Rel kAvUserData{0xF8, 0xF8, 0x110};
@@ -76,8 +74,7 @@ enum HeadPartType : uint8_t {
   kHpHair,
   kHpFacialHair,
   kHpScar,
-  kHpEyebrows,
-  kHpNumTypes
+  kHpEyebrows
 };
 // DialogueResponse
 constexpr uint32_t kRespEmoType = 0x10;
@@ -113,6 +110,37 @@ Fn Engine() {
   static const Fn fn = reinterpret_cast<Fn>(skse::Addr(kId));
   return fn;
 }
+
+// The reference a handle is of, held (reference counted, as the engine's
+// NiPointer<TESObjectREFR> the lookup writes) while this lives; null once it
+// is gone. Its face and 3D are not held. To be destroyed with neither the
+// plugin's nor a face's lock held: letting go of the last reference destroys
+// the engine's object.
+class ScopedReference {
+ public:
+  explicit ScopedReference(uint32_t handle) {
+    if (!handle) return;
+    auto lookup = Engine<bool (*)(const uint32_t&, uint8_t**),
+                         kIdLookupReference>();
+    if (lookup) lookup(handle, &ref_);
+  }
+  ~ScopedReference() {
+    if (!ref_) return;
+    const LONG count = InterlockedDecrement(&Field<LONG>(ref_, kRefrRefCount));
+    if (!(count & kRefCountMask)) {
+      uint8_t* object = ref_ + kRefrHandleObj;
+      auto destroy = reinterpret_cast<void (*)(uint8_t*)>(
+          Field<void**>(object, 0)[1]);
+      destroy(object);
+    }
+  }
+  ScopedReference(const ScopedReference&) = delete;
+  ScopedReference& operator=(const ScopedReference&) = delete;
+  uint8_t* get() const { return ref_; }
+
+ private:
+  uint8_t* ref_ = nullptr;
+};
 
 // BSTArray<T*>: items, capacity, size.
 struct BSTArray {

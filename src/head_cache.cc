@@ -44,13 +44,14 @@ bool mapper_started;
 
 // Head part type by lowercase editor id, which FaceGen names its shapes
 // after; filled once at data loaded, empty if the forms didn't look right.
-auto& head_part_types = *new std::unordered_map<std::string, uint8_t>;
+auto& head_part_types = *new std::unordered_map<std::string, uint32_t>;
 
 }  // namespace
 
 // Extra parts (long beards' _1bit meshes, Khajiit mustache alphas, lashes,
 // hairlines, blind eyes) are mostly Misc: they take their parent's type.
-// Types past kEyebrows, which some mods use, are left to the shape name.
+// Hair extras stay Misc (ear tufts, ear pieces); primary hair is excluded.
+// Custom slots (e.g. piercings) keep their full 32-bit type.
 void LoadHeadPartTypes() {
   const BSTArray* parts = FormArray(kFtHeadPart);
   if (!parts) {
@@ -61,7 +62,7 @@ void LoadHeadPartTypes() {
   auto name_of = [](uint8_t* hp) {
     return Field<const char*>(hp, kHeadPartName);
   };
-  std::unordered_map<std::string, uint8_t> types;
+  std::unordered_map<std::string, uint32_t> types;
   for (uint32_t i = 0; i < parts->n; ++i) {
     uint8_t* hp = parts->items[i];
     if (!hp || hp[kFormType] != kFtHeadPart) {
@@ -71,20 +72,19 @@ void LoadHeadPartTypes() {
     }
     uint32_t type = type_of(hp);
     const char* name = name_of(hp);
-    if (type < kHpNumTypes && name && *name)
-      types[Lower(name)] = static_cast<uint8_t>(type);
+    if (name && *name) types[Lower(name)] = type;
   }
   uint32_t inherited = 0;
   for (uint32_t i = 0; i < parts->n; ++i) {
     uint32_t type = type_of(parts->items[i]);
     const auto& extras = Field<BSTArray>(parts->items[i], kHeadPartExtras);
-    if (type == kHpMisc || type >= kHpNumTypes || !extras.Ok()) continue;
+    if (type == kHpMisc || type == kHpHair || !extras.Ok()) continue;
     for (uint32_t j = 0; j < extras.n; ++j) {
       uint8_t* x = extras.items[j];
       const char* name =
           x && x[kFormType] == kFtHeadPart ? name_of(x) : nullptr;
       if (!name || !*name || type_of(x) != kHpMisc) continue;
-      types[Lower(name)] = static_cast<uint8_t>(type);
+      types[Lower(name)] = type;
       ++inherited;
     }
   }
@@ -93,19 +93,20 @@ void LoadHeadPartTypes() {
       head_part_types.size(), inherited);
 }
 
-// The head part type of a shape, or kHpNumTypes when unknown.
-static uint8_t HeadPartTypeOf(const std::string& n) {
+// The head part type of a shape, or kHpUnknown.
+constexpr uint32_t kHpUnknown = UINT32_MAX;
+static uint32_t HeadPartTypeOf(const std::string& n) {
   auto it = head_part_types.find(n);
-  return it == head_part_types.end() ? uint8_t{kHpNumTypes} : it->second;
+  return it == head_part_types.end() ? kHpUnknown : it->second;
 }
 
 direct::Part Classify(const char* name, bool& skin) {
   std::string n = Lower(name);
-  uint8_t type = HeadPartTypeOf(n);
-  skin = type != kHpNumTypes ? type == kHpFace
-                             : n.find("head") != std::string::npos &&
-                                   n.find("brow") == std::string::npos &&
-                                   n.find("beard") == std::string::npos;
+  uint32_t type = HeadPartTypeOf(n);
+  skin = type != kHpUnknown ? type == kHpFace
+                            : n.find("head") != std::string::npos &&
+                                  n.find("brow") == std::string::npos &&
+                                  n.find("beard") == std::string::npos;
   switch (type) {
     // Scar is also used for antlers and the like, which map to the scalp,
     // where the face doesn't move
@@ -119,13 +120,17 @@ direct::Part Classify(const char* name, bool& skin) {
     case kHpHair:
       return direct::Part::kNone;
   }
+  // a mod's own slot (piercings): rigid pieces pinned to the skin
+  if (type != kHpUnknown && type > kHpEyebrows) return direct::Part::kPinned;
   // Misc (mouths, stray parts) or unknown: by name
   if (n.find("mouth") != std::string::npos) return direct::Part::kMouth;
   if (n.find("eyes") != std::string::npos) return direct::Part::kEyes;
   for (const char* w : {"head", "brow", "beard", "mustache", "moustache",
-                        "goatee", "stubble", "sideburn", "scar"})
+                        "goatee", "stubble", "sideburn", "scar", "lash"})
     if (n.find(w) != std::string::npos) return direct::Part::kHead;
-  return direct::Part::kNone;
+  // A registered Misc part named like none of those is an accessory, pinned
+  // like the piercings; geometry that is no head part at all is left alone.
+  return type != kHpUnknown ? direct::Part::kPinned : direct::Part::kNone;
 }
 
 const float* BaseVerts(uint8_t* shape, uint32_t& nv) {

@@ -39,25 +39,28 @@
 #include "skse.h"
 #include "voice_sync.h"
 
-// From the VERSION file, passed in by build.sh.
+// From VERSION, with a feature-build suffix for releases, via build.sh.
 #ifndef BFA_VERSION
 #error "build with build.sh, which defines BFA_VERSION from VERSION"
 #endif
 
 namespace {
 
-// "major.minor.patch" -> SKSE's packed plugin version.
+// "major.minor.patch[.revision]" -> SKSE's packed plugin version.
 constexpr uint32_t PackVersion(const char* s) {
-  uint32_t part[3] = {};
-  for (int i = 0; *s; ++s) {
+  uint32_t part[4] = {};
+  for (int i = 0; *s && i < 4; ++s) {
     if (*s == '.') {
       ++i;
     } else {
       part[i] = part[i] * 10 + (*s - '0');
     }
   }
-  return skse::Version(part[0], part[1], part[2]);
+  return skse::Version(part[0], part[1], part[2]) | (part[3] & 0xF);
 }
+
+static_assert(PackVersion("3.0.1") == 0x03000010);
+static_assert(PackVersion("3.0.1.1") == 0x03000011);
 
 }  // namespace
 
@@ -117,8 +120,8 @@ struct Playing {
   std::string name;
   uint64_t lip_key = 0;
   uint8_t* actor = nullptr;
-  // the actor's handle (HandleOf), which tells when it is gone; 0: it had
-  // none, the pointer is trusted
+  // the actor's handle (HandleOf), which tells when it is gone: the actor is
+  // only used while a ScopedReference of the handle holds it
   uint32_t actor_handle = 0;
   bool female = false;  // the actor's sex: the face its head is mapped onto
   double seen = 0;      // last update (play_clock)
@@ -168,8 +171,8 @@ struct Face {
   std::shared_ptr<const direct::Head> head;
   std::string head_key;  // geometry, morph identity and sex used by head
   // whose face it is and its handle, to tell when the actor joins a scene
-  // (FaceInScene); null: not known. Without a handle the pointer cannot be
-  // checked and the face is not given up to a scene.
+  // (FaceActor); null: not known. The pointer is only used while a
+  // ScopedReference of the handle holds it.
   uint8_t* actor = nullptr;
   uint32_t actor_handle = 0;
   // its sex, known from its line or as the conversation partner
@@ -201,18 +204,47 @@ std::atomic<int> num_playing{0}, num_faces{0};
 // the conversation partner (TESObjectREFR*) whose face partner_fg is, found
 // by the morph hook (TrackPartner); written together under the lock
 std::atomic<uint8_t*> partner_ref{nullptr}, partner_fg{nullptr};
+std::atomic<uint32_t> partner_handle{0};
 std::atomic<bool> partner_female{false};
 // The time face updates have been running: the wall clock without the gaps
 // between them (a paused game, a menu), so a pause does not make a line or
 // a face look abandoned.
 double play_clock, play_wall;
 uint64_t use_clock;
+// The world the game is in, counted up whenever it is replaced (a save
+// loaded, a new game), and whether a load is under way. A hook notes the
+// epoch when it starts and gives up once CurrentWorld says it has passed:
+// the actors, faces and keyframes it knew are the old world's.
+std::atomic<uint64_t> world_epoch{0};
+std::atomic<bool> loading_game{false};
 Stats& stats = *new Stats;
 
 // Lock held, after playing or faces changed.
 void Count() {
   num_playing = static_cast<int>(playing.size());
   num_faces = static_cast<int>(faces.size());
+}
+
+// The world is replaced (loading: a load begins, else it is over or a new
+// game starts): forgets the lines and faces without touching the old world's
+// (nothing is restored). Cached audio and head mappings are copies and stay.
+void ResetPlayback(bool loading) {
+  ScopedLock guard(lock);
+  loading_game = loading;
+  ++world_epoch;
+  playing.clear();
+  faces.clear();
+  partner_fg = nullptr;
+  partner_ref = nullptr;
+  partner_handle = 0;
+  partner_female = false;
+  Count();
+  // play_clock carries on (the sweeps go by it), without the load's time
+  play_wall = Now();
+}
+
+bool CurrentWorld(uint64_t epoch) {
+  return !loading_game && world_epoch == epoch;
 }
 
 // Lock held: advances play_clock to now and returns it.
@@ -515,7 +547,8 @@ void PublishNet(const a2f::NetKeeper& keeper) {
   } else if (keeper.attempts() != diagnosed) {
     diagnosed = keeper.attempts();
     why = a2f::DiagnoseNet(
-        config.gpu, keeper.error(), diagnosed, a2f::QueryGpu(),
+        config.gpu, keeper.error(), diagnosed,
+        config.gpu ? a2f::QueryGpu() : a2f::GpuState{},
         config.network == 3 ? a2f::kNetVramMb3 : a2f::kNetVramMb);
     for (const auto& line : why) skse::Report("%s", line.c_str());
     // the system as it is at the first failure (the report at startup is
@@ -524,7 +557,7 @@ void PublishNet(const a2f::NetKeeper& keeper) {
     if (config.gpu && !reported) {
       reported = true;
       skse::Report("-- at the first failure");
-      for (const auto& line : a2f::GpuReport())
+      for (const auto& line : a2f::GpuReport(true))
         skse::Report("%s", line.c_str());
     }
   }
@@ -646,7 +679,9 @@ DWORD WINAPI Worker(void*) {
   ready = true;
   skse::Report("settings: GPU=%d, batch %d, model %ls", config.gpu,
                config.batch, config.model.c_str());
-  for (const auto& line : a2f::GpuReport()) skse::Report("%s", line.c_str());
+  for (const auto& line :
+       a2f::GpuReport(config.gpu && SnapshotTune().enabled))
+    skse::Report("%s", line.c_str());
   a2f::SetOrtLog([](const std::string& s) { skse::Report("%s", s.c_str()); });
   // Loads the network at the main menu (little VRAM in use) and never
   // unloads it: the worker does not end.
@@ -746,44 +781,19 @@ uint32_t SoundId(const void* handle) {
   return handle ? *static_cast<const uint32_t*>(handle) : a2f::kNoSound;
 }
 
-// The reference handle table.
-uint8_t* HandleEntries() {
-  static const auto entries =
-      reinterpret_cast<uint8_t*>(Addr(kIdHandleEntries));
-  return entries;
-}
-
-// The reference a handle is of, or null once it is gone.
-uint8_t* RefOf(uint32_t h) {
-  const uint8_t* entries = HandleEntries();
-  if (!h || !entries) return nullptr;
-  const uint8_t* e = entries + (h & kHandleIndexMask) * kHandleEntrySize;
-  uint32_t bits = *reinterpret_cast<const uint32_t*>(e);
-  uint8_t* obj = *reinterpret_cast<uint8_t* const*>(e + 8);
-  if (!(bits & kHandleInUse) || ((bits ^ h) & kHandleAgeMask) || !obj)
-    return nullptr;
-  return obj - kRefrHandleObj;
-}
-
-// The reference's handle, or 0 if it has none (or its entry is not the
-// reference's after all).
+// The reference's handle (made by the engine if it has none yet), or 0. ref
+// is one an engine callback passed or a ScopedReference holds.
 uint32_t HandleOf(uint8_t* ref) {
-  const uint8_t* entries = HandleEntries();
-  uint32_t count = Field<uint32_t>(ref, kRefrRefCount);
-  if (!entries || !(count & kRefCountHasHandle)) return 0;
-  uint32_t index = count >> kRefCountIndexShift;
-  if (!index || index > kHandleIndexMask) return 0;
-  uint32_t bits =
-      *reinterpret_cast<const uint32_t*>(entries + index * kHandleEntrySize);
-  uint32_t h = index | (bits & kHandleAgeMask);
-  return RefOf(h) == ref ? h : 0;
+  uint32_t handle = 0;
+  auto create = Engine<void (*)(uint32_t&, uint8_t*), kIdCreateHandle>();
+  if (ref && create) create(handle, ref);
+  return handle;
 }
 
-// The reference the player is in a conversation with, or null.
-uint8_t* PartnerRef() {
+// The handle of the reference the player is in a conversation with, or 0.
+uint32_t PartnerHandle() {
   static auto mtm = reinterpret_cast<uint8_t**>(Addr(kIdMenuTopicManager));
-  if (!mtm || !*mtm) return nullptr;
-  return RefOf(Field<uint32_t>(*mtm, kMtmSpeaker));
+  return mtm && *mtm ? Field<uint32_t>(*mtm, kMtmSpeaker) : 0;
 }
 
 // The node is in the reference's 3D.
@@ -807,7 +817,8 @@ int ActorVoice(uint8_t* actor, uint32_t& sound) {
 // Shared entry for engine speech and optional provider notifications.
 void BeginSpeech(uint8_t* actor, const std::string& stem, uint32_t sound_id,
                  float dur, int emo_type, int emo_value, const Tune& tune,
-                 PlayerSpeechPtr external = {}) {
+                 uint64_t epoch, PlayerSpeechPtr external = {}) {
+  if (!CurrentWorld(epoch)) return;
   auto get_fg = reinterpret_cast<uint8_t* (*)(uint8_t*)>(
       Field<void**>(actor, 0)[kVfGetFaceGenAnimationData]);
   uint8_t* fg = get_fg(actor);
@@ -828,6 +839,14 @@ void BeginSpeech(uint8_t* actor, const std::string& stem, uint32_t sound_id,
       return;
     }
   }
+  // without a handle the actor could not be told to be still there later
+  const uint32_t handle = HandleOf(actor);
+  if (!handle) {
+    static std::atomic<int> no_handle;
+    if (LogMore(no_handle))
+      Log("skip %s: the actor has no handle", stem.c_str());
+    return;
+  }
   const bool female = IsFemale(actor);
   auto e = Request(stem, emo_type, emo_value, female, true, tune);
   Playing p;
@@ -835,11 +854,8 @@ void BeginSpeech(uint8_t* actor, const std::string& stem, uint32_t sound_id,
   p.name = stem;
   p.lip_key = lip_key;
   p.actor = actor;
-  p.actor_handle = HandleOf(actor);
+  p.actor_handle = handle;
   p.female = female;
-  static std::atomic<int> no_handle;
-  if (!p.actor_handle && LogMore(no_handle))
-    Log("speak %s: the actor has no handle", stem.c_str());
   p.player = IsPlayer(actor);
   p.external = std::move(external);
   p.voice = {sound_id, Now(), dur};
@@ -854,6 +870,7 @@ void BeginSpeech(uint8_t* actor, const std::string& stem, uint32_t sound_id,
     p.voice.Observe(sound, playing_now, p.voice.requested_at);
   }
   ScopedLock guard(lock);
+  if (!CurrentWorld(epoch)) return;
   // The other way around: the engine's line replaces the provider's and
   // keeps its cancellation.
   auto old = playing.find(fg);
@@ -870,8 +887,10 @@ __attribute__((noinline)) float SpeakHook(
     uint64_t emo_value, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9,
     uint64_t a10, uint64_t a11, uint64_t a12, uint64_t a13, uint64_t a14) {
   auto orig = SiteOrig<SpeakFn>(__builtin_return_address(0), kIdSpeakVoiceLine);
+  const uint64_t epoch = world_epoch;
   float dur = orig(actor, voice, handle, emo_type, emo_value, a6, a7, a8, a9,
                    a10, a11, a12, a13, a14);
+  if (!CurrentWorld(epoch)) return dur;
   // dialogue first calls this without a sound, then again with it
   static std::atomic<int> logged;
   auto note = [&](const char* what) {
@@ -897,7 +916,7 @@ __attribute__((noinline)) float SpeakHook(
   }
   note("taken");
   BeginSpeech(actor, stem, SoundId(handle), dur, static_cast<int>(emo_type),
-              static_cast<int>(emo_value), tune);
+              static_cast<int>(emo_value), tune, epoch);
   return dur;
 }
 
@@ -906,7 +925,9 @@ __attribute__((noinline)) uint8_t* ResponseHook(uint8_t* self, void* topic,
                                                 void* response) {
   auto orig = SiteOrig<ResponseCtorFn>(__builtin_return_address(0),
                                        kIdDialogueResponseCtor);
+  const uint64_t epoch = world_epoch;
   uint8_t* r = orig(self, topic, info, speaker, response);
+  if (!CurrentWorld(epoch)) return r;
   std::string stem;
   const Tune tune = SnapshotTune();
   const char* voice = r ? Field<const char*>(r, kRespVoice) : nullptr;
@@ -990,10 +1011,8 @@ void LogEnd(const Playing& p, State head_state, const char* why, float t) {
 // Lock held: the line's clock for this frame (0 while its sound is awaited)
 // and, in why, the reason the line is over (null: it is not).
 float LineClock(uint8_t* fg, Playing& p, double now, bool& lip,
-                const char*& why) {
+                const char*& why, uint32_t sound, int playing_now) {
   const skse::ResId* act = skse::ActiveLine(fg);
-  uint32_t sound;
-  int playing_now = ActorVoice(p.actor, sound);
   int voice_state = p.voice.Observe(sound, playing_now, now);
   bool hold = p.voice.Holding(voice_state);  // until the line's sound plays
   float t = hold ? 0 : static_cast<float>(p.voice.Elapsed(now));
@@ -1024,34 +1043,33 @@ float LineClock(uint8_t* fg, Playing& p, double now, bool& lip,
   return t;
 }
 
-// The face's actor is in a scene (InScene): its line's actor, else the one
-// its Face was made for, else the conversation partner whose face it is.
-// Called before the face's and the plugin's locks are taken.
-bool FaceInScene(uint8_t* fg) {
-  if (!num_scene_factions) return false;
-  const uint8_t* actor = nullptr;
-  {
-    ScopedLock guard(lock, ScopedLock::kShared);
-    const auto line = playing.find(fg);
-    const auto face = faces.find(fg);
-    if (line != playing.end()) {
-      const Playing& p = line->second;
-      // without a handle the pointer is trusted, as Apply does
-      if (!p.actor_handle || RefOf(p.actor_handle) == p.actor) actor = p.actor;
-    } else if (face != faces.end() && face->second.actor) {
-      const Face& f = face->second;
-      if (f.actor_handle && RefOf(f.actor_handle) == f.actor) actor = f.actor;
-    } else if (fg == partner_fg && PartnerRef() == partner_ref) {
-      actor = partner_ref;
-    }
-  }
-  return InScene(actor);
+// The face's actor and its handle: its line's, else the one its Face was
+// made for, else the conversation partner whose face it is. The caller
+// resolves the handle (ScopedReference) with no lock held and uses the actor
+// only if that gives the same one.
+struct FaceActor {
+  uint8_t* actor = nullptr;
+  uint32_t handle = 0;
+};
+FaceActor FaceActorOf(uint8_t* fg) {
+  ScopedLock guard(lock, ScopedLock::kShared);
+  const auto line = playing.find(fg);
+  if (line != playing.end())
+    return {line->second.actor, line->second.actor_handle};
+  const auto face = faces.find(fg);
+  if (face != faces.end() && face->second.actor)
+    return {face->second.actor, face->second.actor_handle};
+  if (fg == partner_fg) return {partner_ref, partner_handle};
+  return {};
 }
 
 // Plays the current line, unless its actor is in a scene (in_scene: the line
 // is dropped). kFaceChanged requests a mesh reset; kKeepUpdating schedules
-// another face update, including the final resets.
-int Apply(uint8_t* fg, const Tune& tune, bool in_scene) {
+// another face update, including the final resets. actor: the face's, held
+// by the caller, whose handle is actor_handle (null: gone); sound and
+// playing_now: its voice (ActorVoice).
+int Apply(uint8_t* fg, const Tune& tune, bool in_scene, uint8_t* actor,
+          uint32_t actor_handle, uint32_t sound, int playing_now) {
   double now = Now();
   ScopedLock guard(lock);
   Tick(now);
@@ -1062,8 +1080,10 @@ int Apply(uint8_t* fg, const Tune& tune, bool in_scene) {
   }
   Playing& p = it->second;
   p.seen = play_clock;
+  // the line began after the caller looked its actor up: from the next update
+  if (actor_handle != p.actor_handle) return kKeepUpdating;
   // the actor is gone and this is another's head at the same address
-  if (p.actor_handle && RefOf(p.actor_handle) != p.actor) {
+  if (actor != p.actor) {
     if (LogMore(logged_ends)) Log("drop %s: its actor is gone", p.name.c_str());
     playing.erase(it);
     Count();
@@ -1081,7 +1101,7 @@ int Apply(uint8_t* fg, const Tune& tune, bool in_scene) {
   }
   bool lip;
   const char* why;
-  const float t = LineClock(fg, p, now, lip, why);
+  const float t = LineClock(fg, p, now, lip, why, sound, playing_now);
   const bool done = why != nullptr;
   const bool enabled = EnabledFor(tune, p.player);
   const Face* face = LiveFace(fg);
@@ -1140,6 +1160,7 @@ void DropFace(uint8_t* fg) {
   if (fg == partner_fg) {
     partner_fg = nullptr;
     partner_ref = nullptr;
+    partner_handle = 0;
   }
   faces.erase(fg);
   Count();
@@ -1149,9 +1170,7 @@ void DropFace(uint8_t* fg) {
 // which Expressions overwrote, so the engine carries on from it. A parked
 // face's only while the keyframe is still as the plugin left it (else the
 // engine, or a new head at this address, wrote it since).
-void RestoreExpressions(uint8_t* fg) {
-  auto& ex = Field<skse::KeyframeMultiple>(fg, skse::kFgExpr3);
-  if (!ex.values || ex.count < direct::kNumExpressions) return;
+void RestoreExpressions(uint8_t* fg, uint64_t epoch) {
   float src[direct::kNumExpressions], written[direct::kNumExpressions];
   ScopedLock guard(lock, ScopedLock::kShared);
   auto it = faces.find(fg);
@@ -1163,14 +1182,17 @@ void RestoreExpressions(uint8_t* fg) {
   }
   guard.Unlock();
   if (!found) return;
-  auto& face_lock = Field<skse::SpinLock>(fg, skse::kFgLock);
-  face_lock.Lock();
+  // the face's lock is waited for without the plugin's; a load may begin
+  // meanwhile, and then the keyframe is no longer written
+  skse::ScopedFaceLock face_guard(Field<skse::SpinLock>(fg, skse::kFgLock));
+  if (!CurrentWorld(epoch)) return;
+  auto& ex = Field<skse::KeyframeMultiple>(fg, skse::kFgExpr3);
+  if (!ex.values || ex.count < direct::kNumExpressions) return;
   bool ours = true;
-  for (int i = 0; parked && i < direct::kNumExpressions; ++i)
+  for (int i = 0; ours && parked && i < direct::kNumExpressions; ++i)
     if (direct::PlaysExpression(i) && ex.values[i] != written[i]) ours = false;
   for (int i = 0; ours && i < direct::kNumExpressions; ++i)
     if (direct::PlaysExpression(i)) ex.values[i] = src[i];
-  face_lock.Unlock();
 }
 
 // Lock held: the face of this animation data; made when wanted and missing,
@@ -1253,15 +1275,17 @@ int ShowExpressions(Face& f, const float* lv, skse::KeyframeMultiple* ex) {
 // network carries the emotion). Fades in and out (Face::ownership_blend).
 // A face whose actor is in a scene (in_scene) goes back to the engine.
 // Returns like Apply.
-int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene) {
+int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene,
+                uint8_t* actor, uint32_t actor_handle) {
+  if (fg != partner_fg && !num_faces && !num_playing) return kNoUpdate;
   auto& ex = Field<skse::KeyframeMultiple>(fg, skse::kFgExpr3);
   const bool has_ex = ex.values && ex.count >= direct::kNumExpressions;
-  if (fg != partner_fg && !num_faces && !num_playing) return kNoUpdate;
   const double now = Now();
   ScopedLock guard(lock);
   const double clock = Tick(now);
   const bool partner =
-      fg == partner_fg && partner_ref && PartnerRef() == partner_ref;
+      fg == partner_fg && actor && actor == partner_ref &&
+      actor_handle == partner_handle;
   auto pit = playing.find(fg);
   const bool in_line = pit != playing.end();
   auto existing = faces.find(fg);
@@ -1280,13 +1304,10 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene) {
   f.seen = clock;
   for (int i = 0; i < direct::kNumExpressions; ++i)
     f.src[i] = has_ex && direct::PlaysExpression(i) ? ex.values[i] : 0.f;
-  uint8_t* const actor = in_line   ? pit->second.actor
-                         : partner ? partner_ref.load()
-                                   : nullptr;
   if (actor && (actor != f.actor || !f.actor_handle)) {
     f.actor = actor;
     f.player = IsPlayer(actor);
-    f.actor_handle = HandleOf(actor);
+    f.actor_handle = actor_handle;
   }
   if (wanted) {
     f.until = clock + kFaceLinger;
@@ -1348,17 +1369,32 @@ __attribute__((noinline)) bool AnimUpdateHook(uint8_t* fg, float dt,
                                               uint64_t flag) {
   auto orig =
       SiteOrig<AnimUpdateFn>(__builtin_return_address(0), kIdFaceAnimUpdate);
-  if (fg && num_faces && ready) RestoreExpressions(fg);
+  const uint64_t epoch = world_epoch;
+  if (fg && num_faces && ready && CurrentWorld(epoch))
+    RestoreExpressions(fg, epoch);
   bool changed = orig(fg, dt, flag);
-  if (fg && ready) {
-    const bool in_scene =
-        (num_playing || num_faces || fg == partner_fg) && FaceInScene(fg);
-    auto& face_lock = Field<skse::SpinLock>(fg, skse::kFgLock);
-    face_lock.Lock();
+  if (fg && ready && CurrentWorld(epoch) &&
+      (num_playing || num_faces || fg == partner_fg)) {
+    // The actor is held until the face's lock is released: letting go of
+    // the last reference destroys it.
+    const FaceActor known = FaceActorOf(fg);
+    ScopedReference reference(known.handle);
+    uint8_t* actor = reference.get() == known.actor ? known.actor : nullptr;
+    const bool in_scene = InScene(actor);
+    uint32_t sound = a2f::kNoSound;
+    const int playing_now =
+        actor && num_playing ? ActorVoice(actor, sound) : -1;
     const Tune tune = SnapshotTune();
-    int updates = num_playing ? Apply(fg, tune, in_scene) : kNoUpdate;
-    updates |= Expressions(fg, dt, tune, in_scene);
-    face_lock.Unlock();
+    int updates = kNoUpdate;
+    {
+      skse::ScopedFaceLock face_guard(Field<skse::SpinLock>(fg, skse::kFgLock));
+      if (CurrentWorld(epoch)) {
+        if (num_playing)
+          updates = Apply(fg, tune, in_scene, actor, known.handle, sound,
+                          playing_now);
+        updates |= Expressions(fg, dt, tune, in_scene, actor, known.handle);
+      }
+    }
     changed |= updates != 0;
     // "changed" makes the node reset its meshes; keep the update coming
     if (updates & kKeepUpdating) fg[kFgDirty] = 1;
@@ -1370,7 +1406,9 @@ __attribute__((noinline)) bool AnimUpdateHook(uint8_t* fg, float dt,
 // The player's conversation partner's face, once its node comes by: its
 // expressions are played.
 void TrackPartner(uint8_t* node, uint8_t* fg) {
-  uint8_t* ref = PartnerRef();
+  const uint32_t handle = PartnerHandle();
+  ScopedReference reference(handle);
+  uint8_t* ref = reference.get();
   const bool ended = !ref && partner_ref;
   const bool found =
       ref && (ref != partner_ref || fg != partner_fg) && OfRef(node, ref);
@@ -1378,6 +1416,7 @@ void TrackPartner(uint8_t* node, uint8_t* fg) {
   ScopedLock guard(lock);
   partner_fg = found ? fg : nullptr;
   partner_ref = ref;
+  partner_handle = ref ? handle : 0;
   if (found) partner_female = IsFemale(ref);
 }
 
@@ -1395,7 +1434,8 @@ bool AddDeltas(uint8_t* node, const direct::Head& head,
     if (si == head.shapes.size()) return;
     added = true;
     const std::vector<float>& d = deltas[si];
-    int pi = static_cast<int>(part);
+    // pinned pieces count with the head's followers
+    int pi = part == direct::Part::kPinned ? 0 : static_cast<int>(part);
     thread_local std::vector<float> xyz;
     xyz.resize(nv * 3);
     float* data = Engine<LockDynamicFn, kIdLockDynamic>()(shape);
@@ -1517,15 +1557,31 @@ __attribute__((noinline)) uint64_t ApplyMorphsHook(uint8_t* node,
                                                    uint8_t force) {
   auto orig =
       SiteOrig<ApplyMorphsFn>(__builtin_return_address(0), kIdApplyMorphs);
+  const uint64_t epoch = world_epoch;
+  if (!CurrentWorld(epoch)) return orig(node, force);
   bool reset = force || (Field<uint16_t>(node, kNodeFlags.Get()) & 1);
   uint64_t r = orig(node, force);
-  if (ready && (num_playing || num_faces || PartnerRef() != partner_ref))
+  if (ready && CurrentWorld(epoch) &&
+      (num_playing || num_faces || PartnerHandle() != partner_handle))
     AddDirect(node, reset);
   return r;
 }
 
 // ---------------- SKSE ----------------
 void OnMessage(skse::SKSEMessage* m) {
+  if (!m) return;
+  if (m->type == skse::kMessagePreLoadGame ||
+      m->type == skse::kMessagePostLoadGame ||
+      m->type == skse::kMessageNewGame) {
+    // PostLoadGame is sent for a failed load too: the hooks resume either
+    // way, with nothing of the old world kept.
+    const bool loading = m->type == skse::kMessagePreLoadGame;
+    ResetPlayback(loading);
+    Log("playback reset: %s (epoch %llu)",
+        loading ? "pre-load"
+        : m->type == skse::kMessageNewGame ? "new game" : "post-load",
+        static_cast<unsigned long long>(world_epoch.load()));
+  }
   PlayerSpeechMessage(m->type);
   if (m->type != skse::kMessageDataLoaded) return;
   LoadHeadPartTypes();  // before the worker, which turns Direct on
@@ -1580,6 +1636,8 @@ bool Load(const skse::SKSEInterface* iface) {
 }  // namespace
 
 void StartPlayerSpeech(PlayerSpeechPtr speech) {
+  const uint64_t epoch = world_epoch;
+  if (!speech || speech->stopped || !CurrentWorld(epoch)) return;
   const Tune tune = SnapshotTune();
   if (!ready || !tune.enabled || !tune.player) return;
   const auto address = Addr(kIdPlayer);
@@ -1591,7 +1649,7 @@ void StartPlayerSpeech(PlayerSpeechPtr speech) {
   std::replace(stem.begin(), stem.end(), '/', '\\');
   Log("player speech: %s (audio %.3f s)", stem.c_str(), speech->duration);
   const float duration = speech->duration;
-  BeginSpeech(actor, stem, a2f::kNoSound, duration, 0, 0, tune,
+  BeginSpeech(actor, stem, a2f::kNoSound, duration, 0, 0, tune, epoch,
               std::move(speech));
 }
 }  // namespace bfa

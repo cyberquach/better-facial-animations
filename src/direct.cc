@@ -477,6 +477,81 @@ void Follow(const ShapeIn& s, const std::vector<float>& skin, uint32_t snv,
   }
 }
 
+// Pinned parts (piercings), after Follow: every vertex of a piece (vertices
+// within kPinLink of one another) takes the same skin vertices, so the piece
+// moves as one; Follow alone pulls a ring through the lower lip apart with
+// the upper. The piece is pinned where its vertices come nearest the skin,
+// on the lip more of it touches. A piece larger than kPinSize, or a shape of
+// more than kPinMaxVerts, keeps Follow's weights.
+constexpr float kPinLink = 0.25f, kPinSize = 4.f;
+constexpr uint32_t kPinMaxVerts = 5000;
+void Pin(const ShapeIn& s, const std::vector<float>& skin, uint32_t snv,
+         const std::vector<uint8_t>& lips, float lips_z, Head::Shape& out) {
+  if (!snv || s.nv > kPinMaxVerts) return;
+  float off[3];
+  FrameOffset(s.verts.data(), s.nv, off);
+  const std::vector<float> v = Shifted(s.verts, off);
+  std::vector<uint32_t> root(s.nv);
+  for (uint32_t i = 0; i < s.nv; ++i) root[i] = i;
+  auto find = [&root](uint32_t i) {
+    while (root[i] != i) i = root[i] = root[root[i]];
+    return i;
+  };
+  for (uint32_t i = 1; i < s.nv; ++i)
+    for (uint32_t j = 0; j < i; ++j)
+      if (Len(At(&v[i * 3]) - At(&v[j * 3])) < kPinLink)
+        root[find(i)] = find(j);
+  std::vector<std::vector<uint32_t>> pieces(s.nv);
+  for (uint32_t i = 0; i < s.nv; ++i) pieces[find(i)].push_back(i);
+  // the skin a piece may be pinned to: all but the lower lip / the upper
+  std::vector<uint32_t> ids[2];
+  for (uint32_t i = 0; i < snv; ++i) {
+    if (lips[i] != kLowerLip) ids[0].push_back(i);
+    if (lips[i] != kUpperLip) ids[1].push_back(i);
+  }
+  const KdTree all(skin.data(), snv);
+  const KdTree sides[2] = {KdTree(skin.data(), ids[0]),
+                           KdTree(skin.data(), ids[1])};
+  for (const std::vector<uint32_t>& piece : pieces) {
+    if (piece.empty()) continue;
+    float lo[3] = {INFINITY, INFINITY, INFINITY},
+          hi[3] = {-INFINITY, -INFINITY, -INFINITY};
+    double at[3] = {}, sum = 0, lip[3] = {};
+    for (uint32_t i : piece) {
+      uint32_t near;
+      float dist;
+      all.Nearest(&v[i * 3], 1, &near, &dist);
+      const double w = 1 / ((dist + 0.05) * (dist + 0.05));
+      for (int c = 0; c < 3; ++c) {
+        lo[c] = std::min(lo[c], v[i * 3 + c]);
+        hi[c] = std::max(hi[c], v[i * 3 + c]);
+        at[c] += w * skin[near * 3 + c];
+      }
+      sum += w;
+      lip[lips[near]] += w;
+    }
+    if (std::max({hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]}) > kPinSize)
+      continue;
+    const float p[3] = {static_cast<float>(at[0] / sum),
+                        static_cast<float>(at[1] / sum),
+                        static_cast<float>(at[2] / sum)};
+    const int side = lip[kLowerLip] != lip[kUpperLip]
+                         ? lip[kLowerLip] > lip[kUpperLip]
+                         : p[2] < lips_z;
+    if (ids[side].empty()) continue;
+    uint32_t idx[kFollow] = {};
+    float dist[kFollow];
+    double w[kFollow] = {};
+    const int n = sides[side].Nearest(p, kFollow, idx, dist);
+    IdwWeights(dist, n, 0.05, w);
+    for (uint32_t i : piece)
+      for (int j = 0; j < kFollow; ++j) {
+        out.idx[i * kFollow + j] = idx[j];
+        out.w[i * kFollow + j] = static_cast<float>(w[j]);
+      }
+  }
+}
+
 // Least-squares affine motion d ~ a [x - c, 1] of the vertices ids about
 // their centroid c. False: too few or degenerate.
 bool AffineFit(const float* pos, const float* d,
@@ -970,6 +1045,8 @@ bool BuildHead(const Mark& mk, const std::vector<ShapeIn>& shapes,
       Mouth(mk, sh, Shifted(sh.verts, mo), g.s, g.rot, out, hs);
     } else {
       Follow(sh, local, nv, lab, lips.z + off[2], blink, g.mid, hs);
+      if (sh.part == Part::kPinned)
+        Pin(sh, local, nv, lab, lips.z + off[2], hs);
     }
     out.shapes.push_back(std::move(hs));
   }

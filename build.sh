@@ -12,6 +12,20 @@
 # Dependency locations (see README) can be overridden with these variables:
 cd "$(dirname "$0")" || exit 1
 V=$(cat VERSION) || exit 1
+# Select the release version before compiling so DLL, readme and archive agree.
+if [ "$1" = release ]; then
+    R=$PWD/release
+    # On a feature branch the archive is a numbered build, <version>.<n>: one more than the highest in release/.
+    case "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" in
+    main|HEAD|"") ;;
+    *)  N=0
+        for f in "$R/Better Facial Animations-$V."*.7z; do
+            n=${f##*-"$V".}; n=${n%.7z}
+            case "$n" in ""|*[!0-9]*) ;; *) [ "$n" -gt "$N" ] && N=$n ;; esac
+        done
+        V=$V.$((N + 1)) ;;
+    esac
+fi
 FFMPEG=${FFMPEG:-deps/ffmpeg/win64}
 ORT=${ORT:-deps/dml/microsoft.ml.onnxruntime.directml}
 DML=${DML:-deps/dml/microsoft.ai.directml}
@@ -58,16 +72,6 @@ install)
     mkdir -p "$2" && cp -r $PKG/. "$2/" && echo "installed to $2" ;;
 release)
     R=$PWD/release; mkdir -p $R
-    # On a feature branch the archive is a numbered build, <version>.<n>: one more than the highest in release/.
-    case "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" in
-    main|HEAD|"") ;;
-    *)  N=0
-        for f in "$R/Better Facial Animations-$V."*.7z; do
-            n=${f##*-"$V".}; n=${n%.7z}
-            case "$n" in ""|*[!0-9]*) ;; *) [ "$n" -gt "$N" ] && N=$n ;; esac
-        done
-        V=$V.$((N + 1)) ;;
-    esac
     rm -f "$R/Better Facial Animations-$V.7z"
     (cd $PKG && 7z a -t7z -mx=9 "$R/Better Facial Animations-$V.7z" SKSE >/dev/null) &&
     ls -la $R ;;
@@ -75,17 +79,26 @@ test)
     T=build/test; mkdir -p $T/Data && ln -sfn "$(realpath "$ADDRLIB")/SKSE" $T/Data/SKSE &&
     $CXX -Wall -static src/skse.cc tests/runtimes_test.cc -o $T/runtimes_test.exe -lshell32 -lole32 -luuid &&
     $CXX -Wall -static src/direct.cc tests/direct_test.cc -o $T/direct_test.exe &&
+    $CXX -Wall -static src/head_cache.cc src/direct.cc tests/head_parts_test.cc -o $T/head_parts_test.exe &&
     $CXX -Wall -static tests/emotion_test.cc build/live_core.o -o $T/emotion_test.exe \
         -L$FFMPEG/lib -lavformat -lavcodec -lswresample -lavutil -lbcrypt -lole32 &&
     WINEDEBUG=-all ${WINE-wine64} $T/emotion_test.exe &&
     $CXX -Wall -static src/player_speech.cc tests/player_speech_test.cc -o $T/player_speech_test.exe &&
     WINEDEBUG=-all ${WINE-wine64} $T/player_speech_test.exe &&
+    $CXX -Wall -DBFA_VERSION=\"$V\" -static tests/load_game_test.cc build/player_speech.o build/settings.o build/pose.o build/net_keeper.o build/head_cache.o build/menu.o build/skse.o build/direct.o build/live_core.o build/ort_net.o -o $T/load_game_test.exe -Wl,--wrap=_ZN4skse8SpinLock4LockEv \
+        -L$FFMPEG/lib -lavformat -lavcodec -lswresample -lavutil -lbcrypt -lshell32 -lole32 -luuid -ldxgi &&
+    WINEDEBUG=-all ${WINE-wine64} $T/load_game_test.exe &&
+    $CXX -Wall -static tests/reference_test.cc -o $T/reference_test.exe &&
+    WINEDEBUG=-all ${WINE-wine64} $T/reference_test.exe &&
+    $CXX -Wall -static tests/passive_report_test.cc build/ort_net.o -o $T/passive_report_test.exe -Wl,--wrap=__imp_CreateDXGIFactory1 -ldxgi &&
+    WINEDEBUG=-all ${WINE-wine64} $T/passive_report_test.exe &&
     $CXX -Wall -static tests/voice_sync_test.cc -o $T/voice_sync_test.exe &&
     $CXX -Wall -static tests/call_sites_test.cc -o $T/call_sites_test.exe &&
     $CXX -Wall -static src/net_keeper.cc tests/net_keeper_test.cc -o $T/net_keeper_test.exe &&
     $CXX -Wall -static tests/ort_net_test.cc build/ort_net.o -o $T/ort_net_test.exe -ldxgi &&
     WINEDEBUG=-all ${WINE-wine64} $T/runtimes_test.exe build/BetterFacialAnimations.dll $T &&
     WINEDEBUG=-all ${WINE-wine64} $T/direct_test.exe &&
+    WINEDEBUG=-all ${WINE-wine64} $T/head_parts_test.exe &&
     WINEDEBUG=-all ${WINE-wine64} $T/voice_sync_test.exe &&
     WINEDEBUG=-all ${WINE-wine64} $T/call_sites_test.exe &&
     WINEDEBUG=-all ${WINE-wine64} $T/net_keeper_test.exe &&

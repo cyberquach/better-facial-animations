@@ -49,10 +49,12 @@ constexpr skse::Rel kIdSoundIsPlaying{66359, 67620, 0xC284F0};
 constexpr skse::Rel kIdGenerateFromPath{68635, 69979, 0xC8F6C0};
 // TESDataHandler* singleton (CommonLibSSE-NG Offset::TESDataHandler)
 constexpr skse::Rel kIdDataHandler{514141, 400269, 0x1F82AD8};
-// MenuTopicManager* singleton and the reference handle table
-// (CommonLibSSE-NG MenuTopicManager::GetSingleton, GetHandleEntries)
+// MenuTopicManager* singleton (CommonLibSSE-NG GetSingleton)
 constexpr skse::Rel kIdMenuTopicManager{514959, 401099, 0x2FC4878};
-constexpr skse::Rel kIdHandleEntries{514478, 400622, 0x1F89660};
+// LookupReferenceByHandle(handle, NiPointer<TESObjectREFR>&) and
+// CreateRefHandle(handle, TESObjectREFR*) (CommonLibSSE-NG Misc.cpp)
+constexpr skse::Rel kIdLookupReference{12204, 12332, 0x143180};
+constexpr skse::Rel kIdCreateHandle{12193, 12326, 0x1428A0};
 // PlayerCharacter* singleton (CommonLibSSE-NG PlayerCharacter::GetSingleton).
 // None on VR: DBReV supports SE/AE, and VR's player is not verified.
 constexpr skse::Rel kIdPlayer{517014, 403521, 0};
@@ -64,7 +66,7 @@ constexpr skse::Rel kIds[] = {
     kIdMorphData,        kIdApplyMorph,           kIdLockDynamic,
     kIdUnlockDynamic,    kIdUpdateDynamic,        kIdSoundIsPlaying,
     kIdGenerateFromPath, kIdDataHandler,          kIdMenuTopicManager,
-    kIdHandleEntries,
+    kIdLookupReference, kIdCreateHandle,
 };
 // And those some runtime lacks.
 constexpr skse::Rel kOptionalIds[] = {kIdPlayer};

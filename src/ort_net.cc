@@ -597,31 +597,10 @@ void SetOrtLog(void (*log)(const std::string&)) { ort_log = log; }
 
 bool DeviceRedirected() { return device_redirected; }
 
-std::vector<std::string> GpuReport() {
-  std::vector<std::string> out;
+// GpuReport's lines about the graphics: the adapters and their drivers and
+// what Direct3D 12 offers on adapter 0, for which a device is created.
+static void ReportGraphics(std::vector<std::string>& out) {
   char b[900];
-  // Windows (and Wine / Proton, where Direct3D 12 is vkd3d-proton)
-  const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
-  RTL_OSVERSIONINFOW os{};
-  os.dwOSVersionInfoSize = sizeof os;
-  using VersionFn = LONG(WINAPI*)(RTL_OSVERSIONINFOW*);
-  if (auto get = reinterpret_cast<VersionFn>(
-          reinterpret_cast<void*>(GetProcAddress(ntdll, "RtlGetVersion"))))
-    get(&os);
-  using WineFn = const char*(CDECL*)();
-  auto wine = reinterpret_cast<WineFn>(
-      reinterpret_cast<void*>(GetProcAddress(ntdll, "wine_get_version")));
-  MEMORYSTATUSEX ram{};
-  ram.dwLength = sizeof ram;
-  GlobalMemoryStatusEx(&ram);
-  snprintf(b, sizeof b,
-           "system: Windows %lu.%lu build %lu%s%s; memory %.0f MB free of "
-           "%.0f MB, commit %.0f MB free of %.0f MB",
-           os.dwMajorVersion, os.dwMinorVersion, os.dwBuildNumber,
-           wine ? ", Wine " : "", wine ? wine() : "",
-           ram.ullAvailPhys / 1048576.0, ram.ullTotalPhys / 1048576.0,
-           ram.ullAvailPageFile / 1048576.0, ram.ullTotalPageFile / 1048576.0);
-  out.push_back(b);
   // every adapter, with its driver version
   if (const ComPtr<IDXGIFactory1> factory = DxgiFactory()) {
     IDXGIAdapter1* next = nullptr;
@@ -690,6 +669,37 @@ std::vector<std::string> GpuReport() {
   if (device_wrapped)
     out.push_back("Direct3D 12 hands out a wrapper of its device (ReShade "
                   "does): the model runs on the device itself");
+}
+
+std::vector<std::string> GpuReport(bool probe_gpu) {
+  std::vector<std::string> out;
+  char b[900];
+  // Windows (and Wine / Proton, where Direct3D 12 is vkd3d-proton)
+  const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+  RTL_OSVERSIONINFOW os{};
+  os.dwOSVersionInfoSize = sizeof os;
+  using VersionFn = LONG(WINAPI*)(RTL_OSVERSIONINFOW*);
+  if (auto get = reinterpret_cast<VersionFn>(
+          reinterpret_cast<void*>(GetProcAddress(ntdll, "RtlGetVersion"))))
+    get(&os);
+  using WineFn = const char*(CDECL*)();
+  auto wine = reinterpret_cast<WineFn>(
+      reinterpret_cast<void*>(GetProcAddress(ntdll, "wine_get_version")));
+  MEMORYSTATUSEX ram{};
+  ram.dwLength = sizeof ram;
+  GlobalMemoryStatusEx(&ram);
+  snprintf(b, sizeof b,
+           "system: Windows %lu.%lu build %lu%s%s; memory %.0f MB free of "
+           "%.0f MB, commit %.0f MB free of %.0f MB",
+           os.dwMajorVersion, os.dwMinorVersion, os.dwBuildNumber,
+           wine ? ", Wine " : "", wine ? wine() : "",
+           ram.ullAvailPhys / 1048576.0, ram.ullTotalPhys / 1048576.0,
+           ram.ullAvailPageFile / 1048576.0, ram.ullTotalPageFile / 1048576.0);
+  out.push_back(b);
+  if (probe_gpu)
+    ReportGraphics(out);
+  else
+    out.push_back("GPU diagnostics skipped");
   // The modules in the game that are not Windows' own (mods, overlays,
   // wrappers of Direct3D) and those the model runs on, with their versions.
   wchar_t windows[MAX_PATH] = L"";

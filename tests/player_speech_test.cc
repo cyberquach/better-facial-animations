@@ -135,6 +135,12 @@ int main() {
   Expect(started.size() == 3 && started.back()->stopped,
          "a new game stops the lines, queued too");
 
+  Send(DBReV::kPlayerLineStart, begin);
+  bfa::PlayerSpeechMessage(skse::kMessagePostLoadGame);
+  Drain();
+  Expect(started.size() == 3,
+         "post-load cancels provider starts queued during loading");
+
   printf("%s: %d failures\n", failures ? "FAIL" : "ok", failures);
   return failures ? 1 : 0;
 }
