@@ -32,6 +32,13 @@ std::unique_ptr<Net> CreateOrtNet(const std::wstring& dll_dir,
                                   const OrtOptions& o, std::string& err,
                                   std::string& info);
 
+// The folded v3.0 network (tools/a2f3_fold.py), one window per run: o.batch
+// is ignored. Otherwise as CreateOrtNet.
+std::unique_ptr<Net> CreateOrtNet3(const std::wstring& dll_dir,
+                                   const std::wstring& model,
+                                   const OrtOptions& o, std::string& err,
+                                   std::string& info);
+
 // Adapter 0 (the one DirectML uses) and this process's video memory there.
 GpuState QueryGpu();
 

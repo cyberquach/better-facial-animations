@@ -1,5 +1,5 @@
 // One mapping per distinct head (every face shape's name, vertex count and
-// base vertices) onto Mark, built on a thread of its own from the head's own
+// base vertices) and sex onto Mark (the model's face for that sex), built on a thread of its own from the head's own
 // morphs and kept while memory allows. Until it exists the head keeps vanilla
 // lip-sync; a head whose skin lacks a morph the mapping needs keeps it for
 // good.
@@ -32,8 +32,10 @@ const float* BaseVerts(uint8_t* shape, uint32_t& nv);
 // sight reads the shapes and their morphs here, where the engine has the
 // node, and queues the build.
 // Recomputed before using a mapping, including for a previously failed head.
-std::string HeadKey(uint8_t* node);
-State FindHead(uint8_t* node, const std::string& key,
+// female: the head's sex, which tells the face it is mapped onto when the
+// model has one per sex.
+std::string HeadKey(uint8_t* node, bool female);
+State FindHead(uint8_t* node, const std::string& key, bool female,
                std::shared_ptr<const direct::Head>& out);
 
 // Forgets the mappings (not those still being built).

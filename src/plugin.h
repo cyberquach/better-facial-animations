@@ -9,9 +9,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <string>
-#include <utility>
 #include <vector>
 
 #include "direct.h"
@@ -25,15 +23,22 @@ enum class State { kPending, kReady, kFailed };
 // ---------------- settings ----------------
 struct Config {  // fixed after load
   bool gpu = true;
+  // 3: Audio2Face-3D v3.0 (a2f3_fp16.onnx, A2FDirect3.bin); 2: v2.3 Mark
+  // (network_fp16.onnx, A2FDirect.bin)
+  int network = 3;
   int batch = 2;
   int log_lines = 400;
   int cache_lines = 300;
-  std::wstring model;
+  std::wstring model, direct;  // the network's files, by network
 };
 struct Tune {  // menu; defaults as dist/BetterFacialAnimations.ini
   bool enabled = true;
   bool player = true;
   bool prefetch = true;
+  // the v2.3 network (Config::network 2) and no GPU session (Config::gpu);
+  // they take effect at the next start
+  bool old_model = false;
+  bool force_cpu = false;
   bool logging = true;
   // how much louder speech adds to a line's emotion
   float voice_swell = 0.25f;
@@ -54,8 +59,9 @@ extern SRWLOCK
 
 // Param pointers may only be accessed with settings_lock held.
 // Every ini key / menu item: a slider (value, lo..hi) or, with flag set, a
-// checkbox, in an ini section / menu group. Table order = menu order.
-enum class Sec { kGeneral, kPlayback, kDirect, kEmotion, kDebug };
+// checkbox, in a menu group (kModel is in the ini's General section). Table
+// order = menu order.
+enum class Sec { kGeneral, kModel, kPlayback, kDirect, kEmotion, kDebug };
 struct Param {
   const char* key;
   float* value;
@@ -81,7 +87,7 @@ bool LogMore(std::atomic<int>& written);
 // ---------------- state ----------------
 // The network is loaded: lines keep generating while disabled (instant A/B).
 extern std::atomic<bool> net_loaded;
-// A2FDirect.bin is loaded and the morph hook in place.
+// The A2FDirect bin is loaded and the morph hook in place.
 extern std::atomic<bool> ready;
 extern direct::Model& model;
 
@@ -100,13 +106,8 @@ struct Stats {
   int net_attempts = 0;
   double net_retry_at = 0;
   bool net_gpu = false;  // the loaded session is the GPU one
-  // The driver's metacommands and the GPU session, one line
-  // (a2f::DescribeMetacommands).
-  std::string net_metacommands;
-  // Why the plugin is not running (A2FDirect.bin).
+  // Why the plugin is not running (the A2FDirect bin).
   std::string startup_error;
-  // The last network events (loads, failures, losses) and when (Now()).
-  std::deque<std::pair<double, std::string>> events;
 };
 // The statistics now, and the lines cached and waiting to be generated.
 Stats SnapshotStats(size_t& cached, size_t& queued);

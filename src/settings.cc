@@ -22,61 +22,67 @@ SRWLOCK settings_lock = SRWLOCK_INIT;
 
 extern const Param kParams[] = {
     {"Enabled", nullptr, 0, 0, "Enabled",
-     "Play Audio2Face lip-sync. Untick to see the game's own lip-sync "
-     "instantly (A/B).",
-     Sec::kGeneral, &tune.enabled},
+     "Untick for the game's own lip-sync, instantly (A/B).", Sec::kGeneral,
+     &tune.enabled},
     {"PlayerFacialAnimations", nullptr, 0, 0, "Player facial animations",
      "Animate the player's voiced dialogue (DBReV 1.4.4+). Untick to keep "
-     "the voice mod's own facial animation; NPCs are unaffected.",
+     "the voice mod's own animation.",
      Sec::kGeneral, &tune.player},
     {"Prefetch", nullptr, 0, 0, "Prefetch",
-     "Start generating when a dialogue response is created, before it is "
+     "Generate a line when its dialogue response is created, before it is "
      "spoken.",
      Sec::kGeneral, &tune.prefetch},
+    // both are read at startup
+    {"UseOldModel", nullptr, 0, 0, "Use Old Model",
+     "Old model: ~100 MB of VRAM, less expressive, slower to inference.\n"
+     "V3 model (box unchecked): ~250 MB of VRAM, more expressive, faster to "
+     "inference.\n"
+     "Save, then restart the game to apply.",
+     Sec::kModel, &tune.old_model},
+    {"ForceCPU", nullptr, 0, 0, "Force CPU",
+     "Never load the model into VRAM: it runs on the CPU, much slower, and "
+     "long lines start late.\n"
+     "Save, then restart the game to apply.",
+     Sec::kModel, &tune.force_cpu},
     {"TimeOffset", &tune.time_offset, -0.3f, 0.3f, "Sync offset (s)",
-     "Shifts the animation against the voice. Positive = earlier mouth shapes.",
-     Sec::kPlayback, nullptr},
+     "Positive = mouth shapes earlier.", Sec::kPlayback, nullptr},
     {"BlendIn", &tune.blend_in, 0, 0.5f, "Blend-in (s)",
-     "Crossfade from vanilla lip-sync when a line finishes generating after it "
-     "started.",
+     "Crossfade from vanilla lip-sync when a line is ready after it started.",
      Sec::kPlayback, nullptr},
     {"DirectBrows", &tune.direct_scale[direct::kBrows], 0, 3, "Brows",
-     "Brow deformation.", Sec::kDirect, nullptr},
+     "Brow movement.", Sec::kDirect, nullptr},
     {"DirectEyes", &tune.direct_scale[direct::kEyes], 0, 3, "Eyes",
-     "Eyelid / eye region deformation.", Sec::kDirect, nullptr},
+     "Eyelid and eye region movement.", Sec::kDirect, nullptr},
     {"DirectCheeks", &tune.direct_scale[direct::kCheeks], 0, 3, "Cheeks & nose",
-     "Cheek and nose deformation.", Sec::kDirect, nullptr},
+     "Cheek and nose movement.", Sec::kDirect, nullptr},
     {"DirectMouth", &tune.direct_scale[direct::kMouth], 0, 3, "Mouth",
-     "Lip and mouth skin deformation.", Sec::kDirect, nullptr},
+     "Lip and mouth skin movement.", Sec::kDirect, nullptr},
     {"DirectJaw", &tune.direct_scale[direct::kJaw], 0, 3, "Jaw",
-     "How far the lower teeth, gums and tongue move with Audio2Face's jaw.",
+     "How far the lower teeth, gums and tongue move with the jaw.",
      Sec::kDirect, nullptr},
     {"DirectTongue", &tune.direct_scale[direct::kTongue], 0, 3, "Tongue",
-     "How far the tongue bends with Audio2Face's tongue.", Sec::kDirect,
-     nullptr},
+     "How far the tongue bends.", Sec::kDirect, nullptr},
     // all of these apply from the next line spoken
-    {"VoiceEmotion", &tune.voice_emotion, 0, 3, "Emotion strength",
-     "How strongly a line's emotion (the game's, for the line) drives the "
-     "Audio2Face face: brows, eyes, cheeks, mouth. 1 = as given; the game's "
-     "is often only 50 of 100.",
+    {"VoiceEmotion", &tune.voice_emotion, 0, 3, "Strength",
+     "How strongly a line's emotion (the game's) drives the brows, eyes, "
+     "cheeks and mouth. 1 = as given. Applies from the next line.",
      Sec::kEmotion, nullptr},
-    {"VoiceSwell", &tune.voice_swell, 0, 2, "Emotion swells with volume",
-     "How much the emotion grows where the voice is loud: at the line's "
-     "loudest it is 1 + this times its base strength (0 = steady).",
+    {"VoiceSwell", &tune.voice_swell, 0, 2, "Swell with volume",
+     "How much the emotion grows where the voice is loud. 0 = steady. "
+     "Applies from the next line.",
      Sec::kEmotion, nullptr},
     {"FaceFadeIn", &tune.face_in, 0, 3, "Fade to the mod's face (s)",
      "When a line starts: how long the game's own expressions take to fade "
      "out, leaving the face to Audio2Face.",
      Sec::kEmotion, nullptr},
-    {"FaceFadeOut", &tune.face_out, 0, 3, "Fade back to the game's face (s)",
+    {"FaceFadeOut", &tune.face_out, 0, 3, "Fade to the game's face (s)",
      "After a line: how long the game's own expressions take to fade back "
      "in.",
      Sec::kEmotion, nullptr},
     {"Logging", nullptr, 0, 0, "Logging",
      "Also write the generated and played lines to "
-     "BetterFacialAnimations.log (SKSE log folder in My Games). The GPU, "
-     "the driver and problems loading the model are written there either "
-     "way.",
+     "BetterFacialAnimations.log (SKSE log folder). The GPU, the driver and "
+     "model problems are logged either way.",
      Sec::kDebug, &tune.logging},
 };
 extern const size_t kNumParams = std::size(kParams);
@@ -84,7 +90,6 @@ extern const size_t kNumParams = std::size(kParams);
 namespace {
 
 constexpr char kIni[] = "Data\\SKSE\\Plugins\\BetterFacialAnimations.ini";
-constexpr wchar_t kIniW[] = L"Data\\SKSE\\Plugins\\BetterFacialAnimations.ini";
 
 // Version 2 renamed Direct to LocalAnimationStrength and changed its defaults.
 // Version 3 turned Logging on by default: an older ini's Logging=0 was that
@@ -94,7 +99,8 @@ constexpr int kIniVersion = 3;
 
 const char* Section(const Param& p) {
   static const char* const kNames[] = {
-      "General", "Playback", "LocalAnimationStrength", "Emotion", "Debug"};
+      "General", "General", "Playback", "LocalAnimationStrength",
+      "Emotion", "Debug"};
   return kNames[static_cast<int>(p.sec)];
 }
 
@@ -107,9 +113,12 @@ Tune SnapshotTune() {
 
 void ResetTune() {
   ScopedLock guard(settings_lock);
-  bool logging = tune.logging;  // a diagnostic switch, not a tuning value
+  // a diagnostic switch and the model, not tuning values
+  const Tune old = tune;
   tune = Tune();
-  tune.logging = logging;
+  tune.logging = old.logging;
+  tune.old_model = old.old_model;
+  tune.force_cpu = old.force_cpu;
 }
 
 void ApplyLogging() { skse::SetLogging(SnapshotTune().logging); }
@@ -126,16 +135,15 @@ void LoadIni() {
           ? kIniVersion
           : GetPrivateProfileIntA("General", "IniVersion", 0, kIni);
   const bool migrate = version < 2;  // the Direct section is dropped
-  config.gpu = GetPrivateProfileIntA("General", "GPU", 1, kIni) != 0;
   config.batch = std::max(
       1, static_cast<int>(GetPrivateProfileIntA("General", "Batch", 2, kIni)));
   config.cache_lines = std::max(8, static_cast<int>(GetPrivateProfileIntA(
                                        "General", "CacheLines", 300, kIni)));
   config.log_lines = GetPrivateProfileIntA("Debug", "LogLines", 400, kIni);
-  wchar_t m[260];
-  GetPrivateProfileStringW(L"General", L"Model", L"network_fp16.onnx", m, 260,
-                           kIniW);
-  config.model = m;
+  // UseOldModel was Network=2 (3: v3.0) in earlier 3.0 builds, and ForceCPU
+  // GPU=0
+  tune.old_model = GetPrivateProfileIntA("General", "Network", 3, kIni) == 2;
+  tune.force_cpu = GetPrivateProfileIntA("General", "GPU", 1, kIni) == 0;
   char b[128], d[32];
   for (size_t i = 0; i < kNumParams; ++i) {
     const Param& p = kParams[i];
@@ -151,6 +159,10 @@ void LoadIni() {
     if (end != b && *end == '\0' && std::isfinite(value))
       *p.value = std::clamp(value, p.lo, p.hi);
   }
+  config.gpu = !tune.force_cpu;
+  config.network = tune.old_model ? 2 : 3;
+  config.model = config.network == 3 ? L"a2f3_fp16.onnx" : L"network_fp16.onnx";
+  config.direct = config.network == 3 ? L"A2FDirect3.bin" : L"A2FDirect.bin";
   if (version < 3) tune.logging = true;
   if (version < kIniVersion) SaveIni();
   if (migrate) WritePrivateProfileStringA("Direct", nullptr, nullptr, kIni);
@@ -170,6 +182,10 @@ void SaveIni() {
                                          : "0",
                                kIni);
   }
+  // replaced by UseOldModel and ForceCPU
+  WritePrivateProfileStringA("General", "Model", nullptr, kIni);
+  WritePrivateProfileStringA("General", "Network", nullptr, kIni);
+  WritePrivateProfileStringA("General", "GPU", nullptr, kIni);
 }
 
 }  // namespace bfa

@@ -347,4 +347,84 @@ bool Generate(Net& net, const float* pcm, size_t n, const Emotion& emotion,
   return true;
 }
 
+bool Generate3(Net& net, const float* pcm, size_t n, const Emotion& emotion,
+               const Face3& face, Line& out, std::string& err) {
+  out = Line();  // a second run (after a lost session) starts clean
+  if (!n) {
+    err = "empty audio";
+    return false;
+  }
+  if (face.identity < 0 || face.identity >= kNumIdentity3) {
+    err = "no such identity";
+    return false;
+  }
+  // the emotion at kFps, as v2.3 takes it; each 60 fps frame takes its own
+  const int emo_frames = static_cast<int>(
+      (static_cast<int64_t>(n) * kFps + kSampleRate - 1) / kSampleRate);
+  std::vector<float> track;
+  EmotionTrack(pcm, n, emo_frames, emotion, track);
+  for (int t = 0; t < emo_frames; ++t)
+    for (int c = 0; c < kNumMod; ++c) {
+      float v = track[static_cast<size_t>(t) * kNumMod + c];
+      out.emotion_peak[c] = std::max(out.emotion_peak[c], v);
+      out.emotion_mean[c] += v / emo_frames;
+    }
+
+  // frames at 60 fps covering the clip; window i holds the audio
+  // [kStride3 i - kWindow3, kStride3 i) and gives frames 30 i - 45 .. + 29
+  const int num_frames = static_cast<int>(
+      (static_cast<int64_t>(n) * kFps3 + kSampleRate - 1) / kSampleRate);
+  const int windows = (kSkip3 - 1 + num_frames) / kFrames3 + 1;
+  float ident[kNumIdentity3] = {};
+  ident[face.identity] = 1;
+  std::vector<float> x(kWindow3), em(kFrames3 * kNumMod),
+      skin(kFrames3 * kLatent3), tongue(kFrames3 * kLatent3),
+      jaw(kFrames3 * kJawEyes3), state(kState3), next(kState3);
+  out.frames = num_frames;
+  out.fps = kFps3;
+  const uint32_t k = face.k, dim = k + kNumTongue + kNumJaw;
+  out.direct_dim = dim;
+  out.direct.assign(static_cast<size_t>(num_frames) * dim, 0.f);
+  const float *rest_tongue = face.rest + kLatent3,
+              *rest_jaw = face.rest + 2 * kLatent3;
+  for (int i = 0; i < windows; ++i) {
+    const int64_t a = static_cast<int64_t>(kStride3) * i - kWindow3;
+    for (int j = 0; j < kWindow3; ++j)
+      x[j] = a + j >= 0 && a + j < static_cast<int64_t>(n) ? pcm[a + j] : 0.f;
+    const int f0 = kFrames3 * i - kSkip3;
+    for (int j = 0; j < kFrames3; ++j) {
+      const int f = std::clamp(f0 + j, 0, num_frames - 1);
+      memcpy(&em[static_cast<size_t>(j) * kNumMod],
+             &track[static_cast<size_t>(
+                        std::min(f * kFps / kFps3, emo_frames - 1)) *
+                    kNumMod],
+             kNumMod * sizeof(float));
+    }
+    if (!net.Run3(x.data(), ident, em.data(), state.data(), skin.data(),
+                  tongue.data(), jaw.data(), next.data(), err))
+      return false;
+    state.swap(next);
+    for (int j = 0; j < kFrames3; ++j) {
+      const int f = f0 + j;
+      if (f < 0 || f >= num_frames) continue;
+      float* o = &out.direct[static_cast<size_t>(f) * dim];
+      const float* s = &skin[static_cast<size_t>(j) * kLatent3];
+      const float* t = &tongue[static_cast<size_t>(j) * kLatent3];
+      const float* g = &jaw[static_cast<size_t>(j) * kJawEyes3];
+      for (uint32_t c = 0; c < k; ++c) {
+        const float* p = face.proj + static_cast<size_t>(c) * kLatent3;
+        for (int l = 0; l < kLatent3; ++l) o[c] += (s[l] - face.rest[l]) * p[l];
+      }
+      for (int c = 0; c < kNumTongue; ++c) {
+        const float* p = face.tongue_proj + static_cast<size_t>(c) * kLatent3;
+        for (int l = 0; l < kLatent3; ++l)
+          o[k + c] += (t[l] - rest_tongue[l]) * p[l];
+      }
+      for (int c = 0; c < kNumJaw; ++c)
+        o[k + kNumTongue + c] = g[c] - rest_jaw[c];
+    }
+  }
+  return true;
+}
+
 }  // namespace a2f

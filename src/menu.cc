@@ -41,128 +41,128 @@ struct ImGui {  // cimgui export names
   void (*PopTextWrapPos)();
 } ig;
 
-constexpr ImVec4 kRed{1, 0.3f, 0.25f, 1}, kYellow{1, 0.8f, 0.2f, 1},
-    kGreen{0.4f, 0.9f, 0.4f, 1};
-// One wrapped line of the Diagnostics section.
-void Notice(ImVec4 color, const char* tag, const std::string& text) {
+constexpr ImVec4 kRed{1, 0.3f, 0.25f, 1}, kYellow{1, 0.8f, 0.2f, 1};
+// Wrapped text in a color.
+void Notice(ImVec4 color, const std::string& text) {
   if (ig.PushTextWrapPos) ig.PushTextWrapPos(0);
   if (ig.TextColored)
-    ig.TextColored(color, "%s%s", tag, text.c_str());
+    ig.TextColored(color, "%s", text.c_str());
   else
-    ig.Text("%s%s", tag, text.c_str());
+    ig.Text("%s", text.c_str());
   if (ig.PopTextWrapPos) ig.PopTextWrapPos();
 }
 
-// Everything that is wrong or degraded, as exactly as it can be told: errors
-// (red) stop lip-sync or the GPU session, warnings (yellow) make it worse.
-void RenderDiagnostics(const Stats& st, size_t queued, const Tune& tune) {
+// The details of the item just drawn (id: any address of its own), as a
+// tooltip once the pointer has stayed on it.
+void Tip(const void* id, const char* details) {
+  constexpr double kRest = 0.4;  // s
+  constexpr size_t kColumns = 60;
+  static const void* over;
+  static double since, seen;  // the pointer came to over, was last on it
+  if (!ig.IsItemHovered(0)) return;
+  const double now = Now();
+  if (over != id || now - seen > 0.1) {
+    over = id;
+    since = now;
+  }
+  seen = now;
+  if (now - since < kRest) return;
+  std::string text = details;
+  for (size_t i = 0, start = 0, space = 0; i < text.size(); ++i) {
+    if (text[i] == '\n') {
+      start = i + 1;
+      continue;
+    }
+    if (text[i] == ' ') space = i;
+    if (i - start >= kColumns && space > start) {
+      text[space] = '\n';
+      start = space + 1;
+    }
+  }
+  ig.SetTooltip("%s", text.c_str());
+}
+
+constexpr char kNetTip = 0, kSlowTip = 0, kLinesTip = 0;  // Tip ids
+
+// Everything that is wrong (red: no lip-sync or no GPU session) or degraded
+// (yellow), one line each; nothing when all is well.
+void RenderProblems(const Stats& st, size_t queued, const Tune& tune,
+                    const a2f::GpuState& gpu) {
+  char b[400];
+  if (!ready)
+    Notice(kRed, st.startup_error.empty()
+                     ? "Starting."
+                     : "Not running: " + st.startup_error +
+                           ". Reinstall the mod.");
+  if (!st.net_error.empty()) {
+    // the problem, its cause and the advice; the rest on the last of them
+    for (const auto& line : st.net_error) Notice(kRed, line);
+    snprintf(b, sizeof b, "\nTried %d time(s); next try in %.0f s. %s",
+             st.net_attempts, std::max(0.0, st.net_retry_at - Now()),
+             net_loaded ? "Lines run on the CPU meanwhile."
+                        : "Vanilla lip-sync plays meanwhile.");
+    Tip(&kNetTip, ("Runtime message: " + st.net_detail + b).c_str());
+  } else if (ready && tune.enabled && !net_loaded) {
+    Notice(kYellow, "Loading the model.");
+  }
+  if (net_loaded && !st.net_gpu && config.gpu) {
+    Notice(kYellow, "On the CPU until the GPU is back: long lines start late.");
+  }
+  for (const auto& w : a2f::GpuWarnings(gpu)) Notice(kYellow, w);
+  const double speed = st.audio_sec / std::max(st.gen_sec, 1e-6);
+  if (st.lines >= 5 && speed < 2 && (st.net_gpu || !config.gpu)) {
+    snprintf(b, sizeof b, "Slow (%.1fx realtime): lines start late.", speed);
+    Notice(kYellow, b);
+    Tip(&kSlowTip, st.net_gpu ? "The GPU is busy or short of VRAM."
+                              : "Force CPU is on: the GPU is much faster.");
+  }
+  if (st.lines >= 8 && st.late * 4 > st.lines) {
+    snprintf(b, sizeof b, "%u of %u lines started late.%s", st.late, st.lines,
+             tune.prefetch ? "" : " Turn Prefetch on.");
+    Notice(kYellow, b);
+  }
+  if (queued > 20) {
+    snprintf(b, sizeof b, "%zu lines queued: generation cannot keep up.",
+             queued);
+    Notice(kYellow, b);
+  }
+  if (!st.last_error.empty())
+    Notice(kYellow, "Last skipped line: " + st.last_error);
+}
+
+void RenderMenu() {
   static a2f::GpuState& gpu = *new a2f::GpuState;
   static double gpu_at = -1e9;
   if (Now() - gpu_at > 1) {  // DXGI is too slow to ask every frame
     gpu = a2f::QueryGpu();
     gpu_at = Now();
   }
-  ig.SeparatorText("Diagnostics");
-  if (gpu.known)
-    ig.Text(
-        "GPU: %s; the game uses %.0f of the %.0f MB VRAM Windows grants "
-        "it",
-        gpu.adapter.c_str(), gpu.used_mb, gpu.budget_mb);
-  else
-    ig.Text("GPU: %s (VRAM use unknown)",
-            gpu.adapter.empty() ? "not found" : gpu.adapter.c_str());
-  int problems = 0;
-  char b[400];
-  if (!ready) {
-    ++problems;
-    Notice(kRed, "ERROR: ",
-           st.startup_error.empty()
-               ? "the plugin has not finished starting."
-               : "not running: " + st.startup_error + ". Reinstall the mod.");
-  }
-  if (!st.net_error.empty()) {
-    ++problems;
-    for (size_t i = 0; i < st.net_error.size(); ++i)
-      Notice(kRed, i ? "  " : "ERROR: ", st.net_error[i]);
-    snprintf(b, sizeof b, "Tried %d time(s); next try in %.0f s. %s",
-             st.net_attempts, std::max(0.0, st.net_retry_at - Now()),
-             net_loaded ? "Lines are generated on the CPU meanwhile."
-                        : "Vanilla lip-sync plays meanwhile.");
-    Notice(kRed, "  ", b);
-    Notice(kRed, "  Runtime message: ", st.net_detail);
-  } else if (ready && tune.enabled && !net_loaded) {
-    Notice(kYellow, "", "The model is loading.");
-  }
-  if (net_loaded && !st.net_gpu && config.gpu) {
-    ++problems;
-    Notice(kYellow, "WARNING: ",
-           "running on the CPU fallback (about 0.4x realtime): long lines "
-           "start late. It goes back to the GPU by itself.");
-  }
-  for (const auto& w : a2f::GpuWarnings(gpu)) {
-    ++problems;
-    Notice(kYellow, "WARNING: ", w);
-  }
-  const double speed = st.audio_sec / std::max(st.gen_sec, 1e-6);
-  if (st.lines >= 5 && speed < 2 && (st.net_gpu || !config.gpu)) {
-    ++problems;
-    snprintf(b, sizeof b,
-             "generation is slow (%.1fx realtime%s): lines start late.%s",
-             speed, st.net_gpu ? " on the GPU" : " on the CPU",
-             st.net_gpu ? " The GPU is busy or short of VRAM."
-                        : " GPU=0 in the ini: set GPU=1 to use the GPU.");
-    Notice(kYellow, "WARNING: ", b);
-  }
-  if (st.lines >= 8 && st.late * 4 > st.lines) {
-    ++problems;
-    snprintf(b, sizeof b,
-             "%u of %u lines were ready after they started (blended in "
-             "late).%s",
-             st.late, st.lines, tune.prefetch ? "" : " Turn Prefetch on.");
-    Notice(kYellow, "WARNING: ", b);
-  }
-  if (queued > 20) {
-    ++problems;
-    snprintf(b, sizeof b,
-             "%zu lines are waiting to be generated: generation cannot keep "
-             "up.",
-             queued);
-    Notice(kYellow, "WARNING: ", b);
-  }
-  if (!st.last_error.empty())
-    Notice(kYellow, "Last skipped line: ", st.last_error);
-  if (!tune.enabled)
-    Notice(kYellow, "", "Disabled: vanilla lip-sync plays.");
-  else if (!problems && net_loaded)
-    Notice(kGreen, "", "No problems detected.");
-  if (!st.events.empty()) {
-    ig.Text("Recent events:");
-    for (const auto& [at, text] : st.events) {
-      snprintf(b, sizeof b, "  %.0f s ago: ", Now() - at);
-      Notice(ImVec4{0.75f, 0.75f, 0.75f, 1}, b, text);
-    }
-  }
-}
-
-void RenderMenu() {
   size_t cached, queued;
   const Stats st = SnapshotStats(cached, queued);
+  const Tune tune = SnapshotTune();
+  char b[400];
   ig.SeparatorText("Status");
-  ig.Text("Version: %s", kVersion);
-  ig.Text("Model: %s", st.net_info.c_str());
-  if (!st.net_metacommands.empty())
-    Notice(st.net_metacommands.rfind("off", 0) == 0 ? kYellow
-                                                     : ImVec4{1, 1, 1, 1},
-           "Driver metacommands: ", st.net_metacommands);
-  ig.Text("Lines generated: %u (%u failed / no audio), cached %zu, queued %zu",
-          st.lines, st.failed, cached, queued);
-  if (st.lines)
-    ig.Text("Speed: %.0fx realtime, last line %.0f ms; started late: %u",
-            st.audio_sec / std::max(st.gen_sec, 1e-6), st.last_ms, st.late);
-  RenderDiagnostics(st, queued, SnapshotTune());
+  ig.Text("%s | %s", kVersion,
+          st.net_info.empty() ? "model not loaded" : st.net_info.c_str());
+  if (gpu.known) {
+    ig.Text("GPU: %s, %.0f / %.0f MB VRAM", gpu.adapter.c_str(), gpu.used_mb,
+            gpu.budget_mb);
+    Tip(&gpu, "The VRAM the game uses, of what Windows grants it.");
+  } else {
+    ig.Text("GPU: %s", gpu.adapter.empty() ? "not found" : gpu.adapter.c_str());
+  }
+  if (st.lines || st.failed) {
+    ig.Text("Lines: %u, %.0fx realtime", st.lines,
+            st.audio_sec / std::max(st.gen_sec, 1e-6));
+    snprintf(b, sizeof b,
+             "Failed or without audio: %u\nStarted late: %u\nCached: %zu\n"
+             "Queued: %zu\nLast line: %.0f ms",
+             st.failed, st.late, cached, queued, st.last_ms);
+    Tip(&kLinesTip, b);
+  }
+  RenderProblems(st, queued, tune, gpu);
   static const char* const kHeaders[] = {
-      nullptr, "Playback", "Local Animation Strength",
-      "Emotion (from the next line spoken)", "Debug"};
+      nullptr, "Model", "Playback", "Strength", "Emotion", "Debug"};
   Sec cur = Sec::kGeneral;
   for (size_t i = 0; i < kNumParams; ++i) {
     const Param& p = kParams[i];
@@ -179,22 +179,30 @@ void RenderMenu() {
         Log("setting %s = %g", p.key, *p.value);
     }
     guard.Unlock();
-    if (ig.IsItemHovered(0)) ig.SetTooltip("%s", p.tip);
+    Tip(&p, p.tip);
   }
   ApplyLogging();
   ig.SeparatorText("");
-  if (ig.Button("Save to BetterFacialAnimations.ini", ImVec2{0, 0})) {
+  // the model and its device are those the game started with
+  if (tune.old_model != (config.network == 2) || tune.force_cpu != !config.gpu)
+    Notice(kYellow, "Model settings apply once saved and the game restarted.");
+  static const char kSave[] = "Save", kDefaults[] = "Defaults",
+                    kClear[] = "Clear cache";
+  if (ig.Button(kSave, ImVec2{0, 0})) {
     SaveIni();
   }
+  Tip(kSave, "Writes the settings to BetterFacialAnimations.ini.");
   ig.SameLine(0, -1);
-  if (ig.Button("Defaults", ImVec2{0, 0})) {
+  if (ig.Button(kDefaults, ImVec2{0, 0})) {
     ResetTune();
   }
+  Tip(kDefaults, "Resets the sliders and switches, except Model and Debug.");
   ig.SameLine(0, -1);
-  if (ig.Button("Clear cache", ImVec2{0, 0})) {
+  if (ig.Button(kClear, ImVec2{0, 0})) {
     ClearLines();
     ClearHeads();
   }
+  Tip(kClear, "Forgets the generated lines and the fitted heads.");
 }
 
 // Resolves an export into fn; false when missing.

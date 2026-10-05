@@ -41,8 +41,7 @@ void Expect(const char* what, const std::vector<float>& v, float y, float z) {
 // part of upper teeth and lower teeth that BigAah turns about a hinge.
 void MouthOnJaw() {
   using namespace direct;
-  Model m;
-  Mark& mk = m.mark;
+  Mark mk;
   // the landmarks' places, and one skin vertex at each (plus filler)
   const float lm[kNumLandmarks][3] = {{-3, 8, 4},  {3, 8, 4},  {-3, 8, 6},
                                       {3, 8, 6},   {0, 8, -5}, {0, 9, -2},
@@ -64,7 +63,7 @@ void MouthOnJaw() {
                                    -3, 1, 7,  -3, 0, 8,  -4};
   std::copy(jaw, jaw + a2f::kNumJaw, mk.jaw_points);
   mk.jaw_strength = 2;
-  m.rest.assign(a2f::kNumOut, 0.f);
+  mk.rest.assign(a2f::kNumOut, 0.f);
   ShapeIn skin;
   skin.part = Part::kHead;
   skin.skin = true;
@@ -87,7 +86,7 @@ void MouthOnJaw() {
     mouth.morphs[kBigAah][i * 3 + 2] = -0.1f * mouth.verts[i * 3 + 1];
   Head h;
   std::string why;
-  bool ok = BuildHead(m, {skin, mouth}, h, why) && h.shapes.size() == 2 &&
+  bool ok = BuildHead(mk, {skin, mouth}, h, why) && h.shapes.size() == 2 &&
             h.jaw_verts == 8;
   // the jaw's points all 0.25 down in Mark's axes (y up): the head's z
   a2f::Line line;

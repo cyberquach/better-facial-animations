@@ -7,7 +7,7 @@
 #   ./build.sh test               also check every supported runtime (tests/runtimes_test.cc) and the
 #                                 Direct mesh placement, voice-start gating, losing and regaining the GPU
 #                                 session (tests/net_keeper_test.cc) and the CPU session
-#                                 (tests/ort_net_test.cc: the packaged network loads and runs) and the
+#                                 (tests/ort_net_test.cc: the packaged networks load and run) and the
 #                                 line's emotion and call sites shared with another plugin, under $WINE
 # Dependency locations (see README) can be overridden with these variables:
 cd "$(dirname "$0")" || exit 1
@@ -15,8 +15,10 @@ V=$(cat VERSION) || exit 1
 FFMPEG=${FFMPEG:-deps/ffmpeg/win64}
 ORT=${ORT:-deps/dml/microsoft.ml.onnxruntime.directml}
 DML=${DML:-deps/dml/microsoft.ai.directml}
-MODEL=${MODEL:-models/mark/network_fp16.onnx}
+MODEL=${MODEL:-models/mark/network_fp16.onnx}  # Audio2Face-3D v2.3 Mark
 MODEL_FP32=${MODEL_FP32:-$(dirname "$MODEL")/network.onnx}  # test only: reference for the FP16 network
+MODEL3=${MODEL3:-models/v3/network_fp16.onnx}  # v3.0, folded (tools/a2f3_fold.py)
+MODEL3_FP32=${MODEL3_FP32:-$(dirname "$MODEL3")/network_folded.onnx}  # test only
 ADDRLIB=${ADDRLIB:-deps/address-library}  # test only
 
 mkdir -p build
@@ -39,7 +41,8 @@ PKG=build/mod; P=$PKG/SKSE/Plugins; L=$P/BetterFacialAnimations/licenses
 rm -rf $PKG; mkdir -p $L
 cp build/BetterFacialAnimations.dll dist/BetterFacialAnimations.ini $P/
 cp $ORT/runtimes/win-x64/native/onnxruntime.dll $ORT/runtimes/win-x64/native/onnxruntime_providers_shared.dll \
-   $DML/bin/x64-win/DirectML.dll $MODEL dist/A2FDirect.bin dist/NOTICE.txt $P/BetterFacialAnimations/ || exit 1
+   $DML/bin/x64-win/DirectML.dll $MODEL dist/A2FDirect.bin dist/A2FDirect3.bin dist/NOTICE.txt $P/BetterFacialAnimations/ || exit 1
+cp $MODEL3 $P/BetterFacialAnimations/a2f3_fp16.onnx || exit 1
 sed "s/@VERSION@/$V/" dist/README.txt > $P/BetterFacialAnimations/README.txt
 cp LICENSE $L/BetterFacialAnimations-GPL-3.0.txt
 cp $FFMPEG/COPYING.LGPLv2.1 $L/FFmpeg-LGPL-2.1.txt
@@ -86,5 +89,8 @@ test)
     WINEDEBUG=-all ${WINE-wine64} $T/voice_sync_test.exe &&
     WINEDEBUG=-all ${WINE-wine64} $T/call_sites_test.exe &&
     WINEDEBUG=-all ${WINE-wine64} $T/net_keeper_test.exe &&
-    WINEDEBUG=-all ${WINE-wine64} $T/ort_net_test.exe $P/BetterFacialAnimations "$P/BetterFacialAnimations/$(basename "$MODEL")" "$MODEL_FP32" ;;
+    WINEDEBUG=-all ${WINE-wine64} $T/ort_net_test.exe $P/BetterFacialAnimations "$P/BetterFacialAnimations/$(basename "$MODEL")" "$MODEL_FP32" &&
+    WINEDEBUG=-all ${WINE-wine64} $T/ort_net_test.exe $P/BetterFacialAnimations $P/BetterFacialAnimations/a2f3_fp16.onnx "$MODEL3_FP32" 3 &&
+    $CXX -Wall -static src/direct.cc tests/direct_bins_test.cc -o $T/direct_bins_test.exe &&
+    WINEDEBUG=-all ${WINE-wine64} $T/direct_bins_test.exe dist/A2FDirect.bin dist/A2FDirect3.bin ;;
 esac

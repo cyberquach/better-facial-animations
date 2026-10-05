@@ -33,6 +33,7 @@ constexpr uint32_t kFormId = 0x14;
 constexpr uint32_t kPlayerFormId = 0x14;  // the form id itself
 constexpr uint32_t kFormType = 0x1A;
 constexpr uint32_t kRefrBase = 0x40;
+constexpr uint32_t kNpcFlags = 0x38;  // TESNPC actor data flags; bit 0: female
 // MenuTopicManager: the handle of the actor the player is talking to
 constexpr uint32_t kMtmSpeaker = 0x68;
 // BSPointerHandleManager entries: bits (in use, age), BSHandleRefObject*

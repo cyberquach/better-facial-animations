@@ -107,6 +107,8 @@ struct Job {
   std::string cache_key, path;
   // the emotion and its settings when it was requested
   a2f::Emotion emotion;
+  // the speaker's sex: with v3.0 the identity that speaks it
+  bool female = false;
 };
 enum FaceUpdate { kNoUpdate = 0, kFaceChanged = 1, kKeepUpdating = 2 };
 constexpr int kDirectTail = 3;  // forced resets after the last Direct frame
@@ -118,7 +120,8 @@ struct Playing {
   // the actor's handle (HandleOf), which tells when it is gone; 0: it had
   // none, the pointer is trusted
   uint32_t actor_handle = 0;
-  double seen = 0;  // last update (play_clock)
+  bool female = false;  // the actor's sex: the face its head is mapped onto
+  double seen = 0;      // last update (play_clock)
   bool player = false;
   PlayerSpeechPtr external;
   a2f::VoiceStart voice;
@@ -163,12 +166,14 @@ struct Face {
   // failed: not mappable (vanilla lip-sync)
   State head_state = State::kPending;
   std::shared_ptr<const direct::Head> head;
-  std::string head_key;  // geometry and morph identity used by head
+  std::string head_key;  // geometry, morph identity and sex used by head
   // whose face it is and its handle, to tell when the actor joins a scene
   // (FaceInScene); null: not known. Without a handle the pointer cannot be
   // checked and the face is not given up to a scene.
   uint8_t* actor = nullptr;
   uint32_t actor_handle = 0;
+  // its sex, known from its line or as the conversation partner
+  bool female = false;
   bool player = false;
   a2f::PoseTransition transition;
 };
@@ -183,7 +188,6 @@ constexpr double kPlayStep = 0.25;  // the most play_clock advances at once
 // give them back
 constexpr float kOwnIn = 0.25f, kOwnOut = 1;
 constexpr size_t kMaxFaces = 8;
-constexpr size_t kMaxEvents = 8;
 
 SRWLOCK lock = SRWLOCK_INIT;  // guards everything below
 CONDITION_VARIABLE queue_cv = CONDITION_VARIABLE_INIT;
@@ -197,6 +201,7 @@ std::atomic<int> num_playing{0}, num_faces{0};
 // the conversation partner (TESObjectREFR*) whose face partner_fg is, found
 // by the morph hook (TrackPartner); written together under the lock
 std::atomic<uint8_t*> partner_ref{nullptr}, partner_fg{nullptr};
+std::atomic<bool> partner_female{false};
 // The time face updates have been running: the wall clock without the gaps
 // between them (a paused game, a menu), so a pause does not make a line or
 // a face look abandoned.
@@ -270,6 +275,13 @@ bool VoiceStem(const char* voice, std::string& stem) {
   if (dot != std::string::npos && (sl == std::string::npos || dot > sl))
     stem.resize(dot);
   return !stem.empty();
+}
+
+// Whether the actor (its base an NPC) is female.
+bool IsFemale(uint8_t* ref) {
+  uint8_t* base = Field<uint8_t*>(ref, kRefrBase);
+  return base && base[kFormType] == kFtNpc &&
+         (Field<uint32_t>(base, kNpcFlags) & 1);
 }
 
 // Actor with a FaceGen head (people; animals and creatures have none),
@@ -358,9 +370,10 @@ bool InScene(const uint8_t* actor) {
 
 // Queue a line unless it is cached or in flight (with the emotion settings
 // as now: after a change the next line spoken is generated anew). Returns
-// its entry.
+// its entry. female: the speaker's sex; with a face per sex (v3.0) a line is
+// generated for each.
 std::shared_ptr<Entry> Request(const std::string& stem, int emo, int val,
-                               bool urgent, const Tune& tune) {
+                               bool female, bool urgent, const Tune& tune) {
   std::string key = Lower(stem.c_str());
   // neutral: no emotion to feed, or none wanted
   if (tune.voice_emotion <= 0 || emo < 1 || emo > 7) {
@@ -378,11 +391,12 @@ std::shared_ptr<Entry> Request(const std::string& stem, int emo, int val,
   };
   for (double v : {1. * emo, 1. * val, em.gain * 100., em.swell * 100.})
     part(v);
+  if (model.faces.size() > 1) key += female ? "|f" : "|m";
   ScopedLock guard(lock);
   auto& e = cache[key];
   if (!e) {
     e = std::make_shared<Entry>();
-    Job j{key, stem, em};
+    Job j{key, stem, em, female};
     if (urgent) {
       queue.push_front(j);
     } else {
@@ -437,7 +451,8 @@ std::wstring PluginDir() {
   return full;
 }
 
-void NetEvent(const std::string& text);
+// Network events go to the log.
+void NetEvent(const std::string& text) { skse::Report("%s", text.c_str()); }
 
 // Worker thread only: what the GPU sessions found out about the driver's
 // metacommands.
@@ -459,6 +474,10 @@ std::unique_ptr<a2f::Net> CreateNet(bool gpu, std::string& err,
   a2f::OrtOptions o;
   o.gpu = gpu;
   o.batch = config.batch;
+  if (model.network != config.network) {
+    err = "the A2FDirect bin is of the other network";
+    return nullptr;
+  }
   if (GetFileAttributesW(file.c_str()) == INVALID_FILE_ATTRIBUTES) {
     char name[260] = "";
     WideCharToMultiByte(CP_UTF8, 0, config.model.c_str(), -1, name, sizeof name,
@@ -466,27 +485,24 @@ std::unique_ptr<a2f::Net> CreateNet(bool gpu, std::string& err,
     err = std::string("model file not found: ") + name;
     return nullptr;
   }
-  if (!gpu) return a2f::CreateOrtNet(dir, file, o, err, info);
+  // the network the ini asks for
+  const auto create = [&](std::string& e, std::string& i) {
+    return config.network == 3 ? a2f::CreateOrtNet3(dir, file, o, e, i)
+                               : a2f::CreateOrtNet(dir, file, o, e, i);
+  };
+  if (!gpu) return create(err, info);
   // with the driver's metacommands, and without them when that fails
   return a2f::CreateGpuNet(
       [&](bool with, std::string& e, std::string& i) {
         o.metacommands = with;
         const double t = Now();
-        auto net = a2f::CreateOrtNet(dir, file, o, e, i);
+        auto net = create(e, i);
         skse::Report("GPU session with metacommands %s: %s after %.0f ms",
                      with ? "on" : "off", net ? "loaded" : "failed",
                      (Now() - t) * 1e3);
         return net;
       },
       metacommands, err, info, NetEvent);
-}
-
-// Network events go to the log and to the settings window.
-void NetEvent(const std::string& text) {
-  skse::Report("%s", text.c_str());
-  ScopedLock guard(lock);
-  stats.events.emplace_back(Now(), text);
-  if (stats.events.size() > kMaxEvents) stats.events.pop_front();
 }
 
 // Copies the keeper's state to the settings window.
@@ -498,8 +514,9 @@ void PublishNet(const a2f::NetKeeper& keeper) {
     why.clear();
   } else if (keeper.attempts() != diagnosed) {
     diagnosed = keeper.attempts();
-    why = a2f::DiagnoseNet(config.gpu, keeper.error(), diagnosed,
-                           a2f::QueryGpu());
+    why = a2f::DiagnoseNet(
+        config.gpu, keeper.error(), diagnosed, a2f::QueryGpu(),
+        config.network == 3 ? a2f::kNetVramMb3 : a2f::kNetVramMb);
     for (const auto& line : why) skse::Report("%s", line.c_str());
     // the system as it is at the first failure (the report at startup is
     // from the main menu)
@@ -519,9 +536,6 @@ void PublishNet(const a2f::NetKeeper& keeper) {
   stats.net_attempts = keeper.attempts();
   stats.net_retry_at = keeper.retry_at();
   stats.net_gpu = keeper.on_gpu();
-  stats.net_metacommands = config.gpu
-                               ? a2f::DescribeMetacommands(metacommands)
-                               : "not used (GPU=0: the CPU runs the model)";
 }
 
 // Generates one queued line and stores the result in the cache.
@@ -546,9 +560,17 @@ void Process(const Job& j, a2f::NetKeeper& keeper) {
       line = std::make_shared<a2f::Line>();
       if (!keeper.Run(
               [&](a2f::Net& net, std::string& e) {
-                return a2f::Generate(net, pcm.data(), pcm.size(), j.emotion,
-                                     model.mark.proj.data(), model.rest.data(),
-                                     model.mark.k, *line, e);
+                const direct::Mark& face = model.Face(j.female);
+                if (net.Version() != 3)
+                  return a2f::Generate(net, pcm.data(), pcm.size(), j.emotion,
+                                       face.proj.data(), face.rest.data(),
+                                       face.k, *line, e);
+                // Claire speaks the women's lines, Mark the men's
+                const a2f::Face3 f{j.female ? 0 : 2, face.proj.data(),
+                                   face.tongue_proj.data(), face.rest.data(),
+                                   face.k};
+                return a2f::Generate3(net, pcm.data(), pcm.size(), j.emotion,
+                                      f, *line, e);
               },
               err, no_net))
         line.reset();
@@ -599,9 +621,11 @@ void Process(const Job& j, a2f::NetKeeper& keeper) {
                    line->emotion_mean[c], line->emotion_peak[c]);
           fed += b;
         }
-      Log("gen %s emo %d/%d: %.2f s audio, %u frames in %.0f ms; fed%s",
-          file.c_str(), j.emotion.type, j.emotion.value, audio_sec,
-          line->frames, ms, fed.empty() ? " no emotion" : fed.c_str());
+      Log("gen %s (%s) emo %d/%d: %.2f s audio, %u frames in %.0f ms; fed%s",
+          file.c_str(),
+          model.network != 3 ? "Mark" : j.female ? "Claire" : "Mark 3.0",
+          j.emotion.type, j.emotion.value, audio_sec, line->frames, ms,
+          fed.empty() ? " no emotion" : fed.c_str());
     } else {
       Log("skip %s: %s", j.path.c_str(), err.c_str());
     }
@@ -610,10 +634,13 @@ void Process(const Job& j, a2f::NetKeeper& keeper) {
 
 DWORD WINAPI Worker(void*) {
   std::string err;
-  if (!model.Load(PluginDir() + L"\\A2FDirect.bin", err)) {
-    skse::Report("A2FDirect.bin: %s", err.c_str());
+  if (!model.Load(PluginDir() + L"\\" + config.direct, err)) {
+    char name[64] = "";
+    WideCharToMultiByte(CP_UTF8, 0, config.direct.c_str(), -1, name,
+                        sizeof name, nullptr, nullptr);
+    skse::Report("%s: %s", name, err.c_str());
     ScopedLock guard(lock);
-    stats.startup_error = "A2FDirect.bin: " + err;
+    stats.startup_error = std::string(name) + ": " + err;
     return 1;
   }
   ready = true;
@@ -801,13 +828,15 @@ void BeginSpeech(uint8_t* actor, const std::string& stem, uint32_t sound_id,
       return;
     }
   }
-  auto e = Request(stem, emo_type, emo_value, true, tune);
+  const bool female = IsFemale(actor);
+  auto e = Request(stem, emo_type, emo_value, female, true, tune);
   Playing p;
   p.entry = e;
   p.name = stem;
   p.lip_key = lip_key;
   p.actor = actor;
   p.actor_handle = HandleOf(actor);
+  p.female = female;
   static std::atomic<int> no_handle;
   if (!p.actor_handle && LogMore(no_handle))
     Log("speak %s: the actor has no handle", stem.c_str());
@@ -884,7 +913,8 @@ __attribute__((noinline)) uint8_t* ResponseHook(uint8_t* self, void* topic,
   if ((tune.enabled || net_loaded) && tune.prefetch && voice && ready &&
       SpeakerOk(speaker) && !InScene(speaker) && VoiceStem(voice, stem))
     Request(stem, static_cast<int>(Field<uint32_t>(r, kRespEmoType)),
-            static_cast<int>(Field<uint32_t>(r, kRespEmoValue)), false, tune);
+            static_cast<int>(Field<uint32_t>(r, kRespEmoValue)),
+            IsFemale(speaker), false, tune);
   return r;
 }
 
@@ -989,7 +1019,7 @@ float LineClock(uint8_t* fg, Playing& p, double now, bool& lip,
   if (!why && p.entry->state == State::kFailed)
     why = "the line could not be generated";
   if (!why && p.entry->state == State::kReady &&
-      t > p.entry->line->frames / static_cast<float>(a2f::kFps) + 0.3f)
+      t > p.entry->line->frames / p.entry->line->fps + 0.3f)
     why = "the line is over";
   return t;
 }
@@ -1090,7 +1120,7 @@ int Apply(uint8_t* fg, const Tune& tune, bool in_scene) {
   p.last_t = t;
   ++p.direct_frames;
   p.direct_frame =
-      std::fmax(0.f, (t + tune.time_offset) * static_cast<float>(a2f::kFps));
+      std::fmax(0.f, (t + tune.time_offset) * p.entry->line->fps);
   p.direct_tail = kDirectTail;
   const bool first = !p.logged;
   p.logged = true;
@@ -1348,6 +1378,7 @@ void TrackPartner(uint8_t* node, uint8_t* fg) {
   ScopedLock guard(lock);
   partner_fg = found ? fg : nullptr;
   partner_ref = ref;
+  if (found) partner_female = IsFemale(ref);
 }
 
 // Adds the deltas (by head.shapes) to the node's dynamic face shapes, noting
@@ -1387,13 +1418,22 @@ void AddDirect(uint8_t* node, bool reset) {
   uint8_t* fg = Field<uint8_t*>(node, kNodeFg.Get());
   if (!fg) return;
   TrackPartner(node, fg);
-  {
-    ScopedLock guard(lock, ScopedLock::kShared);
-    if (!LiveFace(fg)) return;
-  }
   const Tune tune = SnapshotTune();
   bool enabled = false;
-  const std::string key = HeadKey(node);
+  // the face's sex: its line's speaker's or the partner's, else as last known
+  bool female = false;
+  {
+    ScopedLock guard(lock);
+    Face* face = LiveFace(fg);
+    if (!face) return;
+    auto it = playing.find(fg);
+    if (it != playing.end())
+      face->female = it->second.female;
+    else if (fg == partner_fg)
+      face->female = partner_female;
+    female = face->female;
+  }
+  const std::string key = HeadKey(node, female);
   std::shared_ptr<const a2f::Line> line;
   std::shared_ptr<const direct::Head> head;
   float frame = -1;
@@ -1424,7 +1464,7 @@ void AddDirect(uint8_t* node, bool reset) {
     }
   }
   if (state == State::kPending) {
-    state = FindHead(node, key, head);
+    state = FindHead(node, key, female, head);
     if (state != State::kPending) {
       ScopedLock guard(lock);
       Face* face = LiveFace(fg);

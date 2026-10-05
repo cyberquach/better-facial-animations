@@ -14,6 +14,7 @@
 #include <cstring>
 #include <cwchar>
 #include <cwctype>
+#include <initializer_list>
 #include <memory>
 #include <string>
 #include <utility>
@@ -274,6 +275,84 @@ class OrtNet : public Net {
   int batch_;
 };
 
+// The folded v3.0 network: one window per run.
+class OrtNet3 : public Net {
+ public:
+  // device, dml: as OrtNet's.
+  OrtNet3(OrtPtr<OrtSession> sess, OrtPtr<OrtMemoryInfo> mem,
+          ComPtr<ID3D12Device> device, ComPtr<IUnknown> dml)
+      : device_(std::move(device)),
+        dml_(std::move(dml)),
+        mem_(std::move(mem)),
+        sess_(std::move(sess)) {}
+  int Version() const override { return 3; }
+  int Batch() const override { return 1; }
+  bool Run(const float*, const float*, int, float*, std::string& err) override {
+    err = "not a v2.3 network";
+    return false;
+  }
+  bool Run3(const float* window, const float* identity, const float* emotion,
+            const float* state, float* skin, float* tongue, float* jaw_eyes,
+            float* next_state, std::string& err) override {
+    constexpr int kIn = 4, kOut = 4;
+    static const int64_t kShapes[kIn][4] = {{1, kWindow3},
+                                            {1, kNumIdentity3},
+                                            {1, kFrames3, kNumMod},
+                                            {2, 2, 1, 256}};
+    static const size_t kRanks[kIn] = {2, 2, 3, 4};
+    static const size_t kSizes[kIn] = {kWindow3, kNumIdentity3,
+                                       kFrames3 * kNumMod, kState3};
+    static const char* const kInNames[kIn] = {"window", "identity", "emotion",
+                                              "input_latents"};
+    static const char* const kOutNames[kOut] = {"skin_latent", "tongue_latent",
+                                                "jaw_eyes", "output_latents"};
+    const float* data[kIn] = {window, identity, emotion, state};
+    float* dst[kOut] = {skin, tongue, jaw_eyes, next_state};
+    const size_t out_size[kOut] = {kFrames3 * kLatent3, kFrames3 * kLatent3,
+                                   kFrames3 * kJawEyes3, kState3};
+    OrtPtr<OrtValue> in[kIn];
+    const OrtValue* ins[kIn] = {};
+    for (int i = 0; i < kIn; ++i) {
+      OrtValue* value = nullptr;
+      if (!Check(api->CreateTensorWithDataAsOrtValue(
+                     mem_.get(), const_cast<float*>(data[i]),
+                     kSizes[i] * sizeof(float), kShapes[i], kRanks[i],
+                     ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &value),
+                 err, kInNames[i]))
+        return false;
+      in[i].reset(value);
+      ins[i] = value;
+    }
+    OrtValue* results[kOut] = {};
+    const bool ran = Check(api->Run(sess_.get(), nullptr, kInNames, ins, kIn,
+                                    kOutNames, kOut, results),
+                           err, "run");
+    OrtPtr<OrtValue> out[kOut];
+    for (int i = 0; i < kOut; ++i) out[i].reset(results[i]);
+    if (!ran) {
+      failed = true;
+      err += RemovedReason(device_.get(), dml_.get());
+      return false;
+    }
+    for (int i = 0; i < kOut; ++i) {
+      float* p = nullptr;
+      if (!Check(api->GetTensorMutableData(out[i].get(),
+                                           reinterpret_cast<void**>(&p)),
+                 err, kOutNames[i]))
+        return false;
+      memcpy(dst[i], p, out_size[i] * sizeof(float));
+    }
+    return true;
+  }
+
+ private:
+  // As OrtNet's: the session goes first, the device last.
+  ComPtr<ID3D12Device> device_;
+  ComPtr<IUnknown> dml_;
+  OrtPtr<OrtMemoryInfo> mem_;
+  OrtPtr<OrtSession> sess_;
+};
+
 void (*ort_log)(const std::string&);
 
 // onnxruntime's own warnings and errors (DirectML's failures while a session
@@ -338,11 +417,12 @@ struct Session {
 };
 
 // A session of model on DirectML (adapter 0, with the driver's metacommands
-// or without) or the CPU, with the named free dimensions fixed: let DirectML
-// plan one static shape (also 4x faster at batch 1-2). False (with err, and
+// or without) or the CPU, with the free dimensions dims fixed to batch: let
+// DirectML plan one static shape (also 4x faster at batch 1-2). False (with err, and
 // out empty) when it cannot be made.
 bool CreateSession(const std::wstring& model, bool gpu, bool metacommands,
-                   int batch, Session& out, std::string& err) {
+                   std::initializer_list<const char*> dims, int batch,
+                   Session& out, std::string& err) {
   Session s;
   if (gpu) s.device = OpenDevice();
   OrtSessionOptions* options = nullptr;
@@ -378,8 +458,7 @@ bool CreateSession(const std::wstring& model, bool gpu, bool metacommands,
     // DML's memory arena stays on: it keeps the work buffers of a run
     // allocated between runs (~16 MB more resident than freeing them), so a
     // loaded session never has to find VRAM again.
-    for (const char* name :
-         {"input_dynamic_axes_1", "emotion_dynamic_axes_1"}) {
+    for (const char* name : dims) {
       if (ok) {
         ok = Check(api->AddFreeDimensionOverrideByName(so.get(), name, batch),
                    err, "shape override");
@@ -426,9 +505,11 @@ std::unique_ptr<Net> CreateOrtNet(const std::wstring& dll_dir,
   const int batch = std::max(1, o.batch);
   Session s;
   // The batch is always the same.
-  if (!CreateSession(model, o.gpu, o.metacommands, batch, s, err))
+  if (!CreateSession(model, o.gpu, o.metacommands,
+                     {"input_dynamic_axes_1", "emotion_dynamic_axes_1"}, batch,
+                     s, err))
     return nullptr;
-  info = std::string("onnxruntime ") + version +
+  info = std::string("Audio2Face-3D v2.3, onnxruntime ") + version +
          (!o.gpu ? ", CPU 2 threads"
           : o.metacommands ? ", DirectML device 0, metacommands on"
                            : ", DirectML device 0, metacommands off") +
@@ -442,6 +523,35 @@ std::unique_ptr<Net> CreateOrtNet(const std::wstring& dll_dir,
       emo(static_cast<size_t>(batch) * kNumEmo),
       y(static_cast<size_t>(batch) * kNumOut);
   if (!net->Run(x.data(), emo.data(), batch, y.data(), err)) return nullptr;
+  return net;
+}
+
+std::unique_ptr<Net> CreateOrtNet3(const std::wstring& dll_dir,
+                                   const std::wstring& model,
+                                   const OrtOptions& o, std::string& err,
+                                   std::string& info) {
+  if (!LoadApi(dll_dir, err)) return nullptr;
+  Session s;
+  if (!CreateSession(model, o.gpu, o.metacommands,
+                     {"window_dynamic_axes_1", "identity_dynamic_axes_1",
+                      "emotion_dynamic_axes_1", "input_latents_dynamic_axes_1"},
+                     1, s, err))
+    return nullptr;
+  info = std::string("Audio2Face-3D v3.0, onnxruntime ") + version +
+         (!o.gpu ? ", CPU 2 threads"
+          : o.metacommands ? ", DirectML device 0, metacommands on"
+                           : ", DirectML device 0, metacommands off");
+  auto net = std::make_unique<OrtNet3>(std::move(s.sess), std::move(s.mem),
+                                       std::move(s.device),
+                                       std::move(s.dml_device));
+  // One run now, as CreateOrtNet's.
+  std::vector<float> x(kWindow3), emo(kFrames3 * kNumMod), state(kState3),
+      skin(kFrames3 * kLatent3), tongue(kFrames3 * kLatent3),
+      jaw(kFrames3 * kJawEyes3), next(kState3);
+  const float identity[kNumIdentity3] = {1, 0, 0};
+  if (!net->Run3(x.data(), identity, emo.data(), state.data(), skin.data(),
+                 tongue.data(), jaw.data(), next.data(), err))
+    return nullptr;
   return net;
 }
 

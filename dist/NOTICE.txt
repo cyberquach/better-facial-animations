@@ -1,3 +1,8 @@
+a2f3_fp16.onnx (NVIDIA Audio2Face-3D v3.0, modified: the diffusion sampling noise fixed and the output layers folded
+into A2FDirect3.bin, converted to FP16):
+Licensed by NVIDIA Corporation under the NVIDIA Open Model License
+See licenses/NVIDIA-Open-Model-License.txt and https://huggingface.co/nvidia/Audio2Face-3D-v3.0
+
 network_fp16.onnx (NVIDIA Audio2Face-3D v2.3 Mark, converted to FP16):
 Licensed by NVIDIA Corporation under the NVIDIA Open Model License
 See licenses/NVIDIA-Open-Model-License.txt and https://huggingface.co/nvidia/Audio2Face-3D-v2.3-Mark
