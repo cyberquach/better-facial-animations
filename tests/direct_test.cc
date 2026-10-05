@@ -38,7 +38,8 @@ void Expect(const char* what, const std::vector<float>& v, float y, float z) {
 }
 
 // A head that is Mark himself (so the mapping is the identity), with a mouth
-// part of upper teeth and lower teeth that BigAah turns about a hinge.
+// part of upper teeth and lower teeth that BigAah turns about a hinge, and
+// two pinned rings.
 void MouthOnJaw() {
   using namespace direct;
   Mark mk;
@@ -84,10 +85,35 @@ void MouthOnJaw() {
   mouth.morphs[kBigAah].assign(48, 0.f);
   for (int i = 8; i < 16; ++i)  // about the hinge y = 0: the drop grows with y
     mouth.morphs[kBigAah][i * 3 + 2] = -0.1f * mouth.verts[i * 3 + 1];
+  // two rings in one shape, each across the lip line (z = -2)
+  ShapeIn rings;
+  rings.part = Part::kPinned;
+  rings.nv = 24;
+  for (int i = 0; i < 24; ++i) {
+    const float a = (i % 12) * 0.5236f;
+    for (float c : {i < 12 ? -1.f : 1.f, 8.3f + 0.4f * std::cos(a),
+                    -2.2f + 0.4f * std::sin(a)})
+      rings.verts.push_back(c);
+  }
+  rings.morphs.assign(kNumMorphs, {});
   Head h;
   std::string why;
-  bool ok = BuildHead(mk, {skin, mouth}, h, why) && h.shapes.size() == 2 &&
-            h.jaw_verts == 8;
+  bool ok = BuildHead(mk, {skin, mouth, rings}, h, why) &&
+            h.shapes.size() == 3 && h.jaw_verts == 8;
+  bool pinned = ok && h.shapes[2].idx.size() == 24u * kFollow;
+  float weight = 0;
+  for (int i = 0; pinned && i < 24 * kFollow; ++i) {
+    const int first =
+        i < 12 * kFollow ? i % kFollow : 12 * kFollow + i % kFollow;
+    pinned = h.shapes[2].idx[i] == h.shapes[2].idx[first] &&
+             h.shapes[2].w[i] == h.shapes[2].w[first];
+    if (i < kFollow) weight += h.shapes[2].w[i];
+  }
+  pinned = pinned && std::fabs(weight - 1) < 1e-4f &&
+           h.shapes[2].idx[0] != h.shapes[2].idx[12 * kFollow];
+  if (!pinned) ++failures;
+  printf("%s pinned rings: each moves as one piece, by its own skin\n",
+         pinned ? "ok" : "FAIL");
   // the jaw's points all 0.25 down in Mark's axes (y up): the head's z
   a2f::Line line;
   line.frames = 1;

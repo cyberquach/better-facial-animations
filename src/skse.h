@@ -64,6 +64,7 @@ struct SKSETaskInterface {
 constexpr uint32_t kInterfaceTask = 4;
 constexpr uint32_t kMessagePostLoad = 0;
 constexpr uint32_t kMessagePreLoadGame = 2;
+constexpr uint32_t kMessagePostLoadGame = 3;
 constexpr uint32_t kMessageNewGame = 7;
 constexpr uint32_t kInterfaceMessaging = 5;
 constexpr uint32_t kMessageDataLoaded = 8;
@@ -141,6 +142,17 @@ struct SpinLock {
   volatile LONG count;
   void Lock();
   void Unlock();
+};
+
+class ScopedFaceLock {
+ public:
+  explicit ScopedFaceLock(SpinLock& lock) : lock_(lock) { lock_.Lock(); }
+  ~ScopedFaceLock() { lock_.Unlock(); }
+  ScopedFaceLock(const ScopedFaceLock&) = delete;
+  ScopedFaceLock& operator=(const ScopedFaceLock&) = delete;
+
+ private:
+  SpinLock& lock_;
 };
 
 // The head's active dialogue line: lip resource id, or nullptr when there is

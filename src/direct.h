@@ -5,6 +5,7 @@
 // is whichever of them the head takes. Every head is mapped straight onto
 // Mark from its own
 // expression morphs (BuildHead); its brows, beard and eyes follow its skin,
+// a piercing moves as one piece with the skin it is pinned to,
 // and its mouth part takes Mark's jaw and tongue: the lower teeth and gums
 // turn with Mark's jaw, the tongue rides it and bends like Mark's. Shape-local
 // space, the same as the .tri files.
@@ -19,7 +20,8 @@
 
 namespace direct {
 
-enum class Part { kHead, kMouth, kEyes, kNone };
+// kPinned: rigid pieces on the skin (piercings), which are not to bend with it
+enum class Part { kHead, kMouth, kEyes, kPinned, kNone };
 
 // Deformation scales: the head skin by smooth per-vertex region weights
 // (the kNumSkinRegions kBrows..kMouth), the mouth part by how far the jaw
@@ -137,7 +139,7 @@ struct Head {
     Part part;
     uint32_t nv;
     // brows, beards, eyes: delta = sum_j w[j] delta_skin[idx[j]], kFollow
-    // per vertex
+    // per vertex (pinned: the same for all the vertices of a piece)
     std::vector<uint32_t> idx;
     std::vector<float> w;
     // mouth part: the vertices in the skin's space (nv x 3), how far each

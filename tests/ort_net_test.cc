@@ -120,7 +120,7 @@ int main(int argc, char** argv) {
          g.adapter.c_str(), g.dedicated_mb, g.used_mb, g.budget_mb,
          g.known ? "" : " (unknown)");
   // The report for the log: must not crash either.
-  for (const auto& line : a2f::GpuReport()) printf("  %s\n", line.c_str());
+  for (const auto& line : a2f::GpuReport(true)) printf("  %s\n", line.c_str());
   printf(failures ? "%d FAILED\n" : "all ok\n", failures);
   return failures != 0;
 }

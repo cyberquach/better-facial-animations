@@ -84,7 +84,8 @@ void PlayerSpeechMessage(unsigned type) {
     skse::Log("player speech: DBReV listener %s",
               found ? "registered" : "not present");
   } else if (type == skse::kMessagePreLoadGame ||
-             type == skse::kMessageNewGame) {
+             type == skse::kMessageNewGame ||
+             type == skse::kMessagePostLoadGame) {
     ScopedLock guard(session_lock);
     if (active) active->stopped = true;
     active.reset();

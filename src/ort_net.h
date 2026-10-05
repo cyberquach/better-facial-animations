@@ -45,8 +45,9 @@ GpuState QueryGpu();
 // What a bug report about the GPU session needs, one line each: Windows, the
 // adapters and their drivers, what Direct3D 12 offers on adapter 0 (the
 // driver's metacommands among it) and the modules loaded in the game that
-// are not Windows' own, with their versions.
-std::vector<std::string> GpuReport();
+// are not Windows' own, with their versions. With probe_gpu=false, only
+// passive OS/module metadata is collected; no graphics device is created.
+std::vector<std::string> GpuReport(bool probe_gpu);
 
 // True once onnxruntime.dll creates its Direct3D 12 device through the plugin
 // (the test checks the import is still there).
