@@ -1,0 +1,248 @@
+{
+  "schema": 1,
+  "contracts": [
+    {
+      "id": "scene-ownership",
+      "test": "scene_compat_test",
+      "sources": [
+        "tests/scene_compat_test.cc"
+      ],
+      "plugin_objects": true,
+      "link": [
+        "-Wl,--wrap=_ZN4skse4AddrEy"
+      ],
+      "covers": [
+        "SexLab",
+        "OStim",
+        "exclusive scene entry/exit",
+        "SE/AE/VR synthetic ABI"
+      ]
+    },
+    {
+      "id": "dbrev-api",
+      "test": "player_speech_test",
+      "sources": [
+        "src/player_speech.cc",
+        "tests/player_speech_test.cc"
+      ],
+      "covers": [
+        "Dragonborn ReVoiced API 1",
+        "queued cancellation",
+        "load transitions"
+      ]
+    },
+    {
+      "id": "head-parts",
+      "test": "head_parts_test",
+      "sources": [
+        "src/head_cache.cc",
+        "src/direct.cc",
+        "tests/head_parts_test.cc"
+      ],
+      "covers": [
+        "Lulu INIGO",
+        "Satisfactory Facial Piercings",
+        "synthetic HDPT classification"
+      ]
+    },
+    {
+      "id": "hook-chaining",
+      "test": "call_sites_test",
+      "sources": [
+        "tests/call_sites_test.cc"
+      ],
+      "covers": [
+        "shared native call sites",
+        "synthetic other-plugin hooks"
+      ]
+    },
+    {
+      "id": "load-lifecycle",
+      "test": "load_game_test",
+      "sources": [
+        "tests/load_game_test.cc"
+      ],
+      "plugin_objects": true,
+      "link": [
+        "-Wl,--wrap=_ZN4skse8SpinLock4LockEv"
+      ],
+      "covers": [
+        "save/load cancellation",
+        "stale face lifetime"
+      ]
+    },
+    {
+      "id": "direct-mapping",
+      "test": "direct_test",
+      "sources": [
+        "src/direct.cc",
+        "tests/direct_test.cc"
+      ],
+      "covers": [
+        "generic supported head geometry"
+      ]
+    },
+    {
+      "id": "voice-timing",
+      "test": "voice_sync_test",
+      "sources": [
+        "tests/voice_sync_test.cc"
+      ],
+      "covers": [
+        "speech start/stop timing"
+      ]
+    },
+    {
+      "id": "harness-controls",
+      "python": "tests/test_compatibility_runner.py",
+      "covers": [
+        "malformed plugin rejection",
+        "missing fixture is blocked",
+        "plugin-owned record identity"
+      ]
+    },
+    {
+      "id": "native-runtime-preflight",
+      "python": "tests/test_skse_preflight.py",
+      "covers": [
+        "explicit SKSE DLL runtime declarations",
+        "mismatched runtime and damaged DLL rejection",
+        "legacy metadata remains undetermined"
+      ]
+    }
+  ],
+  "assets": [
+    {
+      "id": "sexlab-se-163",
+      "file": "SexLab.esm",
+      "version": "1.63",
+      "records": [
+        {
+          "type": "FACT",
+          "id": "00E50F",
+          "editor_id": "SexLabAnimatingFaction"
+        }
+      ]
+    },
+    {
+      "id": "sexlab-ae-166d",
+      "file": "SexLab.esm",
+      "version": "1.66d",
+      "records": [
+        {
+          "type": "FACT",
+          "id": "00E50F",
+          "editor_id": "SexLabAnimatingFaction"
+        }
+      ]
+    },
+    {
+      "id": "sexlab-gog-166b",
+      "file": "SexLab.esm",
+      "version": "1.66b",
+      "records": [
+        {
+          "type": "FACT",
+          "id": "00E50F",
+          "editor_id": "SexLabAnimatingFaction"
+        }
+      ]
+    },
+    {
+      "id": "sexlab-pplus-2181",
+      "file": "SexLab.esm",
+      "version": "2.18.1",
+      "records": [
+        {
+          "type": "FACT",
+          "id": "00E50F",
+          "editor_id": "SexLabAnimatingFaction"
+        }
+      ]
+    },
+    {
+      "id": "ostim-standalone-local",
+      "file": "OStim.esp",
+      "version": "local installed package; see meta.ini",
+      "records": [
+        {
+          "type": "FACT",
+          "id": "000ECA",
+          "editor_id": "OStimActorCountFaction"
+        },
+        {
+          "type": "FACT",
+          "id": "000D93",
+          "editor_id": "OStimExcitementFaction"
+        }
+      ]
+    },
+    {
+      "id": "ostim-standalone-751",
+      "file": "OStim.esp",
+      "version": "7.5.1",
+      "records": [
+        {
+          "type": "FACT",
+          "id": "000ECA",
+          "editor_id": "OStimActorCountFaction"
+        },
+        {
+          "type": "FACT",
+          "id": "000D93",
+          "editor_id": "OStimExcitementFaction"
+        }
+      ]
+    }
+  ],
+  "coverage_gaps": [
+    {
+      "mods": [
+        "OStim NG",
+        "other SexLab/P+ releases"
+      ],
+      "needs": "Versioned packages plus verification that faction membership spans the full scene."
+    },
+    {
+      "mods": [
+        "Dragonborn ReVoiced"
+      ],
+      "needs": "Actual provider DLL/version fixture; current test simulates the published API."
+    },
+    {
+      "mods": [
+        "High Poly Head",
+        "Expressive Facegen Morphs",
+        "Expressive Facial Animation",
+        "RaceMenu",
+        "Bijin",
+        "3DNPC/Zora",
+        "Lulu INIGO",
+        "Satisfactory Facial Piercings"
+      ],
+      "needs": "Promote journal asset probes into pinned NIF/TRI/HDPT fixtures and numeric mapping invariants; head-parts/direct tests are synthetic."
+    },
+    {
+      "mods": [
+        "MFG Fix",
+        "FaceGenFixes",
+        "SMP Fixes",
+        "Community Shaders",
+        "Engine Fixes",
+        "Display Tweaks",
+        "Papyrus Tweaks",
+        "Scrambled Bugs",
+        "Loading Menu Overhaul",
+        "FSMP/HDT-SMP"
+      ],
+      "needs": "Pinned binary/API checks where meaningful, then isolated launch matrix; generic hook tests do not certify these DLLs."
+    },
+    {
+      "mods": [
+        "Cinematic Conversation Camera/SceneDirector",
+        "Open Your Mouth"
+      ],
+      "needs": "Winning INI/script checks for known conflicting facial writers; conditional coexistence documented in journal, not unconditional support."
+    }
+  ]
+}

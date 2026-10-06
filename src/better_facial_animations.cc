@@ -360,6 +360,7 @@ size_t num_scene_factions;
 
 // At kMessageDataLoaded.
 void LoadSceneFactions() {
+  num_scene_factions = 0;
   const BSTArray* factions = FormArray(kFtFaction);
   if (!factions) {
     Log("scene factions: no form array");
@@ -370,8 +371,9 @@ void LoadSceneFactions() {
     if (!f || f[kFormType] != kFtFaction) continue;
     const uint32_t id = Field<uint32_t>(f, kFormId);
     for (const SceneFaction& sf : kSceneFactions) {
-      // the id in a light file (12 bits) or a full one; the file tells
-      if ((id & 0xFFF) != sf.id && (id & 0xFFFFFF) != sf.id) continue;
+      // Runtime FE ids have a 12-bit local id; full plugins have 24 bits.
+      const uint32_t local = id & ((id >> 24) == 0xFE ? 0xFFF : 0xFFFFFF);
+      if (local != sf.id) continue;
       uint8_t* files = Field<uint8_t*>(f, kFormFiles);
       uint8_t** file = files ? Field<uint8_t**>(files, 0) : nullptr;
       if (!file || !Field<uint32_t>(files, 8) || !file[0]) continue;
@@ -814,11 +816,17 @@ int ActorVoice(uint8_t* actor, uint32_t& sound) {
   return !handle || !is_playing ? -1 : is_playing(handle);
 }
 
-// Shared entry for engine speech and optional provider notifications.
+// Shared entry for engine speech and optional provider notifications; the
+// one place a scene's actor is turned away.
 void BeginSpeech(uint8_t* actor, const std::string& stem, uint32_t sound_id,
                  float dur, int emo_type, int emo_value, const Tune& tune,
                  uint64_t epoch, PlayerSpeechPtr external = {}) {
   if (!CurrentWorld(epoch)) return;
+  if (InScene(actor)) {
+    static std::atomic<int> logged;
+    if (LogMore(logged)) Log("skip %s: its actor is in a scene", stem.c_str());
+    return;
+  }
   auto get_fg = reinterpret_cast<uint8_t* (*)(uint8_t*)>(
       Field<void**>(actor, 0)[kVfGetFaceGenAnimationData]);
   uint8_t* fg = get_fg(actor);
@@ -908,10 +916,6 @@ __attribute__((noinline)) float SpeakHook(
   if (!(tune.enabled || net_loaded) || !voice || !ready || !SpeakerOk(actor) ||
       !VoiceStem(voice, stem) || (!tune.player && IsPlayer(actor))) {
     note("not for the plugin");
-    return dur;
-  }
-  if (InScene(actor)) {
-    note("the actor is in a scene");
     return dur;
   }
   note("taken");
@@ -1089,8 +1093,8 @@ int Apply(uint8_t* fg, const Tune& tune, bool in_scene, uint8_t* actor,
     Count();
     return kNoUpdate;
   }
-  // the actor joined a scene: the line is dropped (what it showed eases out
-  // on its Face)
+  // The actor joined a scene: drop the line. Expressions releases its
+  // Face immediately and requests an engine mesh rebuild.
   if (in_scene) {
     if (LogMore(logged_ends))
       Log("drop %s: its actor is in a scene", p.name.c_str());
@@ -1166,10 +1170,23 @@ void DropFace(uint8_t* fg) {
   Count();
 }
 
+// Face's lock held: puts the engine's expression values (src) back into the
+// keyframe the plugin overwrote. With written, only while the keyframe is
+// still as the plugin left it (else the engine, a scene or a new head at
+// this address wrote it since). Returns whether it wrote.
+bool RestoreKeyframe(skse::KeyframeMultiple& ex, const float* src,
+                     const float* written) {
+  if (!ex.values || ex.count < direct::kNumExpressions) return false;
+  for (int i = 0; written && i < direct::kNumExpressions; ++i)
+    if (direct::PlaysExpression(i) && ex.values[i] != written[i]) return false;
+  for (int i = 0; i < direct::kNumExpressions; ++i)
+    if (direct::PlaysExpression(i)) ex.values[i] = src[i];
+  return true;
+}
+
 // Before the engine's face update: puts back its own expression keyframe,
 // which Expressions overwrote, so the engine carries on from it. A parked
-// face's only while the keyframe is still as the plugin left it (else the
-// engine, or a new head at this address, wrote it since).
+// face's only while the keyframe is still as the plugin left it.
 void RestoreExpressions(uint8_t* fg, uint64_t epoch) {
   float src[direct::kNumExpressions], written[direct::kNumExpressions];
   ScopedLock guard(lock, ScopedLock::kShared);
@@ -1186,13 +1203,8 @@ void RestoreExpressions(uint8_t* fg, uint64_t epoch) {
   // meanwhile, and then the keyframe is no longer written
   skse::ScopedFaceLock face_guard(Field<skse::SpinLock>(fg, skse::kFgLock));
   if (!CurrentWorld(epoch)) return;
-  auto& ex = Field<skse::KeyframeMultiple>(fg, skse::kFgExpr3);
-  if (!ex.values || ex.count < direct::kNumExpressions) return;
-  bool ours = true;
-  for (int i = 0; ours && parked && i < direct::kNumExpressions; ++i)
-    if (direct::PlaysExpression(i) && ex.values[i] != written[i]) ours = false;
-  for (int i = 0; ours && i < direct::kNumExpressions; ++i)
-    if (direct::PlaysExpression(i)) ex.values[i] = src[i];
+  RestoreKeyframe(Field<skse::KeyframeMultiple>(fg, skse::kFgExpr3), src,
+                  parked ? written : nullptr);
 }
 
 // Lock held: the face of this animation data; made when wanted and missing,
@@ -1277,6 +1289,15 @@ int ShowExpressions(Face& f, const float* lv, skse::KeyframeMultiple* ex) {
 // Returns like Apply.
 int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene,
                 uint8_t* actor, uint32_t actor_handle) {
+  // Exclusive scenes own the face immediately, including paused frames.
+  // The original update has already produced their keyframes. Do not fade
+  // our expressions or speech pose over those values.
+  if (in_scene) {
+    ScopedLock guard(lock);
+    const bool changed = playing.erase(fg) || faces.count(fg);
+    DropFace(fg);
+    return changed ? kFaceChanged : kNoUpdate;
+  }
   if (fg != partner_fg && !num_faces && !num_playing) return kNoUpdate;
   auto& ex = Field<skse::KeyframeMultiple>(fg, skse::kFgExpr3);
   const bool has_ex = ex.values && ex.count >= direct::kNumExpressions;
@@ -1457,6 +1478,26 @@ bool AddDeltas(uint8_t* node, const direct::Head& head,
 void AddDirect(uint8_t* node, bool reset) {
   uint8_t* fg = Field<uint8_t*>(node, kNodeFg.Get());
   if (!fg) return;
+  // Morph calls can arrive without an intervening animation update. Query
+  // the retained actor outside our locks before reading or applying a pose.
+  const FaceActor known = FaceActorOf(fg);
+  ScopedReference reference(known.handle);
+  if (reference.get() == known.actor && InScene(reference.get())) {
+    // Request an engine rebuild on the next update if this call did not
+    // reset the mesh; never add even the old pose's fade-out to a scene.
+    skse::ScopedFaceLock face_guard(Field<skse::SpinLock>(fg, skse::kFgLock));
+    ScopedLock guard(lock);
+    auto face = faces.find(fg);
+    if (face != faces.end()) {
+      auto& ex = Field<skse::KeyframeMultiple>(fg, skse::kFgExpr3);
+      if (RestoreKeyframe(ex, face->second.src, face->second.written))
+        ex.is_updated = true;
+    }
+    playing.erase(fg);
+    DropFace(fg);
+    fg[kFgDirty] = 1;
+    return;
+  }
   TrackPartner(node, fg);
   const Tune tune = SnapshotTune();
   bool enabled = false;
@@ -1642,7 +1683,7 @@ void StartPlayerSpeech(PlayerSpeechPtr speech) {
   if (!ready || !tune.enabled || !tune.player) return;
   const auto address = Addr(kIdPlayer);
   auto* actor = address ? *reinterpret_cast<uint8_t**>(address) : nullptr;
-  if (!SpeakerOk(actor) || InScene(actor)) return;
+  if (!SpeakerOk(actor)) return;
   std::string stem;
   if (!VoiceStem(("Sound/" + speech->path).c_str(), stem)) return;
   // as the engine's own paths, so both share one generated line
