@@ -13,3 +13,5 @@
 /tools/*
 !/tools/*.py
 **/__pycache__/
+
+!/.gitlab-ci.yml

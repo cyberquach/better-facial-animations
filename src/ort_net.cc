@@ -8,9 +8,9 @@
 #include <psapi.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
-#include <atomic>
 #include <cstring>
 #include <cwchar>
 #include <cwctype>
@@ -98,9 +98,42 @@ FARPROC D3d12Export(const char* id) {
 }
 
 // Set when D3D12CreateDevice handed out a wrapper of the device.
-bool device_wrapped;
+std::atomic<bool> device_wrapped{false};
 // Set when onnxruntime.dll creates its device with CreateRealDevice.
 bool device_redirected;
+// The ini's UseDeviceWrapper: CreateRealDevice returns the wrapper as it is.
+std::atomic<bool> use_wrapper{false};
+
+// Retain each wrapper until all session/device references have been released.
+using Wrappers = std::vector<ComPtr<IUnknown>>;
+thread_local Wrappers* wrappers_kept = nullptr;
+
+class ScopedWrappers {
+ public:
+  explicit ScopedWrappers(Wrappers& wrappers) : previous_(wrappers_kept) {
+    wrappers_kept = &wrappers;
+  }
+  ~ScopedWrappers() { wrappers_kept = previous_; }
+  ScopedWrappers(const ScopedWrappers&) = delete;
+  ScopedWrappers& operator=(const ScopedWrappers&) = delete;
+
+ private:
+  Wrappers* const previous_;
+};
+
+// Consumes GetDevice's reference. Only unwrap when this thread has an owner
+// that can retain the wrapper, including when the import runs on another thread.
+void SelectDevice(ComPtr<IUnknown> real, void** out) {
+  IUnknown* const wrapper = static_cast<IUnknown*>(*out);
+  if (real.get() != wrapper) {
+    device_wrapped = true;
+    if (use_wrapper || !wrappers_kept) return;
+    wrappers_kept->emplace_back(wrapper);
+  } else {
+    wrapper->Release();
+  }
+  *out = real.release();
+}
 
 // D3D12CreateDevice, returning the device Direct3D itself made. ReShade hooks
 // that function and hands out a wrapper of the device, on which DirectML
@@ -123,11 +156,8 @@ HRESULT WINAPI CreateRealDevice(IUnknown* adapter, D3D_FEATURE_LEVEL level,
     return hr;
   const ComPtr<ID3D12Fence> fence(made);
   void* real = nullptr;
-  if (SUCCEEDED(fence->GetDevice(riid, &real))) {
-    device_wrapped |= real != *out;
-    got->Release();
-    *out = real;
-  }
+  if (FAILED(fence->GetDevice(riid, &real))) return hr;
+  SelectDevice(ComPtr<IUnknown>(static_cast<IUnknown*>(real)), out);
   return hr;
 }
 
@@ -172,7 +202,8 @@ bool RedirectCreateDevice(HMODULE ort) {
 }
 
 // Adapter 0's Direct3D 12 device: one per adapter per process, so the very
-// device DirectML runs on. Null without Direct3D 12.
+// device DirectML runs on. Null without Direct3D 12. Its wrapper, if any, is
+// kept by the caller's ScopedWrappers.
 ComPtr<ID3D12Device> OpenDevice() {
   const ComPtr<IDXGIFactory1> factory = DxgiFactory();
   IDXGIAdapter* first = nullptr;
@@ -220,8 +251,9 @@ class OrtNet : public Net {
   // device, dml (may be null): held to ask why they were lost when a run
   // fails.
   OrtNet(OrtPtr<OrtSession> sess, OrtPtr<OrtMemoryInfo> mem, int batch,
-         ComPtr<ID3D12Device> device, ComPtr<IUnknown> dml)
-      : device_(std::move(device)),
+         ComPtr<ID3D12Device> device, ComPtr<IUnknown> dml, Wrappers wrappers)
+      : wrappers_(std::move(wrappers)),
+        device_(std::move(device)),
         dml_(std::move(dml)),
         mem_(std::move(mem)),
         sess_(std::move(sess)),
@@ -266,8 +298,10 @@ class OrtNet : public Net {
   }
 
  private:
-  // Destroyed in reverse: the session first, the device last and at once (a
-  // lost device held on would be handed out again to the next session).
+  // Destroyed in reverse: the session first, then the device, at once (a
+  // lost device held on would be handed out again to the next session), and
+  // the wrappers it came out of last.
+  Wrappers wrappers_;
   ComPtr<ID3D12Device> device_;
   ComPtr<IUnknown> dml_;
   OrtPtr<OrtMemoryInfo> mem_;
@@ -280,8 +314,9 @@ class OrtNet3 : public Net {
  public:
   // device, dml: as OrtNet's.
   OrtNet3(OrtPtr<OrtSession> sess, OrtPtr<OrtMemoryInfo> mem,
-          ComPtr<ID3D12Device> device, ComPtr<IUnknown> dml)
-      : device_(std::move(device)),
+          ComPtr<ID3D12Device> device, ComPtr<IUnknown> dml, Wrappers wrappers)
+      : wrappers_(std::move(wrappers)),
+        device_(std::move(device)),
         dml_(std::move(dml)),
         mem_(std::move(mem)),
         sess_(std::move(sess)) {}
@@ -346,7 +381,8 @@ class OrtNet3 : public Net {
   }
 
  private:
-  // As OrtNet's: the session goes first, the device last.
+  // As OrtNet's: the session goes first, the wrappers last.
+  Wrappers wrappers_;
   ComPtr<ID3D12Device> device_;
   ComPtr<IUnknown> dml_;
   OrtPtr<OrtMemoryInfo> mem_;
@@ -408,8 +444,9 @@ bool LoadApi(const std::wstring& dll_dir, std::string& err) {
 }
 
 // What a session is made of. Destroyed in reverse: the session first, the
-// device last.
+// device after it and the wrappers the devices came out of last.
 struct Session {
+  Wrappers wrappers;  // of device and of the device onnxruntime made
   ComPtr<ID3D12Device> device;  // held to ask why it was lost; null on the CPU
   ComPtr<IUnknown> dml_device;  // the session's DirectML device, or null
   OrtPtr<OrtMemoryInfo> mem;
@@ -424,6 +461,7 @@ bool CreateSession(const std::wstring& model, bool gpu, bool metacommands,
                    std::initializer_list<const char*> dims, int batch,
                    Session& out, std::string& err) {
   Session s;
+  const ScopedWrappers keep(s.wrappers);
   if (gpu) s.device = OpenDevice();
   OrtSessionOptions* options = nullptr;
   bool ok = Check(api->CreateSessionOptions(&options), err, "options");
@@ -516,7 +554,8 @@ std::unique_ptr<Net> CreateOrtNet(const std::wstring& dll_dir,
          ", batch " + std::to_string(batch);
   auto net = std::make_unique<OrtNet>(std::move(s.sess), std::move(s.mem),
                                       batch, std::move(s.device),
-                                      std::move(s.dml_device));
+                                      std::move(s.dml_device),
+                                      std::move(s.wrappers));
   // One run now: a session that cannot run fails here and not on the first
   // line, and DirectML allocates its work buffers.
   std::vector<float> x(static_cast<size_t>(batch) * kWindow),
@@ -543,7 +582,8 @@ std::unique_ptr<Net> CreateOrtNet3(const std::wstring& dll_dir,
                            : ", DirectML device 0, metacommands off");
   auto net = std::make_unique<OrtNet3>(std::move(s.sess), std::move(s.mem),
                                        std::move(s.device),
-                                       std::move(s.dml_device));
+                                       std::move(s.dml_device),
+                                       std::move(s.wrappers));
   // One run now, as CreateOrtNet's.
   std::vector<float> x(kWindow3), emo(kFrames3 * kNumMod), state(kState3),
       skin(kFrames3 * kLatent3), tongue(kFrames3 * kLatent3),
@@ -597,6 +637,8 @@ void SetOrtLog(void (*log)(const std::string&)) { ort_log = log; }
 
 bool DeviceRedirected() { return device_redirected; }
 
+void SetUseDeviceWrapper(bool use) { use_wrapper = use; }
+
 // GpuReport's lines about the graphics: the adapters and their drivers and
 // what Direct3D 12 offers on adapter 0, for which a device is created.
 static void ReportGraphics(std::vector<std::string>& out) {
@@ -631,6 +673,8 @@ static void ReportGraphics(std::vector<std::string>& out) {
     out.push_back(b);
   }
   // what Direct3D 12 offers DirectML on adapter 0
+  Wrappers wrappers;  // released after the device
+  const ScopedWrappers keep(wrappers);
   if (const ComPtr<ID3D12Device> device = OpenDevice()) {
     const D3D_FEATURE_LEVEL levels[] = {
         D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_12_0,
@@ -667,8 +711,10 @@ static void ReportGraphics(std::vector<std::string>& out) {
     out.push_back("Direct3D 12 on adapter 0: no device");
   }
   if (device_wrapped)
-    out.push_back("Direct3D 12 hands out a wrapper of its device (ReShade "
-                  "does): the model runs on the device itself");
+    out.push_back(std::string("Direct3D 12 hands out a wrapper of its device "
+                              "(ReShade does): the model runs on ") +
+                  (use_wrapper ? "the wrapper (UseDeviceWrapper=1)"
+                               : "the device itself"));
 }
 
 std::vector<std::string> GpuReport(bool probe_gpu) {
