@@ -94,7 +94,9 @@
         "tests/direct_test.cc"
       ],
       "covers": [
-        "generic supported head geometry"
+        "generic supported head geometry",
+        "tongue identification with shared or absent BigAah motion",
+        "softened tongue cues, partial jaw follow, bounded overlaps and teeth preservation"
       ]
     },
     {
@@ -123,6 +125,22 @@
         "explicit SKSE DLL runtime declarations",
         "mismatched runtime and damaged DLL rejection",
         "legacy metadata remains undetermined"
+      ]
+    },
+    {
+      "id": "efa-calibration",
+      "test": "efa_test",
+      "sources": [
+        "tests/efa_test.cc"
+      ],
+      "plugin_objects": true,
+      "link": [
+        "-Wl,--wrap=_ZN4skse4AddrEy"
+      ],
+      "covers": [
+        "SE/AE/VR resource dispatch and missing/unknown EFA rejection",
+        "independent male/female Mouth calibration",
+        "shared head mappings and single application of calibration"
       ]
     }
   ],

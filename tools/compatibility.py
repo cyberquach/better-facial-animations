@@ -206,8 +206,8 @@ def main():
     out = out.resolve()
     out.mkdir(parents=True, exist_ok=False)
     # Source hashes include dirty edits: HEAD alone is insufficient provenance.
-    inputs = [ROOT / 'build.sh', ROOT / 'VERSION', ROOT / 'tests/compatibility.json',
-              Path(__file__)]
+    inputs = [ROOT / 'build.sh', ROOT / 'tools/build.mk', ROOT / 'VERSION',
+              ROOT / 'tests/compatibility.json', Path(__file__)]
     inputs += sorted((ROOT / 'src').glob('*')) + sorted((ROOT / 'tests').glob('*.cc'))
     inputs += sorted((ROOT / 'tests').glob('*.py'))
     report = {

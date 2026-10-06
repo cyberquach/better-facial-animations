@@ -37,12 +37,12 @@ extern const Param kParams[] = {
      "Old model: ~100 MB of VRAM, less expressive, slower to inference.\n"
      "V3 model (box unchecked): ~250 MB of VRAM, more expressive, faster to "
      "inference.\n"
-     "Save, then restart the game to apply.",
+     "Restart the game to apply.",
      Sec::kModel, &tune.old_model},
     {"ForceCPU", nullptr, 0, 0, "Force CPU",
      "Never load the model into VRAM: it runs on the CPU, much slower, and "
      "long lines start late.\n"
-     "Save, then restart the game to apply.",
+     "Restart the game to apply.",
      Sec::kModel, &tune.force_cpu},
     {"TimeOffset", &tune.time_offset, -0.3f, 0.3f, "Sync offset (s)",
      "Positive = mouth shapes earlier.", Sec::kPlayback, nullptr},
@@ -56,12 +56,20 @@ extern const Param kParams[] = {
     {"DirectCheeks", &tune.direct_scale[direct::kCheeks], 0, 3, "Cheeks & nose",
      "Cheek and nose movement.", Sec::kDirect, nullptr},
     {"DirectMouth", &tune.direct_scale[direct::kMouth], 0, 3, "Mouth",
-     "Lip and mouth skin movement.", Sec::kDirect, nullptr},
-    {"DirectJaw", &tune.direct_scale[direct::kJaw], 0, 3, "Jaw",
-     "How far the lower teeth, gums and tongue move with the jaw.",
+     "Lip and mouth skin movement. 1 uses 0.85 strength when that sex's "
+     "Expressive Facial Animation is detected, otherwise 1.0.",
      Sec::kDirect, nullptr},
+    {"DirectJaw", &tune.direct_scale[direct::kJaw], 0, 3, "Jaw",
+     "How far the lower teeth and gums move with the jaw.", Sec::kDirect,
+     nullptr},
+    {"DisableTongue", nullptr, 0, 0, "Disable tongue motion",
+     "Restore the tongue behavior from before this feature. Applies "
+     "immediately.",
+     Sec::kDirect, &tune.disable_tongue},
     {"DirectTongue", &tune.direct_scale[direct::kTongue], 0, 3, "Tongue",
-     "How far the tongue bends.", Sec::kDirect, nullptr},
+     "Tongue articulation strength for all phonemes. 1 uses the calibrated "
+     "default; 0 keeps jaw follow only.",
+     Sec::kDirect, nullptr},
     // all of these apply from the next line spoken
     {"VoiceEmotion", &tune.voice_emotion, 0, 3, "Strength",
      "How strongly a line's emotion (the game's) drives the brows, eyes, "

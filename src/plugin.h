@@ -30,12 +30,15 @@ struct Config {  // fixed after load
   int log_lines = 400;
   bool use_device_wrapper = false;  // a2f::SetUseDeviceWrapper
   int cache_lines = 300;
+  // Winning EFA head assets, detected at data loaded: male, female.
+  bool expressive_faces[2] = {};
   std::wstring model, direct;  // the network's files, by network
 };
 struct Tune {  // menu; defaults as dist/BetterFacialAnimations.ini
   bool enabled = true;
   bool player = true;
   bool prefetch = true;
+  bool disable_tongue = false;
   // the v2.3 network (Config::network 2) and no GPU session (Config::gpu);
   // they take effect at the next start
   bool old_model = false;

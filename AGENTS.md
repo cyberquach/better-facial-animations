@@ -7,11 +7,16 @@ Use `MAJOR.MINOR.PATCH` for release versions in `VERSION`:
 - Breaking new features or major releases increment MAJOR: `X.0.0`, resetting
   MINOR and PATCH.
 
-Feature-branch test archives append an incrementing build number:
-`MAJOR.MINOR.PATCH.BUILD`. For example, the first test build for the 3.0.1
-bug-fix release is **3.0.1.1**. The fourth number is a test-build counter, not
+All release archives, including main, append an incrementing build number:
+`MAJOR.MINOR.PATCH.BUILD`. For example, the first build for the 3.0.1
+bug-fix release is **3.0.1.1**. The fourth number is a build counter, not
 another release-version component. Keep `VERSION` at the three-part release
-version; `build.sh release` selects the test-build suffix before compiling.
+version; `build.sh release` selects the build suffix before compiling.
+Keep that release version fixed while iterating on an unreleased feature.
+Do not bump PATCH (or MINOR/MAJOR) for fixes, tuning or revisions within that
+unreleased feature; increment only BUILD for successive test archives.
+Feature archive filenames also append the branch name with filename-unsafe
+characters replaced by `-`; this label is separate from the numeric version.
 
 The archive filename, DLL version (including the SKSE exported plugin version),
 and packaged readme must agree on the complete selected build version. Do not

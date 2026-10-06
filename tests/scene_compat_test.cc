@@ -52,6 +52,37 @@ int main() {
   for (uint32_t runtime : {skse::Version(1, 5, 97), skse::Version(1, 6, 1170),
                            skse::Version(1, 4, 15)}) {
     skse::SetRuntime(runtime);
+    // Preserve the exact phoneme contribution removed from the engine,
+    // including partial takeover; malformed tracks must clear old weights.
+    std::array<uint8_t, 0x1000> phon_face{};
+    float original[direct::kNumPhonemes], authored[direct::kNumPhonemes];
+    for (int i = 0; i < direct::kNumPhonemes; ++i) original[i] = .03f * i;
+    auto& phon = Field<skse::KeyframeMultiple>(phon_face.data(), skse::kFgPhon3);
+    phon.values = original;
+    phon.count = direct::kNumPhonemes;
+    PlayFrame(phon_face.data(), .4f, authored);
+    for (int i = 0; i < direct::kNumPhonemes; ++i) {
+      CHECK(std::fabs(authored[i] - .03f * i * .4f) < 1e-6f);
+      CHECK(std::fabs(original[i] + authored[i] - .03f * i) < 1e-6f);
+    }
+    phon.count = 0;
+    PlayFrame(phon_face.data(), 1, authored);
+    for (float weight : authored) CHECK(weight == 0);
+
+    // The extra tongue weights participate in normal line replacement and
+    // release fades, rather than holding the last speech shape forever.
+    a2f::PoseTransition tongue_transition;
+    auto tongue_line = std::make_shared<a2f::Line>();
+    std::vector<float> tongue_pose(1 + direct::kNumMouthCoef + direct::kNumPhonemes, 0);
+    tongue_pose.back() = 1;
+    CHECK(tongue_transition.Blend(tongue_line, 0, 0, true, true, tongue_pose));
+    tongue_pose.assign(tongue_pose.size(), 0);
+    CHECK(tongue_transition.Blend(nullptr, .1, .2, true, false, tongue_pose));
+    CHECK(tongue_pose.back() == 1);
+    tongue_pose.assign(tongue_pose.size(), 0);
+    CHECK(!tongue_transition.Blend(nullptr, .4, .2, true, false, tongue_pose));
+    CHECK(tongue_pose.back() == 0);
+
     void* vtable[0x100]{};
     vtable[kVfIsInFaction.Get()] = reinterpret_cast<void*>(&Member);
     Field<void**>(actor, 0) = vtable;
@@ -102,11 +133,14 @@ int main() {
         f.ownership_blend = f.speech_blend = 1;
         f.until = play_clock + 20;
         auto line = std::make_shared<a2f::Line>();
-        std::vector<float> pose(2, 1);
+        // Include retained authored tongue cues in the scene handoff.
+        std::vector<float> pose(1 + direct::kNumMouthCoef +
+                                    direct::kNumPhonemes, 1);
         f.transition.Blend(line, Now(), 0, true, true, pose);
         faces[fg] = f;
         Playing p; p.actor = actor; p.actor_handle = 42;
         p.entry = std::make_shared<Entry>(); p.direct_frames = 10;
+        std::fill_n(p.tongue_phonemes, direct::kNumPhonemes, 0.8f);
         playing[fg] = p;
         Count();
       };
