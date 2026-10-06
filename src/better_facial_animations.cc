@@ -134,6 +134,7 @@ struct Playing {
   // Direct: the frame (fractional, -1 none) for the morph hook, and whether
   // the line was ready late (it is caught up with over BlendIn)
   float direct_frame = -1;
+  float tongue_phonemes[direct::kNumPhonemes] = {};
   bool late = false;
   // Enabled was off during the line: its next frame is shown at once
   bool snap = false;
@@ -476,6 +477,41 @@ bool ReadGameFile(const std::string& path, std::vector<uint8_t>& out) {
   }
   Engine<Dtor, kIdStreamDtor>()(s);
   return ok;
+}
+
+// EFA has no ESP. Identify the winning resources, including BSA/MO2 overrides,
+// rather than guessing from a filename shared with vanilla. Unknown versions
+// or modified assets retain the uncalibrated mouth strength.
+struct ExpressiveHead {
+  const char* path;
+  size_t size;
+  uint64_t hash;
+};
+constexpr ExpressiveHead kExpressiveHeads[] = {
+    {"meshes\\actors\\character\\character assets\\MaleHead.tri",
+     301905, 0x78d43dd9b2f22ba8ull},  // Male Edition 1.21
+    {"meshes\\actors\\character\\character assets\\FemaleHead.tri",
+     329989, 0x890ed4834ecadef6ull},  // Female Edition 1.7
+};
+
+bool IsExpressiveHead(const std::vector<uint8_t>& bytes, bool female) {
+  const auto& expected = kExpressiveHeads[female];
+  if (bytes.size() != expected.size) return false;
+  uint64_t hash = 14695981039346656037ull;
+  for (uint8_t byte : bytes) hash = (hash ^ byte) * 1099511628211ull;
+  return hash == expected.hash;
+}
+
+void LoadExpressiveFaces() {
+  std::vector<uint8_t> bytes;
+  for (bool female : {false, true}) {
+    config.expressive_faces[female] =
+        ReadGameFile(kExpressiveHeads[female].path, bytes) &&
+        IsExpressiveHead(bytes, female);
+  }
+  Log("Expressive Facial Animation: men %s, women %s",
+      config.expressive_faces[0] ? "detected (mouth x0.85)" : "not detected",
+      config.expressive_faces[1] ? "detected (mouth x0.85)" : "not detected");
 }
 
 // ---------------- worker ----------------
@@ -947,7 +983,7 @@ __attribute__((noinline)) uint8_t* ResponseHook(uint8_t* self, void* topic,
 // Engine modifiers the face mesh takes over (brows, squints); the blinks
 // (0, 1) stay with the engine.
 constexpr int kModZeroed[] = {2, 3, 4, 5, 6, 7, 12, 13};
-constexpr uint32_t kNumPhonemes = 16;
+constexpr uint32_t kNumPhonemes = direct::kNumPhonemes;
 inline float Mix(float engine, float ours, float mix) {
   return mix >= 1.f ? ours : engine + (ours - engine) * mix;
 }
@@ -955,12 +991,16 @@ inline float Mix(float engine, float ours, float mix) {
 // The mesh carries the mouth, brows and eyes: zeroes the final phoneme and
 // modifier keyframes (but the blinks); mix < 1 blends from the engine's
 // values. The expressions are Expressions'.
-void PlayFrame(uint8_t* fg, float mix) {
+void PlayFrame(uint8_t* fg, float mix, float* tongue_phonemes) {
+  std::fill_n(tongue_phonemes, kNumPhonemes, 0.f);
   auto& phon = Field<skse::KeyframeMultiple>(fg, skse::kFgPhon3);
   auto& mod = Field<skse::KeyframeMultiple>(fg, skse::kFgMod3);
   if (phon.values && phon.count >= kNumPhonemes) {
-    for (uint32_t i = 0; i < kNumPhonemes; ++i)
+    for (uint32_t i = 0; i < kNumPhonemes; ++i) {
+      // Save only the contribution removed from the engine meshes.
+      tongue_phonemes[i] = phon.values[i] * mix;
       phon.values[i] = Mix(phon.values[i], 0.f, mix);
+    }
     phon.is_updated = true;
   }
   if (mod.values && mod.count >= 14) {
@@ -1152,11 +1192,11 @@ int Apply(uint8_t* fg, const Tune& tune, bool in_scene, uint8_t* actor,
   const std::string name = first ? p.name : std::string();
   const float ready_at = p.ready_at;
   const uint32_t frames = p.entry->line->frames;
+  PlayFrame(fg, mix, p.tongue_phonemes);
   guard.Unlock();
   if (first && LogMore(logged_plays))
     Log("play %s: %u frames, %s clock, ready at %.2f s", name.c_str(), frames,
         lip ? "lip" : "wall", ready_at);
-  PlayFrame(fg, mix);
   return kFaceChanged | kKeepUpdating;
 }
 
@@ -1473,6 +1513,15 @@ bool AddDeltas(uint8_t* node, const direct::Head& head,
   return added;
 }
 
+// Apply asset calibration at playback, independently of the model's sex. In
+// particular, v2.3 uses Mark for both sexes and may share a cached mapping.
+void SpeechScales(const direct::Head& head, const Tune& tune, bool female,
+                  float* scales) {
+  for (int r = 0; r < direct::kNumRegions; ++r)
+    scales[r] = tune.direct_scale[r] * head.auto_scale[r];
+  if (config.expressive_faces[female]) scales[direct::kMouth] *= 0.85f;
+}
+
 // Finds the face's mapping, then (after the engine rebuilt the shapes from
 // the base and the morphs: reset) adds the line's Direct frame and the
 // expressions to every dynamic face shape of the node.
@@ -1520,6 +1569,7 @@ void AddDirect(uint8_t* node, bool reset) {
   std::shared_ptr<const direct::Head> head;
   float frame = -1;
   float levels[direct::kNumExpressions];
+  float tongue_phonemes[direct::kNumPhonemes] = {};
   bool late = false;
   State state;
   {
@@ -1543,6 +1593,8 @@ void AddDirect(uint8_t* node, bool reset) {
       line = it->second.entry->line;
       frame = it->second.direct_frame;
       late = it->second.late;
+      std::copy_n(it->second.tongue_phonemes, direct::kNumPhonemes,
+                  tongue_phonemes);
     }
   }
   if (state == State::kPending) {
@@ -1560,6 +1612,11 @@ void AddDirect(uint8_t* node, bool reset) {
   if (line && frame >= static_cast<float>(line->frames - 1)) line.reset();
   thread_local std::vector<float> coefficients;
   direct::Coefficients(*head, line.get(), frame, coefficients);
+  if (!line) std::fill_n(tongue_phonemes, direct::kNumPhonemes, 0.f);
+  // Fade authored tongue weights with the same line lifetime as the face.
+  const size_t tongue_start = coefficients.size();
+  coefficients.insert(coefficients.end(), tongue_phonemes,
+                      tongue_phonemes + direct::kNumPhonemes);
   bool speaking = false;
   {
     ScopedLock guard(lock);
@@ -1576,11 +1633,13 @@ void AddDirect(uint8_t* node, bool reset) {
   }
   // a head made for smaller facial motion takes the speech scaled down
   float scales[direct::kNumRegions];
-  for (int r = 0; r < direct::kNumRegions; ++r)
-    scales[r] = tune.direct_scale[r] * head->auto_scale[r];
+  SpeechScales(*head, tune, female, scales);
   thread_local std::vector<std::vector<float>> deltas;
   if (!direct::Evaluate(*head, speaking ? coefficients.data() : nullptr, scales,
-                        levels, deltas))
+                        levels, coefficients.data() + tongue_start,
+                        tune.disable_tongue ? direct::TongueMode::kModel
+                                            : direct::TongueMode::kAuthored,
+                        deltas))
     return;
   float peak[3] = {};
   const bool added = AddDeltas(node, *head, deltas, peak);
@@ -1626,6 +1685,7 @@ void OnMessage(skse::SKSEMessage* m) {
   }
   PlayerSpeechMessage(m->type);
   if (m->type != skse::kMessageDataLoaded) return;
+  LoadExpressiveFaces();
   LoadHeadPartTypes();  // before the worker, which turns Direct on
   LoadSceneFactions();
   RetakeSites();
