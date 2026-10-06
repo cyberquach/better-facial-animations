@@ -28,6 +28,7 @@ struct Config {  // fixed after load
   int network = 3;
   int batch = 2;
   int log_lines = 400;
+  bool use_device_wrapper = false;  // a2f::SetUseDeviceWrapper
   int cache_lines = 300;
   std::wstring model, direct;  // the network's files, by network
 };

@@ -681,6 +681,7 @@ DWORD WINAPI Worker(void*) {
   ready = true;
   skse::Report("settings: GPU=%d, batch %d, model %ls", config.gpu,
                config.batch, config.model.c_str());
+  a2f::SetUseDeviceWrapper(config.use_device_wrapper);
   for (const auto& line :
        a2f::GpuReport(config.gpu && SnapshotTune().enabled))
     skse::Report("%s", line.c_str());
