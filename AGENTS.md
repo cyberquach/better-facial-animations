@@ -19,24 +19,20 @@ only rename an archive to change its version.
 
 # Compatibility tests
 
-`./build.sh compat` builds and runs the offline compatibility contracts;
-[tests/README.md](tests/README.md) has the commands, the fixture format and the
-case inventory ([tests/compatibility.json](tests/compatibility.json)). A static
-pass is never an in-game compatibility claim: name the exact mod versions and
-what was actually observed. Missing fixtures are blocked, not passing.
+Run `./build.sh compat`; see [tests/README.md](tests/README.md) for fixtures.
+Offline passes do not establish in-game compatibility. Missing fixtures are
+blocked, not passing. Do not download third-party fixtures automatically.
 
-# Writing documentation
+# Branches
 
-Documentation is for a person who wants to do one thing: build, run, test, add
-a case. Write the commands and the facts they need, in plain sentences, and
-stop. Concretely:
+Reuse a dedicated branch for each feature or fix; preserve unrelated work.
+Commit scoped changes before making release archives, and record the source
+commit and artifact hashes in the main checkout's untracked research journal.
 
-- No policy essays, principle lists, citation keys (`[S1]`) or "proposed"
-  designs in README/AGENTS/docs files. Experiment history, triage and proposals
-  go in the untracked research journal, not the repository.
-- Do not restate what the code, the JSON case inventory or `build.sh --help`
-  already say. Link to the file instead.
-- A change to a README or this file should be about the size of the change it
-  documents; a 50-line feature does not need 400 lines of prose.
-- Do not add process rules for agents (branching etiquette, journal rituals) to
-  this file unless Blane asks for them.
+# Documentation
+
+Keep README/AGENTS/docs limited to commands and facts needed to build, run or
+test. Update existing text instead of appending a section for every prompt.
+Do not add task recaps, policy essays, proposals, repeated inventories or agent
+rules unless requested. Put experiment history in the main checkout's untracked
+RESEARCH_JOURNAL.md. Link to code or the case inventory instead of restating it.

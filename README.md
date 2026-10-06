@@ -13,7 +13,7 @@ When an actor with a FaceGen head speaks, the plugin runs the voice file through
 - `src/direct.*`: A2FDirect.bin (v2.3: Mark) and A2FDirect3.bin (v3.0: Claire and Mark), the head -> face mapping (skin, jaw, tongue) and per-frame vertex deltas
 - `tools/mark_export.py`: writes A2FDirect.bin from the Audio2Face v2.3 Mark package
 - `tools/a2f3_fold.py`, `tools/a2f3_ref.py`, `tools/a2f3_bake.py`, `tools/mark_export3.py`: fold the v3.0 network into one ONNX graph, its Python reference, its output for a set of voice lines, and A2FDirect3.bin from those
-- `src/ort_net.*`, `src/net_keeper.*`, `src/gpu_state.h`: ONNX Runtime C API wrapper (loaded at runtime), keeping and regaining the GPU session; the session gets Direct3D's own device where ReShade hands out a wrapper of it
+- `src/ort_net.*`, `src/net_keeper.*`, `src/gpu_state.h`: ONNX Runtime C API wrapper (loaded at runtime), keeping and regaining the GPU session; retains graphics wrappers for the session lifetime
 - `src/skse.*`: SKSE ABI, log, Address Library, engine layout
 - `dist/`: ini, Direct face data (`A2FDirect.bin`, `A2FDirect3.bin`), player readme, notices, model license
 

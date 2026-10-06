@@ -53,6 +53,11 @@ std::vector<std::string> GpuReport(bool probe_gpu);
 // (the test checks the import is still there).
 bool DeviceRedirected();
 
+// true: sessions run on the wrapper of the Direct3D 12 device that ReShade (or
+// the like) hands out, not on the device inside it. Set before the first
+// session and GpuReport.
+void SetUseDeviceWrapper(bool use);
+
 // Where onnxruntime's own warnings and errors go (the first 200; any
 // thread). Set before the first session.
 void SetOrtLog(void (*log)(const std::string&));
