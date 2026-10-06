@@ -183,7 +183,8 @@ size_t HeadBytes(const direct::Head& h) {
   auto n = [](const auto& v) { return v.size() * sizeof(v[0]); };
   size_t b = n(h.row) + n(h.basis) + n(h.region_w) + n(h.shapes);
   for (const auto& s : h.shapes) {
-    b += n(s.name) + n(s.idx) + n(s.w) + n(s.pos) + n(s.jaw) + n(s.tongue);
+    b += n(s.name) + n(s.idx) + n(s.w) + n(s.pos) + n(s.jaw) +
+         n(s.tongue_weight) + n(s.tongue) + n(s.model_jaw) + n(s.model_tongue);
     for (const auto& e : s.expr) b += n(e);
   }
   return b;

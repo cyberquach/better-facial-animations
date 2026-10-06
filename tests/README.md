@@ -41,6 +41,17 @@ A record pass does not say anything about the mod's DLL. For that,
 DLL's declared SKSE runtimes without loading it (0 declared match, 1 declared
 mismatch, 2 undetermined). An actual SKSE load log is still required.
 
+The `efa-calibration` contract uses synthetic controls. To also check positive
+recognition, supply locally extracted EFA Male Edition 1.21 and Female Edition
+1.7 head assets to its executable after `./build.sh compat`:
+
+```sh
+wine64 build/compatibility/<run>/efa_test.exe /path/MaleHead.tri /path/FemaleHead.tri
+```
+
+This checks both editions, each alone, modified/swapped files and failed reads.
+Missing supplied files return 2. Do not commit the TRI files.
+
 ## Adding a case
 
 Add an entry to `compatibility.json`: an `assets` entry for a plugin record,
