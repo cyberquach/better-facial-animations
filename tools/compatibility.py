@@ -157,6 +157,8 @@ def run_case(case, result, fixtures, build_ok, version, out):
     exe = out / (case['test'] + '.exe')
     cmd = shlex.split(os.environ.get('CXX', 'x86_64-w64-mingw32-g++'))
     cmd += ['-std=c++17', '-O2', '-Wall', '-static', '-DBFA_VERSION="' + version + '"']
+    ort = os.environ.get('ORT', 'deps/dml/microsoft.ml.onnxruntime.directml')
+    cmd += ['-isystem', ort + '/build/native/include']
     cmd += case['sources']
     if case.get('plugin_objects'):
         objects = [ROOT / o for o in build_variable('PLUGIN_OBJS')]

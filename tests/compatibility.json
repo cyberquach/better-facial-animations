@@ -2,6 +2,21 @@
   "schema": 1,
   "contracts": [
     {
+      "id": "wrapper-lifetime",
+      "test": "wrapper_lifetime_test",
+      "sources": [
+        "tests/wrapper_lifetime_test.cc"
+      ],
+      "link": [
+        "-ldxgi"
+      ],
+      "covers": [
+        "wrapper/native reference ownership",
+        "nested and independent thread scopes",
+        "v2/v3 and partial session teardown"
+      ]
+    },
+    {
       "id": "scene-ownership",
       "test": "scene_compat_test",
       "sources": [
