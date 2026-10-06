@@ -58,3 +58,11 @@ Bundled third-party components keep their own licenses, which are included in th
 - ONNX Runtime: MIT
 - DirectML: Microsoft
 - the Audio2Face-3D model: NVIDIA Open Model License (`dist/licenses`)
+
+## Compatibility testing
+
+`./build.sh compat` builds BFA and runs the offline compatibility contracts
+(`./build.sh test` runs them too, with the rest of the suite). See
+[tests/README.md](tests/README.md) for the case inventory, local mod-package
+fixtures and the evidence written to `build/compatibility/`. A static pass is
+not an in-game result.
