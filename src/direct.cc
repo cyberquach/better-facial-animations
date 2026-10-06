@@ -41,6 +41,16 @@ const MorphId kMorphIds[kNumMorphs] = {
     {1, 13, "MoodPuzzled"},
     {1, 14, "MoodDisgusted"},
     {1, 15, "CombatAnger"},
+    // Remaining speech shapes; the others share the entries above.
+    {0, 0, "Aah"},
+    {0, 2, "BMP"},
+    {0, 3, "ChJSh"},
+    {0, 5, "Eee"},
+    {0, 6, "Eh"},
+    {0, 7, "FV"},
+    {0, 8, "I"},
+    {0, 11, "Oh"},
+    {0, 15, "W"},
 };
 
 namespace {
@@ -55,7 +65,6 @@ constexpr int kLandmarkLips = 5;  // the pucker: centre of the lip box
 // skin vertex labels in the lip box (else kNoLip)
 enum Lip : uint8_t { kNoLip, kUpperLip, kLowerLip };
 constexpr int kKnn = 8;        // Mark vertices per head vertex
-constexpr int kTongueKnn = 4;  // Mark tongue vertices per tongue vertex
 // the lips' search: units of distance per whole jaw drop in how far a vertex
 // follows the jaw
 constexpr float kJawFollow = 3.f;
@@ -596,18 +605,94 @@ float Quantile(std::vector<float> v, double q) {
   return v[k];
 }
 
-// The mouth part on Mark's jaw and tongue. pos: its vertices in the skin's
-// space. How far a vertex follows the jaw is its own BigAah against the
-// rigid drop of the lower teeth (the vertices BigAah moves most, as one
-// affine motion): 0 on the upper teeth, 1 on the lower, between on the gums
-// that stretch from one to the other. The tongue is what the tongue phonemes
-// move against the jaw; it rides the jaw whole, and each of its vertices
-// takes the motion of Mark's tongue at the same place behind the tip.
-void Mouth(const Mark& mk, const ShapeIn& sh, std::vector<float> pos, float s,
-           const float r[9], Head& head, Head::Shape& out) {
+// Preserve the pre-feature mapping for the live opt-out switch. The jaw
+// fit is shared, but the old tongue classifier and model basis stay intact.
+void ModelTongue(const Mark& mk, const ShapeIn& sh,
+                const std::vector<uint32_t>& teeth,
+                const std::vector<float>& mag, float most, float s,
+                const float r[9], Head::Shape& out) {
+  constexpr int kTongueKnn = 4;
+  const uint32_t nv = sh.nv;
+  const float* big = sh.morphs[kBigAah].data();
+  const float* p = out.pos.data();
+  out.model_jaw = out.jaw;
+  // the tongue: the most any tongue phoneme moves a vertex off the jaw's own
+  // motion in it (BigAah's, scaled to the phoneme on the lower teeth); the
+  // teeth's own level of that is the noise, and they are never tongue
+  std::vector<float> score(nv, 0.f);
+  for (int ph = 0; ph < kNumTonguePhonemes; ++ph) {
+    const size_t m = kTonguePhoneme + ph;
+    if (m >= sh.morphs.size() || sh.morphs[m].size() != nv * 3) continue;
+    const float* d = sh.morphs[m].data();
+    double num = 0, den = 0;
+    for (uint32_t i : teeth) {
+      num += Dot(At(&d[i * 3]), At(&big[i * 3]));
+      den += Dot(At(&big[i * 3]), At(&big[i * 3]));
+    }
+    const float a = den > 0 ? static_cast<float>(num / den) : 0;
+    for (uint32_t i = 0; i < nv; ++i)
+      if (mag[i] >= 0.02f * most)
+        score[i] = std::max(score[i], Len(At(&d[i * 3]) - At(&big[i * 3]) * a));
+  }
+  std::vector<float> noise;
+  for (uint32_t i : teeth) noise.push_back(score[i]);
+  for (uint32_t i : teeth) score[i] = 0;
+  const float lo = 1.5f * Quantile(noise, 0.5),
+              top = *std::max_element(score.begin(), score.end());
+  if (top < 2.5f * lo || top < 0.05f * most || !mk.tongue_nv) return;
+  std::vector<float> tongue(nv);
+  std::vector<uint32_t> ids;
+  for (uint32_t i = 0; i < nv; ++i) {
+    tongue[i] = std::clamp((score[i] - lo) / (0.5f * top - lo), 0.f, 1.f);
+    if (tongue[i] > 0.5f) ids.push_back(i);
+  }
+  if (ids.size() < 4) return;
+  // its tip: the front end, at the middle
+  V3 tip{0, -INFINITY, 0};
+  for (uint32_t i : ids) {
+    tip.x += p[i * 3] / ids.size();
+    tip.y = std::max(tip.y, p[i * 3 + 1]);
+  }
+  uint32_t front = 0;
+  for (uint32_t i : ids)
+    if (p[i * 3 + 1] > tip.y - 0.3f) {
+      tip.z += p[i * 3 + 2];
+      ++front;
+    }
+  tip.z /= front;
+  const KdTree tree(mk.tongue_verts.data(), mk.tongue_nv);
+  const float rt[9] = {r[0], r[3], r[6], r[1], r[4], r[7], r[2], r[5], r[8]};
+  out.model_tongue.assign(static_cast<size_t>(nv) * a2f::kNumTongue * 3, 0.f);
+  for (uint32_t i = 0; i < nv; ++i) {
+    if (tongue[i] <= 0) continue;
+    out.model_jaw[i] = std::max(out.model_jaw[i], tongue[i]);
+    V3 q = At(mk.tongue_tip) + Rotate(rt, At(&p[i * 3]) - tip) * (1 / s);
+    uint32_t idx[kTongueKnn];
+    float dist[kTongueKnn];
+    double w[kTongueKnn];
+    int n = tree.Nearest(q, kTongueKnn, idx, dist);
+    IdwWeights(dist, n, 1e-3, w);
+    float* o = &out.model_tongue[static_cast<size_t>(i) * a2f::kNumTongue * 3];
+    for (int c = 0; c < a2f::kNumTongue; ++c) {
+      V3 d{0, 0, 0};
+      for (int j = 0; j < n; ++j)
+        d = d +
+            At(&mk.tongue_basis
+                    [(static_cast<size_t>(idx[j]) * a2f::kNumTongue + c) * 3]) *
+                static_cast<float>(w[j]);
+      Put(&o[c * 3], Rotate(r, d) * (s * tongue[i]));
+    }
+  }
+}
+
+// Map the jaw from BigAah and identify the tongue by its independent
+// phoneme motion. Keep authored tongue shapes in the head's own space.
+void Mouth(const Mark& mk, const ShapeIn& sh, std::vector<float> pos,
+           float scale, const float rotation[9], Head& head, Head::Shape& out) {
   const uint32_t nv = sh.nv;
   out.pos = std::move(pos);
   out.jaw.assign(nv, 0.f);
+  out.model_jaw.assign(nv, 0.f);
   if (sh.morphs.size() <= kBigAah || sh.morphs[kBigAah].size() != nv * 3)
     return;
   const float* big = sh.morphs[kBigAah].data();
@@ -651,72 +736,64 @@ void Mouth(const Mark& mk, const ShapeIn& sh, std::vector<float> pos, float s,
                      : mag[i] / most;
     out.jaw[i] = std::clamp(w, 0.f, 1.f);
   }
-  // the tongue: the most any tongue phoneme moves a vertex off the jaw's own
-  // motion in it (BigAah's, scaled to the phoneme on the lower teeth); the
-  // teeth's own level of that is the noise, and they are never tongue
+  ModelTongue(mk, sh, teeth, mag, most, scale, rotation, out);
+  // BigAah's rigid set can include tongue vertices. Refine the jaw sample
+  // for each tongue phoneme before estimating its noise; do not exclude that
+  // whole set from the tongue, or require the tongue to move in BigAah.
   std::vector<float> score(nv, 0.f);
+  float noise = 0;
   for (int ph = 0; ph < kNumTonguePhonemes; ++ph) {
     const size_t m = kTonguePhoneme + ph;
     if (m >= sh.morphs.size() || sh.morphs[m].size() != nv * 3) continue;
     const float* d = sh.morphs[m].data();
-    double num = 0, den = 0;
-    for (uint32_t i : teeth) {
-      num += Dot(At(&d[i * 3]), At(&big[i * 3]));
-      den += Dot(At(&big[i * 3]), At(&big[i * 3]));
+    std::vector<uint32_t> sample = teeth;
+    std::vector<float> residual(nv);
+    for (int pass = 0; pass < 8; ++pass) {
+      double num = 0, den = 0;
+      for (uint32_t i : sample) {
+        num += Dot(At(&d[i * 3]), At(&big[i * 3]));
+        den += Dot(At(&big[i * 3]), At(&big[i * 3]));
+      }
+      const float a = den > 0 ? static_cast<float>(num / den) : 0;
+      for (uint32_t i = 0; i < nv; ++i)
+        residual[i] = Len(At(&d[i * 3]) - At(&big[i * 3]) * a);
+      std::vector<float> errors;
+      for (uint32_t i : sample) errors.push_back(residual[i]);
+      const float median = Quantile(errors, 0.5);
+      const float limit = std::max(3 * median, 0.02f * most);
+      std::vector<uint32_t> kept;
+      for (uint32_t i : sample)
+        if (residual[i] <= limit) kept.push_back(i);
+      if (kept.size() < 4 || kept == sample || pass == 7) {
+        noise = std::max(noise, median);
+        break;
+      }
+      sample = std::move(kept);
     }
-    const float a = den > 0 ? static_cast<float>(num / den) : 0;
     for (uint32_t i = 0; i < nv; ++i)
-      if (mag[i] >= 0.02f * most)
-        score[i] = std::max(score[i], Len(At(&d[i * 3]) - At(&big[i * 3]) * a));
+      score[i] = std::max(score[i], residual[i]);
   }
-  std::vector<float> noise;
-  for (uint32_t i : teeth) noise.push_back(score[i]);
-  for (uint32_t i : teeth) score[i] = 0;
-  const float lo = 1.5f * Quantile(noise, 0.5),
+  const float lo = std::max(1.5f * noise, 0.02f * most),
               top = *std::max_element(score.begin(), score.end());
   for (uint32_t i = 0; i < nv; ++i) head.jaw_verts += out.jaw[i] > 0;
-  if (top < 2.5f * lo || top < 0.05f * most || !mk.tongue_nv) return;
+  if (top < 2.5f * lo || top < 0.05f * most) return;
   std::vector<float> tongue(nv);
-  std::vector<uint32_t> ids;
+  uint32_t tongue_count = 0;
   for (uint32_t i = 0; i < nv; ++i) {
     tongue[i] = std::clamp((score[i] - lo) / (0.5f * top - lo), 0.f, 1.f);
-    if (tongue[i] > 0.5f) ids.push_back(i);
+    if (tongue[i] > 0.5f) ++tongue_count;
   }
-  if (ids.size() < 4) return;
-  // its tip: the front end, at the middle
-  V3 tip{0, -INFINITY, 0};
-  for (uint32_t i : ids) {
-    tip.x += p[i * 3] / ids.size();
-    tip.y = std::max(tip.y, p[i * 3 + 1]);
-  }
-  uint32_t front = 0;
-  for (uint32_t i : ids)
-    if (p[i * 3 + 1] > tip.y - 0.3f) {
-      tip.z += p[i * 3 + 2];
-      ++front;
-    }
-  tip.z /= front;
-  const KdTree tree(mk.tongue_verts.data(), mk.tongue_nv);
-  const float rt[9] = {r[0], r[3], r[6], r[1], r[4], r[7], r[2], r[5], r[8]};
-  out.tongue.assign(static_cast<size_t>(nv) * a2f::kNumTongue * 3, 0.f);
+  if (tongue_count < 4) return;
+  out.tongue_weight = tongue;
+  out.tongue.assign(static_cast<size_t>(nv) * kNumPhonemes * 3, 0.f);
   for (uint32_t i = 0; i < nv; ++i) {
     if (tongue[i] <= 0) continue;
-    out.jaw[i] = std::max(out.jaw[i], tongue[i]);
-    V3 q = At(mk.tongue_tip) + Rotate(rt, At(&p[i * 3]) - tip) * (1 / s);
-    uint32_t idx[kTongueKnn];
-    float dist[kTongueKnn];
-    double w[kTongueKnn];
-    int n = tree.Nearest(q, kTongueKnn, idx, dist);
-    IdwWeights(dist, n, 1e-3, w);
-    float* o = &out.tongue[static_cast<size_t>(i) * a2f::kNumTongue * 3];
-    for (int c = 0; c < a2f::kNumTongue; ++c) {
-      V3 d{0, 0, 0};
-      for (int j = 0; j < n; ++j)
-        d = d +
-            At(&mk.tongue_basis
-                    [(static_cast<size_t>(idx[j]) * a2f::kNumTongue + c) * 3]) *
-                static_cast<float>(w[j]);
-      Put(&o[c * 3], Rotate(r, d) * (s * tongue[i]));
+    for (int ph = 0; ph < kNumPhonemes; ++ph) {
+      const size_t m = kSpeechMorphs[ph];
+      if (m >= sh.morphs.size() || sh.morphs[m].size() != nv * 3) continue;
+      for (int j = 0; j < 3; ++j)
+        out.tongue[(static_cast<size_t>(i) * kNumPhonemes + ph) * 3 + j] =
+            sh.morphs[m][i * 3 + j] * tongue[i];
     }
     ++head.tongue_verts;
   }
@@ -1018,8 +1095,7 @@ bool BuildHead(const Mark& mk, const std::vector<ShapeIn>& shapes,
     RegionWeights(At(&verts[v * 3]), g.mid, z_eye, z_brow, lips.z,
                   &out.region_w[v * kNumSkinRegions]);
   MapJaw(mk, g, out);
-  // every shape: the skin itself, followers, the mouth part on Mark's jaw
-  // and tongue
+  // Every shape: skin, followers, model jaw and authored tongue motion.
   float off[3];
   FrameOffset(verts.data(), nv, off);
   std::vector<float> local = Shifted(verts, off);
@@ -1067,7 +1143,11 @@ bool Coefficients(const Head& h, const a2f::Line* line, float frame,
 }
 
 bool Evaluate(const Head& h, const float* coefficients, const float* scales,
-              const float* expressions, std::vector<std::vector<float>>& out) {
+              const float* expressions, const float* phonemes,
+              TongueMode tongue_mode, std::vector<std::vector<float>>& out) {
+  // Keep the authored tongue default at 1 in the user settings.
+  constexpr float kAuthoredTongueGain = 1.5f;
+  const float authored_tongue_scale = scales[kTongue] * kAuthoredTongueGain;
   const uint32_t nk = h.k;
   out.resize(h.shapes.size());
   for (size_t i = 0; i < h.shapes.size(); ++i)
@@ -1115,6 +1195,16 @@ bool Evaluate(const Head& h, const float* coefficients, const float* scales,
     float one;
     Similarity(rest, now, kNumJawPoints, one, jr, jt, true);
   }
+  // Use every authored phoneme on the tongue mask. Keep
+  // overlaps from stacking into an exaggerated held pose. These are visual
+  // tuning defaults, not an anatomical reconstruction from the LIP track.
+  float tongue_cues[kNumPhonemes] = {};
+  float cue_sum = 0;
+  for (int ph = 0; phonemes && ph < kNumPhonemes; ++ph) {
+    tongue_cues[ph] = std::max(0.f, phonemes[ph]);
+    cue_sum += tongue_cues[ph];
+  }
+  for (float& cue : tongue_cues) cue *= 0.35f / std::max(1.f, cue_sum);
   for (size_t si = 0; si < h.shapes.size(); ++si) {
     const Head::Shape& s = h.shapes[si];
     std::vector<float>& o = out[si];
@@ -1129,13 +1219,29 @@ bool Evaluate(const Head& h, const float* coefficients, const float* scales,
         for (size_t i = 0; i < n3; ++i) o[i] += we * d[i];
       }
       if (!speaking || s.pos.size() != n3 || s.jaw.size() != s.nv) continue;
-      const bool bends = s.tongue.size() == n3 * a2f::kNumTongue;
+      const bool vanilla = tongue_mode == TongueMode::kAuthored && phonemes &&
+                           s.tongue_weight.size() == s.nv &&
+                           s.tongue.size() == n3 * kNumPhonemes;
+      const bool model =
+          tongue_mode == TongueMode::kModel && s.model_jaw.size() == s.nv;
+      const bool model_bends =
+          model && s.model_tongue.size() == n3 * a2f::kNumTongue;
       for (uint32_t i = 0; i < s.nv; ++i) {
-        if (s.jaw[i] <= 0) continue;
-        V3 p = At(&s.pos[i * 3]), d = (Rotate(jr, p) + jt - p) * s.jaw[i];
-        if (bends) {
+        V3 p = At(&s.pos[i * 3]);
+        const float mask = vanilla ? s.tongue_weight[i] : 0;
+        // Rest with half the jaw movement, including tongues still in BigAah.
+        const float jaw = model ? s.model_jaw[i]
+                                : s.jaw[i] * (1 - mask) + 0.5f * mask;
+        V3 d = (Rotate(jr, p) + jt - p) * jaw;
+        if (vanilla && mask > 0) {
+          const float* b = &s.tongue[static_cast<size_t>(i) * kNumPhonemes * 3];
+          for (int ph = 0; ph < kNumPhonemes; ++ph) {
+            d = d + At(&b[ph * 3]) * (tongue_cues[ph] * authored_tongue_scale);
+          }
+        }
+        if (model_bends && jaw > 0) {
           const float* b =
-              &s.tongue[static_cast<size_t>(i) * a2f::kNumTongue * 3];
+              &s.model_tongue[static_cast<size_t>(i) * a2f::kNumTongue * 3];
           for (int k = 0; k < a2f::kNumTongue; ++k)
             d = d + At(&b[k * 3]) * (tongue[k] * scales[kTongue]);
         }

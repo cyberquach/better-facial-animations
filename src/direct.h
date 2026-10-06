@@ -6,8 +6,8 @@
 // Mark from its own
 // expression morphs (BuildHead); its brows, beard and eyes follow its skin,
 // a piercing moves as one piece with the skin it is pinned to,
-// and its mouth part takes Mark's jaw and tongue: the lower teeth and gums
-// turn with Mark's jaw, the tongue rides it and bends like Mark's. Shape-local
+// and its lower teeth and gums turn with Mark's jaw. The tongue takes its
+// softened authored tongue cues plus partial jaw follow. Shape-local
 // space, the same as the .tri files.
 #ifndef SRC_DIRECT_H_
 #define SRC_DIRECT_H_
@@ -25,13 +25,14 @@ enum class Part { kHead, kMouth, kEyes, kPinned, kNone };
 
 // Deformation scales: the head skin by smooth per-vertex region weights
 // (the kNumSkinRegions kBrows..kMouth), the mouth part by how far the jaw
-// moves (lower teeth, gums, tongue) and how far the tongue bends.
+// moves (lower teeth and gums) and how far the vanilla tongue moves.
 enum Region { kBrows, kEyes, kCheeks, kMouth, kJaw, kTongue, kNumRegions };
 constexpr int kNumSkinRegions = kJaw;
 
 // The phonemes that tell a mouth part's tongue from its teeth: those that
 // move the tongue against the jaw.
 constexpr int kNumTonguePhonemes = 5;
+constexpr int kNumPhonemes = 16;
 // A line's coefficients per frame: the skin's k, then the network's tongue
 // and jaw outputs less their rest.
 constexpr uint32_t kNumMouthCoef = a2f::kNumTongue + a2f::kNumJaw;
@@ -50,7 +51,7 @@ constexpr int kNumLandmarks = 8;
 // ApplyMorph (type, index): type 0 phoneme, 1 expression, 2 modifier. The
 // skin reads the mapping's (kBlinkLeft..kOohQ and kHappy, which a head must
 // have to be animated) and the expressions; the mouth part BigAah (how far
-// each vertex follows the jaw), the tongue phonemes and the expressions; the
+// each vertex follows the jaw), all speech phonemes and the expressions; the
 // eyes the two blinks.
 enum Morph {
   kBlinkLeft,
@@ -59,11 +60,30 @@ enum Morph {
   kBrowUpRight,
   kBigAah,
   kOohQ,
-  kTonguePhoneme,                                     // kNumTonguePhonemes
-  kExpression = kTonguePhoneme + kNumTonguePhonemes,  // kNumExpressions
-  kHappy = kExpression + 10,                          // MoodHappy
-  kNumMorphs = kExpression + kNumExpressions
+  kTonguePhoneme,  // kNumTonguePhonemes
+  kDst = kTonguePhoneme,
+  kN,
+  kK,
+  kTh,
+  kR,
+  kExpression,                // kNumExpressions
+  kHappy = kExpression + 10,  // MoodHappy
+  kAah = kExpression + kNumExpressions,
+  kBmp,
+  kChJSh,
+  kEee,
+  kEh,
+  kFv,
+  kI,
+  kOh,
+  kW,
+  kNumMorphs
 };
+// Engine phoneme order, sharing the mapping and classifier morphs above.
+constexpr Morph kSpeechMorphs[kNumPhonemes] = {
+    kAah, kBigAah, kBmp, kChJSh, kDst,  kEee, kEh, kFv,
+    kI,   kK,      kN,   kOh,    kOohQ, kR,   kTh, kW};
+
 struct MorphId {
   uint8_t type, index;
   const char* name;
@@ -108,9 +128,9 @@ struct Model {
 
 // Whether the shape reads morph m (see Morph).
 constexpr bool Reads(bool skin, Part part, int m) {
-  return skin                   ? m < kTonguePhoneme || m >= kExpression
-         : part == Part::kMouth ? m == kBigAah || m >= kTonguePhoneme
-                                : part == Part::kEyes && m <= kBlinkRight;
+  if (skin) return m < kTonguePhoneme || (m >= kExpression && m < kAah);
+  if (part == Part::kMouth) return m >= kBigAah;
+  return part == Part::kEyes && m <= kBlinkRight;
 }
 
 // One dynamic face shape as the engine has it.
@@ -142,13 +162,12 @@ struct Head {
     // per vertex (pinned: the same for all the vertices of a piece)
     std::vector<uint32_t> idx;
     std::vector<float> w;
-    // mouth part: the vertices in the skin's space (nv x 3), how far each
-    // follows the jaw (nv; 0 upper teeth, 1 lower teeth and tongue, between
-    // on the gums) and the tongue's motion per tongue coefficient (nv x
-    // kNumTongue x 3; empty: no tongue found);
-    // delta = jaw[v] (jaw transform of pos[v] - pos[v]) +
-    //         sum_c coef[c] tongue[v][c]
-    std::vector<float> pos, jaw, tongue;
+    // Mouth part: positions (nv x 3), jaw weights (nv), tongue mask (nv),
+    // and masked authored phoneme deltas (nv x kNumPhonemes x 3).
+    // The tongue combines softened vanilla cues with partial jaw follow.
+    std::vector<float> pos, jaw, tongue_weight, tongue;
+    // Pre-feature jaw weights and network tongue basis for the opt-out.
+    std::vector<float> model_jaw, model_tongue;
     // skin and mouth part: the expression morphs, nv x 3 (empty: none)
     std::vector<float> expr[kNumExpressions];
   };
@@ -177,12 +196,18 @@ constexpr float kAutoMin = 0.4f;
 bool BuildHead(const Mark& mark, const std::vector<ShapeIn>& shapes,
                Head& out, std::string& why);
 
+enum class TongueMode { kAuthored, kModel };
+
 // Per-shape float3 deltas from final speech coefficients (head.k +
 // kNumMouthCoef; null for no speech), scaled per region, plus expression
 // levels (kNumExpressions). Followers inherit the skin's deltas. False when
-// neither speech nor expressions contribute.
+// neither speech nor expressions contribute. Optional vanilla phoneme weights
+// (kNumPhonemes) supply softened tongue cues over half-strength jaw follow.
+// Without weights the tongue only follows the jaw. TongueMode::kModel
+// restores the pre-feature mapping and network tongue scale.
 bool Evaluate(const Head& head, const float* coefficients, const float* scales,
-              const float* expressions, std::vector<std::vector<float>>& out);
+              const float* expressions, const float* phonemes,
+              TongueMode tongue_mode, std::vector<std::vector<float>>& out);
 
 // The line's coefficients (head.k + kNumMouthCoef) at a fractional frame (of
 // the line's own rate), as

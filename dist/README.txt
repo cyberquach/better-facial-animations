@@ -3,7 +3,7 @@ Better Facial Animations @VERSION@ - real-time Audio2Face lip-sync for Skyrim
 Every voiced line spoken by an NPC with a FaceGen head (all playable races except Argonians, who keep vanilla lip-sync; creatures and animals are skipped)
 is run through NVIDIA Audio2Face-3D v3.0 on your GPU (women speak with its Claire face, men with Mark; v2.3 Mark for
 everyone with UseOldModel=1 in the ini), which deforms the face mesh directly: skin, lips,
-brows and eyelids, with the lower teeth, gums and tongue on Audio2Face's jaw and tongue. The game's own emotion
+brows and eyelids, with the lower teeth and gums on Audio2Face's jaw. The tongue follows half the jaw movement with reduced, overlap-limited tongue cues from the game's speech track. The game's own emotion
 expressions (dialogue, mood, combat) fade out while a line plays, when Audio2Face alone shapes the face, and back
 in after it. A line's emotion comes from the game's emotion for it.
 Each head is fitted to the animated face the first time it speaks, from its own expression morphs, so custom heads,

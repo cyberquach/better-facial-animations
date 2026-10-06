@@ -2,8 +2,8 @@
 # Build BetterFacialAnimations.dll with mingw-w64 (static FFmpeg + libstdc++) and assemble the mod in build/mod.
 #   ./build.sh                    build + assemble
 #   ./build.sh install <dir>      also copy into <dir> (e.g. an MO2 mod folder)
-#   ./build.sh release            also write release/Better Facial Animations-<ver>.7z (on a feature branch
-#                                 <ver>.<n>, n counting up from the archives already there)
+#   ./build.sh release            also write release/Better Facial Animations-<ver>.<n>.7z
+#                                 (feature branches append -<branch>; n counts existing archives)
 #   ./build.sh compat             also run the compatibility contracts in tests/compatibility.json
 #                                 (no Skyrim launch) and write their evidence to build/compatibility/
 #   ./build.sh test               also run the contracts, check every supported runtime (tests/runtimes_test.cc) and the
@@ -14,18 +14,22 @@
 # Dependency locations (see README) can be overridden with these variables:
 cd "$(dirname "$0")" || exit 1
 V=$(cat VERSION) || exit 1
+ARCHIVE_SUFFIX=
 # Select the release version before compiling so DLL, readme and archive agree.
 if [ "$1" = release ]; then
     R=$PWD/release
-    # On a feature branch the archive is a numbered build, <version>.<n>: one more than the highest in release/.
-    case "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" in
+    # Every release uses one more than the highest build for this version.
+    N=0
+    for f in "$R/Better Facial Animations-$V."*.7z; do
+        n=${f##*/}; n=${n#"Better Facial Animations-$V."}; n=${n%.7z}; n=${n%%-*}
+        case "$n" in ""|*[!0-9]*) ;; *) [ "$n" -gt "$N" ] && N=$n ;; esac
+    done
+    V=$V.$((N + 1))
+    BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+    case "$BRANCH" in
     main|HEAD|"") ;;
-    *)  N=0
-        for f in "$R/Better Facial Animations-$V."*.7z; do
-            n=${f##*-"$V".}; n=${n%.7z}
-            case "$n" in ""|*[!0-9]*) ;; *) [ "$n" -gt "$N" ] && N=$n ;; esac
-        done
-        V=$V.$((N + 1)) ;;
+    *)  # Keep the numeric DLL version separate from the filename's branch label.
+        ARCHIVE_SUFFIX=-$(printf '%s' "$BRANCH" | LC_ALL=C sed 's/[^A-Za-z0-9._-]/-/g') ;;
     esac
 fi
 FFMPEG=${FFMPEG:-deps/ffmpeg/win64}
@@ -36,23 +40,16 @@ MODEL_FP32=${MODEL_FP32:-$(dirname "$MODEL")/network.onnx}  # test only: referen
 MODEL3=${MODEL3:-models/v3/network_fp16.onnx}  # v3.0, folded (tools/a2f3_fold.py)
 MODEL3_FP32=${MODEL3_FP32:-$(dirname "$MODEL3")/network_folded.onnx}  # test only
 ADDRLIB=${ADDRLIB:-deps/address-library}  # test only
+JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)}
+case "$JOBS" in ""|*[!0-9]*|0*) echo "JOBS must be a positive integer" >&2; exit 1 ;; esac
 
 mkdir -p build
 CXX="x86_64-w64-mingw32-g++ -std=c++17 -O2"
 # a test that includes the plugin's main source links its other objects (also read by tools/compatibility.py)
 PLUGIN_OBJS="build/player_speech.o build/settings.o build/pose.o build/net_keeper.o build/head_cache.o build/menu.o build/skse.o build/direct.o build/live_core.o build/ort_net.o"
 PLUGIN_LIBS="-L$FFMPEG/lib -lavformat -lavcodec -lswresample -lavutil -lbcrypt -lshell32 -lole32 -luuid -ldxgi"
-$CXX -Wall -DBFA_VERSION=\"$V\" -c src/better_facial_animations.cc -o build/better_facial_animations.o &&
-$CXX -Wall -c src/player_speech.cc -o build/player_speech.o &&
-$CXX -Wall -c src/pose.cc -o build/pose.o &&
-$CXX -Wall -c src/net_keeper.cc -o build/net_keeper.o &&
-$CXX -Wall -c src/settings.cc -o build/settings.o &&
-$CXX -Wall -c src/head_cache.cc -o build/head_cache.o &&
-$CXX -Wall -c src/menu.cc -o build/menu.o &&
-$CXX -Wall -c src/skse.cc -o build/skse.o &&
-$CXX -Wall -c src/direct.cc -o build/direct.o &&
-$CXX -Wall -isystem "$FFMPEG/include" -c src/live_core.cc -o build/live_core.o &&
-$CXX -Wall -isystem "$ORT/build/native/include" -c src/ort_net.cc -o build/ort_net.o &&
+make -f tools/build.mk -B -j "$JOBS" CXX="$CXX" BFA_VERSION="$V" \
+    FFMPEG="$FFMPEG" ORT="$ORT" build/better_facial_animations.o $PLUGIN_OBJS &&
 $CXX -shared -s build/better_facial_animations.o build/player_speech.o build/settings.o build/pose.o build/net_keeper.o build/head_cache.o build/menu.o build/skse.o build/direct.o build/live_core.o build/ort_net.o -o build/BetterFacialAnimations.dll \
     -L$FFMPEG/lib -lavformat -lavcodec -lswresample -lavutil -lbcrypt -lshell32 -lole32 -luuid -ldxgi -static -static-libgcc -static-libstdc++ || exit 1
 
@@ -79,8 +76,8 @@ install)
     mkdir -p "$2" && cp -r $PKG/. "$2/" && echo "installed to $2" ;;
 release)
     R=$PWD/release; mkdir -p $R
-    rm -f "$R/Better Facial Animations-$V.7z"
-    (cd $PKG && 7z a -t7z -mx=9 "$R/Better Facial Animations-$V.7z" SKSE >/dev/null) &&
+    rm -f "$R/Better Facial Animations-$V$ARCHIVE_SUFFIX.7z"
+    (cd $PKG && 7z a -t7z -mx=9 "$R/Better Facial Animations-$V$ARCHIVE_SUFFIX.7z" SKSE >/dev/null) &&
     ls -la $R ;;
 test)
     T=build/test; mkdir -p $T/Data && ln -sfn "$(realpath "$ADDRLIB")/SKSE" $T/Data/SKSE &&

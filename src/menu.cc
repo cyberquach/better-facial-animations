@@ -161,9 +161,17 @@ void RenderMenu() {
     Tip(&kLinesTip, b);
   }
   RenderProblems(st, queued, tune, gpu);
+  ig.Text("Expressive Facial Animation: Men %s | Women %s",
+          config.expressive_faces[0] ? "detected" : "not detected",
+          config.expressive_faces[1] ? "detected" : "not detected");
+  Tip(config.expressive_faces,
+      "Mouth strength is multiplied by 0.85 for each detected edition; "
+      "otherwise it uses 1.0. Checks active Male 1.21 and Female 1.7 assets "
+      "at startup. Modified versions may not be recognized.");
   static const char* const kHeaders[] = {
       nullptr, "Model", "Playback", "Strength", "Emotion", "Debug"};
   Sec cur = Sec::kGeneral;
+  bool changed = false;
   for (size_t i = 0; i < kNumParams; ++i) {
     const Param& p = kParams[i];
     if (p.sec != cur) {
@@ -173,6 +181,7 @@ void RenderMenu() {
     ScopedLock guard(settings_lock);
     if (p.flag ? ig.Checkbox(p.label, p.flag)
                : ig.SliderFloat(p.label, p.value, p.lo, p.hi, "%.3g", 0)) {
+      changed = true;
       if (p.flag)
         Log("setting %s = %d", p.key, *p.flag);
       else
@@ -185,17 +194,13 @@ void RenderMenu() {
   ig.SeparatorText("");
   // the model and its device are those the game started with
   if (tune.old_model != (config.network == 2) || tune.force_cpu != !config.gpu)
-    Notice(kYellow, "Model settings apply once saved and the game restarted.");
-  static const char kSave[] = "Save", kDefaults[] = "Defaults",
-                    kClear[] = "Clear cache";
-  if (ig.Button(kSave, ImVec2{0, 0})) {
-    SaveIni();
-  }
-  Tip(kSave, "Writes the settings to BetterFacialAnimations.ini.");
-  ig.SameLine(0, -1);
+    Notice(kYellow, "Model settings apply once the game is restarted.");
+  static const char kDefaults[] = "Defaults", kClear[] = "Clear cache";
   if (ig.Button(kDefaults, ImVec2{0, 0})) {
     ResetTune();
+    changed = true;
   }
+  if (changed) SaveIni();
   Tip(kDefaults, "Resets the sliders and switches, except Model and Debug.");
   ig.SameLine(0, -1);
   if (ig.Button(kClear, ImVec2{0, 0})) {
