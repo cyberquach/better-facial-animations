@@ -1,0 +1,6 @@
+{
+  "version": "2.0.2.2",
+  "sha256": "be4929707e578c1add6186d7f29ef0746f7219130160b573a2b61f8c7fb26159",
+  "nexus_mod_id": 84329,
+  "review": "Player speech plus two save reloads on Skyrim 1.6.1170, default pitch 100, opt-in NativePlayerSpeech. See RESEARCH_JOURNAL.md and work/dbvo-prototype. Other runtimes, pitch changes and rapid skip remain unverified. Never update this hash solely to make CI pass."
+}

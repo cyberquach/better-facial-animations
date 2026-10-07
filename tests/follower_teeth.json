@@ -1,0 +1,193 @@
+{
+  "schema": 1,
+  "fixtures": [
+    {
+      "file": "Eve_Follower_1.0-base.bin",
+      "sha256": "3977a1cbefbd58b3d618d8e189af460c7e4efbe65340652205c4e41127490226",
+      "source_sha256": {
+        "work/follower-mapping-20261007/Eve_Follower_1.0-base.bin": "5d24f3b68ce14b0913ebec9985f6637accfbc05734f44ca50f682b8aad4a96e2",
+        "work/follower-mapping-20261007/Eve_Follower_1.0/Fomod/Base_Files/meshes/Eve_Race/mouth/3D_Teeth_F.tri": "822a3e145b4781c074bdbad19748b15bbdea075630a76ef799f7a436dfd29dee",
+        "work/follower-mapping-20261007/Eve_Follower_1.0/Fomod/Base_Files/meshes/Eve_Race/mouth/3D_Mouth_F.tri": "2a25f94780523098110460bda3fa6621079aaf9f2ec24cf8ace672f13a43f78f",
+        "work/follower-mapping-20261007/Eve_Follower_1.0/Fomod/Base_Files/meshes/Eve_Race/Eyes/3D_Eyes_F_Wet.tri": "6d23553c2e23bb8589def4e26ea2b7f4b8698ecfc835ec5f2ec184a5ef8db0b0",
+        "work/follower-mapping-20261007/Eve_Follower_1.0/Fomod/Base_Files/meshes/Eve_Race/Eyes/3D_Eyes_F_2.tri": "6d23553c2e23bb8589def4e26ea2b7f4b8698ecfc835ec5f2ec184a5ef8db0b0",
+        "work/follower-mapping-20261007/Eve_Follower_1.0/Fomod/Base_Files/meshes/Eve_Race/Eyes/Eye_Shadow.tri": "f6ffd5f3949fd2406e2754bd18c887bcae659daee487363cca27a0f62c634463",
+        "work/follower-mapping-20261007/Eve_Follower_1.0/Fomod/Base_Files/meshes/Eve_Race/corner/Corner_female.tri": "cdbeacc3c418e6165ef88cfba320780630442a4fd645750dd0a76632fea42670",
+        "work/follower-mapping-20261007/Eve_Follower_1.0/Fomod/Base_Files/meshes/Eve_Race/lashes/3D_Lashes_F.tri": "29c990f23d56268f73df744783939a81fc424a9484bf5d5f31d4848ede057cd8",
+        "work/follower-mapping-20261007/Eve_Follower_1.0/Fomod/Base_Files/meshes/Eve_Race/Eyes/3D_Eyes_F_1.tri": "6d23553c2e23bb8589def4e26ea2b7f4b8698ecfc835ec5f2ec184a5ef8db0b0",
+        "work/follower-mapping-20261007/Eve_Follower_1.0/Fomod/Base_Files/meshes/Eve_Race/Brow/femaleheadbrows.tri": "95d82b32f3dc00fddf99f3dfae9b124a711ae06e12b006df51845c3f4e9a768b",
+        "work/follower-mapping-20261007/Eve_Follower_1.0/Fomod/Base_Files/meshes/Eve_Race/head/femalehead.tri": "fdb480e2da7f604e5e4c9d2f61bc5c7b482a560a291268985938daf3bf62c25d"
+      }
+    },
+    {
+      "file": "Eve_Follower_1.0-smp.bin",
+      "sha256": "3977a1cbefbd58b3d618d8e189af460c7e4efbe65340652205c4e41127490226",
+      "source_sha256": {
+        "work/follower-mapping-20261007/Eve_Follower_1.0-smp.bin": "5d24f3b68ce14b0913ebec9985f6637accfbc05734f44ca50f682b8aad4a96e2",
+        "work/follower-mapping-20261007/Eve_Follower_1.0/Fomod/Base_Files/meshes/Eve_Race/mouth/3D_Teeth_F.tri": "822a3e145b4781c074bdbad19748b15bbdea075630a76ef799f7a436dfd29dee",
+        "work/follower-mapping-20261007/Eve_Follower_1.0/Fomod/Base_Files/meshes/Eve_Race/mouth/3D_Mouth_F.tri": "2a25f94780523098110460bda3fa6621079aaf9f2ec24cf8ace672f13a43f78f",
+        "work/follower-mapping-20261007/Eve_Follower_1.0/Fomod/Base_Files/meshes/Eve_Race/Eyes/3D_Eyes_F_Wet.tri": "6d23553c2e23bb8589def4e26ea2b7f4b8698ecfc835ec5f2ec184a5ef8db0b0",
+        "work/follower-mapping-20261007/Eve_Follower_1.0/Fomod/Base_Files/meshes/Eve_Race/Eyes/3D_Eyes_F_2.tri": "6d23553c2e23bb8589def4e26ea2b7f4b8698ecfc835ec5f2ec184a5ef8db0b0",
+        "work/follower-mapping-20261007/Eve_Follower_1.0/Fomod/Base_Files/meshes/Eve_Race/Eyes/Eye_Shadow.tri": "f6ffd5f3949fd2406e2754bd18c887bcae659daee487363cca27a0f62c634463",
+        "work/follower-mapping-20261007/Eve_Follower_1.0/Fomod/Base_Files/meshes/Eve_Race/corner/Corner_female.tri": "cdbeacc3c418e6165ef88cfba320780630442a4fd645750dd0a76632fea42670",
+        "work/follower-mapping-20261007/Eve_Follower_1.0/Fomod/Base_Files/meshes/Eve_Race/lashes/3D_Lashes_F.tri": "29c990f23d56268f73df744783939a81fc424a9484bf5d5f31d4848ede057cd8",
+        "work/follower-mapping-20261007/Eve_Follower_1.0/Fomod/Base_Files/meshes/Eve_Race/Eyes/3D_Eyes_F_1.tri": "6d23553c2e23bb8589def4e26ea2b7f4b8698ecfc835ec5f2ec184a5ef8db0b0",
+        "work/follower-mapping-20261007/Eve_Follower_1.0/Fomod/Base_Files/meshes/Eve_Race/Brow/femaleheadbrows.tri": "95d82b32f3dc00fddf99f3dfae9b124a711ae06e12b006df51845c3f4e9a768b",
+        "work/follower-mapping-20261007/Eve_Follower_1.0/Fomod/Base_Files/meshes/Eve_Race/head/femalehead.tri": "fdb480e2da7f604e5e4c9d2f61bc5c7b482a560a291268985938daf3bf62c25d"
+      }
+    },
+    {
+      "file": "Alma_Follower_1.0-base.bin",
+      "sha256": "7e17a694b2ad0522e6194df2461efc01e6373c98016f77c3bf4b275ce135421b",
+      "source_sha256": {
+        "work/follower-mapping-20261007/Alma_Follower_1.0-base.bin": "e2030213924f4778e0a3db91b0b9711f0ca745bf6ff97a6b00feccaa9cb1129f",
+        "work/follower-mapping-20261007/Alma_Follower_1.0/Fomod/Base_Files/meshes/Alma_Race/mouth/3D_Teeth_F.tri": "5b3924b605fe689f128f0e27858382685b43ef7fc653acc4763a9bc21f8b7ef7",
+        "work/follower-mapping-20261007/Alma_Follower_1.0/Fomod/Base_Files/meshes/Alma_Race/mouth/3D_Mouth_F.tri": "ea639d30ef0e9c643ea47ea18bf06c44dfa4cc6b16f42b842319f5bfcbde35d5",
+        "work/follower-mapping-20261007/Alma_Follower_1.0/Fomod/Base_Files/meshes/Alma_Race/lashes/3D_Lashes_F.tri": "9f62842872e1d6e06ca12b8a68415ca09c56127e58bc22d707fbe41cfd9cb96d",
+        "work/follower-mapping-20261007/Alma_Follower_1.0/Fomod/Base_Files/meshes/Alma_Race/corner/Corner_female.tri": "786400ca274b9f2fefaa03f0b7088638793b395e792db1c232ec1431111259b6",
+        "work/follower-mapping-20261007/Alma_Follower_1.0/Fomod/Base_Files/meshes/Alma_Race/Eyes/Eye_Shadow.tri": "b82743e11bc33ddca7d34447a50cf7548723a39e09081ab849d05b570c0d2975",
+        "work/follower-mapping-20261007/Alma_Follower_1.0/Fomod/Base_Files/meshes/Alma_Race/Eyes/3D_Eyes_F_2.tri": "bb318712a82120c08df2eea9983ff3afb9c8c43c233b12cd871c9546e6e2c7d4",
+        "work/follower-mapping-20261007/Alma_Follower_1.0/Fomod/Base_Files/meshes/Alma_Race/Eyes/3D_Eyes_F_Wet.tri": "bb318712a82120c08df2eea9983ff3afb9c8c43c233b12cd871c9546e6e2c7d4",
+        "work/follower-mapping-20261007/Alma_Follower_1.0/Fomod/Base_Files/meshes/Alma_Race/Eyes/3D_Eyes_F_1.tri": "bb318712a82120c08df2eea9983ff3afb9c8c43c233b12cd871c9546e6e2c7d4",
+        "work/follower-mapping-20261007/Alma_Follower_1.0/Fomod/Base_Files/meshes/Alma_Race/Brow/femaleheadbrows.tri": "defe92e9def3694cf5792af01c4a595f3f8f1fd57c119b78636bc99296560d93",
+        "work/follower-mapping-20261007/Alma_Follower_1.0/Fomod/Base_Files/meshes/Alma_Race/head/femalehead.tri": "3e3d6924919e34ca9af124f20d1307feac7e187a12e9337a4418b46e11b05c16"
+      }
+    },
+    {
+      "file": "Alma_Follower_1.0-smp.bin",
+      "sha256": "882b4746ff000b8e996433f94164d7ed47bc157f475ad12d8e41699bfe460086",
+      "source_sha256": {
+        "work/follower-mapping-20261007/Alma_Follower_1.0-smp.bin": "53aad738b3382cc0d5c883754cbb3b478742d5667205551fb6b159a9286d6f07",
+        "work/follower-mapping-20261007/Alma_Follower_1.0/Fomod/Base_Files/meshes/Alma_Race/mouth/3D_Teeth_F.tri": "5b3924b605fe689f128f0e27858382685b43ef7fc653acc4763a9bc21f8b7ef7",
+        "work/follower-mapping-20261007/Alma_Follower_1.0/Fomod/Base_Files/meshes/Alma_Race/mouth/3D_Mouth_F.tri": "ea639d30ef0e9c643ea47ea18bf06c44dfa4cc6b16f42b842319f5bfcbde35d5",
+        "work/follower-mapping-20261007/Alma_Follower_1.0/Fomod/Base_Files/meshes/Alma_Race/lashes/3D_Lashes_F.tri": "9f62842872e1d6e06ca12b8a68415ca09c56127e58bc22d707fbe41cfd9cb96d",
+        "work/follower-mapping-20261007/Alma_Follower_1.0/Fomod/Base_Files/meshes/Alma_Race/corner/Corner_female.tri": "786400ca274b9f2fefaa03f0b7088638793b395e792db1c232ec1431111259b6",
+        "work/follower-mapping-20261007/Alma_Follower_1.0/Fomod/Base_Files/meshes/Alma_Race/Eyes/Eye_Shadow.tri": "b82743e11bc33ddca7d34447a50cf7548723a39e09081ab849d05b570c0d2975",
+        "work/follower-mapping-20261007/Alma_Follower_1.0/Fomod/Base_Files/meshes/Alma_Race/Eyes/3D_Eyes_F_2.tri": "bb318712a82120c08df2eea9983ff3afb9c8c43c233b12cd871c9546e6e2c7d4",
+        "work/follower-mapping-20261007/Alma_Follower_1.0/Fomod/Base_Files/meshes/Alma_Race/Eyes/3D_Eyes_F_Wet.tri": "bb318712a82120c08df2eea9983ff3afb9c8c43c233b12cd871c9546e6e2c7d4",
+        "work/follower-mapping-20261007/Alma_Follower_1.0/Fomod/Base_Files/meshes/Alma_Race/Eyes/3D_Eyes_F_1.tri": "bb318712a82120c08df2eea9983ff3afb9c8c43c233b12cd871c9546e6e2c7d4",
+        "work/follower-mapping-20261007/Alma_Follower_1.0/Fomod/Base_Files/meshes/Alma_Race/Brow/femaleheadbrows.tri": "defe92e9def3694cf5792af01c4a595f3f8f1fd57c119b78636bc99296560d93",
+        "work/follower-mapping-20261007/Alma_Follower_1.0/Fomod/Base_Files/meshes/Alma_Race/head/femalehead.tri": "3e3d6924919e34ca9af124f20d1307feac7e187a12e9337a4418b46e11b05c16"
+      }
+    },
+    {
+      "file": "Lily_Follower_1.0-base.bin",
+      "sha256": "823a9a027153521c9ca993c714b25c4aed24f12a9e95064c35edabda44bf660f",
+      "source_sha256": {
+        "work/follower-mapping-20261007/Lily_Follower_1.0-base.bin": "74a595277323027e4ec0266a2685868289ca56786b81198e3e3e99207fd797cc",
+        "work/follower-mapping-20261007/Lily_Follower_1.0/Fomod/Base_Files/meshes/Lily_Race/mouth/3D_Teeth_F.tri": "e92ede34d282b6e2b37678d8b609828ab56903aa9cacaaae0da0f166bca44901",
+        "work/follower-mapping-20261007/Lily_Follower_1.0/Fomod/Base_Files/meshes/Lily_Race/mouth/3D_Mouth_F.tri": "2b00e57b0a314bb48fb01eb4c98a362e4747feb200bf2e5237961b53d9efe0db",
+        "work/follower-mapping-20261007/Lily_Follower_1.0/Fomod/Base_Files/meshes/Lily_Race/lashes/3D_Lashes_F.tri": "4d02c4b0db89e2b016b83be7a61769888651b41d17069299c315015a83c0fd74",
+        "work/follower-mapping-20261007/Lily_Follower_1.0/Fomod/Base_Files/meshes/Lily_Race/corner/Corner_female.tri": "d1b94d9de130a7c69c4f9a898bf3d7249f58c4a0ddd2fee8358065b8c2f0cf0f",
+        "work/follower-mapping-20261007/Lily_Follower_1.0/Fomod/Base_Files/meshes/Lily_Race/Eyes/Eye_Shadow.tri": "3c7e28f8bc66b1f3abc4eb7d31be1de76ddd5ee5d907b08fcfec2a996029df1f",
+        "work/follower-mapping-20261007/Lily_Follower_1.0/Fomod/Base_Files/meshes/Lily_Race/Eyes/3D_Eyes_F_2.tri": "c6c1488b0639754a1e567af195c827d953825c802e645358de287e2ac4f6e69c",
+        "work/follower-mapping-20261007/Lily_Follower_1.0/Fomod/Base_Files/meshes/Lily_Race/Eyes/3D_Eyes_F_Wet.tri": "c6c1488b0639754a1e567af195c827d953825c802e645358de287e2ac4f6e69c",
+        "work/follower-mapping-20261007/Lily_Follower_1.0/Fomod/Base_Files/meshes/Lily_Race/Eyes/3D_Eyes_F_1.tri": "c6c1488b0639754a1e567af195c827d953825c802e645358de287e2ac4f6e69c",
+        "work/follower-mapping-20261007/Lily_Follower_1.0/Fomod/Base_Files/meshes/Lily_Race/Brow/femaleheadbrows.tri": "4a67d962673e0340e564c624b21bad498ad5e6aad5d595b1357f3fa25d43d17a",
+        "work/follower-mapping-20261007/Lily_Follower_1.0/Fomod/Base_Files/meshes/Lily_Race/head/femalehead.tri": "e8d38d587f83090f624634705dc5288dab68f122e44ff374009d7a84425f0c74"
+      }
+    },
+    {
+      "file": "Lily_Follower_1.0-smp.bin",
+      "sha256": "4ee47a439a1756b4f9e5c7248b69e2d4e45854422c27017f908290bed15065db",
+      "source_sha256": {
+        "work/follower-mapping-20261007/Lily_Follower_1.0-smp.bin": "61d92c776ef188ca19e6d314c0e335db2bd291c1642dc643e5eeccf8c2ceddac",
+        "work/follower-mapping-20261007/Lily_Follower_1.0/Fomod/Base_Files/meshes/Lily_Race/mouth/3D_Teeth_F.tri": "e92ede34d282b6e2b37678d8b609828ab56903aa9cacaaae0da0f166bca44901",
+        "work/follower-mapping-20261007/Lily_Follower_1.0/Fomod/Base_Files/meshes/Lily_Race/mouth/3D_Mouth_F.tri": "2b00e57b0a314bb48fb01eb4c98a362e4747feb200bf2e5237961b53d9efe0db",
+        "work/follower-mapping-20261007/Lily_Follower_1.0/Fomod/Base_Files/meshes/Lily_Race/lashes/3D_Lashes_F.tri": "4d02c4b0db89e2b016b83be7a61769888651b41d17069299c315015a83c0fd74",
+        "work/follower-mapping-20261007/Lily_Follower_1.0/Fomod/Base_Files/meshes/Lily_Race/corner/Corner_female.tri": "d1b94d9de130a7c69c4f9a898bf3d7249f58c4a0ddd2fee8358065b8c2f0cf0f",
+        "work/follower-mapping-20261007/Lily_Follower_1.0/Fomod/Base_Files/meshes/Lily_Race/Eyes/Eye_Shadow.tri": "3c7e28f8bc66b1f3abc4eb7d31be1de76ddd5ee5d907b08fcfec2a996029df1f",
+        "work/follower-mapping-20261007/Lily_Follower_1.0/Fomod/Base_Files/meshes/Lily_Race/Eyes/3D_Eyes_F_2.tri": "c6c1488b0639754a1e567af195c827d953825c802e645358de287e2ac4f6e69c",
+        "work/follower-mapping-20261007/Lily_Follower_1.0/Fomod/Base_Files/meshes/Lily_Race/Eyes/3D_Eyes_F_Wet.tri": "c6c1488b0639754a1e567af195c827d953825c802e645358de287e2ac4f6e69c",
+        "work/follower-mapping-20261007/Lily_Follower_1.0/Fomod/Base_Files/meshes/Lily_Race/Eyes/3D_Eyes_F_1.tri": "c6c1488b0639754a1e567af195c827d953825c802e645358de287e2ac4f6e69c",
+        "work/follower-mapping-20261007/Lily_Follower_1.0/Fomod/Base_Files/meshes/Lily_Race/Brow/femaleheadbrows.tri": "4a67d962673e0340e564c624b21bad498ad5e6aad5d595b1357f3fa25d43d17a",
+        "work/follower-mapping-20261007/Lily_Follower_1.0/Fomod/Base_Files/meshes/Lily_Race/head/femalehead.tri": "e8d38d587f83090f624634705dc5288dab68f122e44ff374009d7a84425f0c74"
+      }
+    },
+    {
+      "file": "DVA_Follower_1.0-base.bin",
+      "sha256": "755d5f77933e12621b649b0d6bac908db34b41e1283a6ac76e40f8deb71b4413",
+      "source_sha256": {
+        "work/follower-mapping-20261007/DVA_Follower_1.0-base.bin": "f8ade0ecbd3f461c23507842ba3a96bea09e261f3c7b264dd7b7e5ae02dde608",
+        "work/follower-mapping-20261007/DVA_Follower_1.0/Fomod/Base_Files/meshes/DVA_Race/mouth/3D_Teeth_F.tri": "50b69bcaaecb0b4c978745090b97efe989ac9cf30201744b4c9c2c7b3cf01ad6",
+        "work/follower-mapping-20261007/DVA_Follower_1.0/Fomod/Base_Files/meshes/DVA_Race/mouth/3D_Mouth_F.tri": "b35c8a2eb99376a9cb5b9f6b7f681cb4d75e8a12deef4434a7c4061144e23471",
+        "work/follower-mapping-20261007/DVA_Follower_1.0/Fomod/Base_Files/meshes/DVA_Race/lashes/OW_Lashes_F.tri": "2c70dcb7d0795a6b77d360cc8b98c7b0d22e0c436ccef469b08407bb5c4c86af",
+        "work/follower-mapping-20261007/DVA_Follower_1.0/Fomod/Base_Files/meshes/DVA_Race/Eyes/3D_Eyes_F_Wet.tri": "c322540bff737450ba25025ea8b7d1834321842bb182ddd32312c37defebcbcb",
+        "work/follower-mapping-20261007/DVA_Follower_1.0/Fomod/Base_Files/meshes/DVA_Race/Eyes/3D_Eyes_F_2.tri": "c322540bff737450ba25025ea8b7d1834321842bb182ddd32312c37defebcbcb",
+        "work/follower-mapping-20261007/DVA_Follower_1.0/Fomod/Base_Files/meshes/DVA_Race/Eyes/Eye_Shadow.tri": "f4220bb4eb05f6e073d93a13654898f4d657cfb391927bee734407deeae8c697",
+        "work/follower-mapping-20261007/DVA_Follower_1.0/Fomod/Base_Files/meshes/DVA_Race/corner/Corner_female.tri": "82925c96ae3a0a0cfa7954fa7ba3990e9e1528c2bfa5a03befd6224fc47a93d6",
+        "work/follower-mapping-20261007/DVA_Follower_1.0/Fomod/Base_Files/meshes/DVA_Race/lashes/3D_Lashes_F.tri": "65ca10b566f023fb6a8ac5374e349e8271c8a149fdccb93759c6e72236e8f9c7",
+        "work/follower-mapping-20261007/DVA_Follower_1.0/Fomod/Base_Files/meshes/DVA_Race/Eyes/3D_Eyes_F_1.tri": "c322540bff737450ba25025ea8b7d1834321842bb182ddd32312c37defebcbcb",
+        "work/follower-mapping-20261007/DVA_Follower_1.0/Fomod/Base_Files/meshes/DVA_Race/Brow/femaleheadbrows.tri": "8f423d56865e0445105e0a5d9d4732a60aa1a532f605a87ef68819cb08fadd26",
+        "work/follower-mapping-20261007/DVA_Follower_1.0/Fomod/Base_Files/meshes/DVA_Race/head/femalehead.tri": "a60a97f6b2ef3a930dea9a4c2d24471a02cb87a59968ffeac0b227b9c2cc12d2"
+      }
+    },
+    {
+      "file": "DVA_Follower_1.0-smp.bin",
+      "sha256": "af767e28cea4ea51bd556fbdc656508fe8165d08185f917894f5f76fe3f7385d",
+      "source_sha256": {
+        "work/follower-mapping-20261007/DVA_Follower_1.0-smp.bin": "995fe7c5aa62aa7ac34cff269e6011bb7b2008760f5179b98306a2dede532ae5",
+        "work/follower-mapping-20261007/DVA_Follower_1.0/Fomod/Base_Files/meshes/DVA_Race/mouth/3D_Teeth_F.tri": "50b69bcaaecb0b4c978745090b97efe989ac9cf30201744b4c9c2c7b3cf01ad6",
+        "work/follower-mapping-20261007/DVA_Follower_1.0/Fomod/Base_Files/meshes/DVA_Race/mouth/3D_Mouth_F.tri": "b35c8a2eb99376a9cb5b9f6b7f681cb4d75e8a12deef4434a7c4061144e23471",
+        "work/follower-mapping-20261007/DVA_Follower_1.0/Fomod/Base_Files/meshes/DVA_Race/lashes/OW_Lashes_F.tri": "2c70dcb7d0795a6b77d360cc8b98c7b0d22e0c436ccef469b08407bb5c4c86af",
+        "work/follower-mapping-20261007/DVA_Follower_1.0/Fomod/Base_Files/meshes/DVA_Race/Eyes/3D_Eyes_F_Wet.tri": "c322540bff737450ba25025ea8b7d1834321842bb182ddd32312c37defebcbcb",
+        "work/follower-mapping-20261007/DVA_Follower_1.0/Fomod/Base_Files/meshes/DVA_Race/Eyes/3D_Eyes_F_2.tri": "c322540bff737450ba25025ea8b7d1834321842bb182ddd32312c37defebcbcb",
+        "work/follower-mapping-20261007/DVA_Follower_1.0/Fomod/Base_Files/meshes/DVA_Race/Eyes/Eye_Shadow.tri": "f4220bb4eb05f6e073d93a13654898f4d657cfb391927bee734407deeae8c697",
+        "work/follower-mapping-20261007/DVA_Follower_1.0/Fomod/Base_Files/meshes/DVA_Race/corner/Corner_female.tri": "82925c96ae3a0a0cfa7954fa7ba3990e9e1528c2bfa5a03befd6224fc47a93d6",
+        "work/follower-mapping-20261007/DVA_Follower_1.0/Fomod/Base_Files/meshes/DVA_Race/lashes/3D_Lashes_F.tri": "65ca10b566f023fb6a8ac5374e349e8271c8a149fdccb93759c6e72236e8f9c7",
+        "work/follower-mapping-20261007/DVA_Follower_1.0/Fomod/Base_Files/meshes/DVA_Race/Eyes/3D_Eyes_F_1.tri": "c322540bff737450ba25025ea8b7d1834321842bb182ddd32312c37defebcbcb",
+        "work/follower-mapping-20261007/DVA_Follower_1.0/Fomod/Base_Files/meshes/DVA_Race/Brow/femaleheadbrows.tri": "8f423d56865e0445105e0a5d9d4732a60aa1a532f605a87ef68819cb08fadd26",
+        "work/follower-mapping-20261007/DVA_Follower_1.0/Fomod/Base_Files/meshes/DVA_Race/head/femalehead.tri": "a60a97f6b2ef3a930dea9a4c2d24471a02cb87a59968ffeac0b227b9c2cc12d2"
+      }
+    },
+    {
+      "file": "Squirrel girl Follower_1.1-base.bin",
+      "sha256": "c8dfa3b9eb53b050ae994e224a4eff5b500a6790a0a9495532bd7fe781cb2ed5",
+      "source_sha256": {
+        "work/follower-mapping-20261007/Squirrel girl Follower_1.1-base.bin": "a175628d0bdee26d26be9f951124b3a4c55f0f38a1b88f884facd50e839693fc",
+        "work/follower-mapping-20261007/Squirrel girl Follower_1.1/Fomod/Base_Files/meshes/Squirrel_Girl_Race/mouth/3D_Teeth_F.tri": "b8c7d0f2f7d95afeb61eb49f0853c417f8b88114ad302a4cf21a0c4c76cd56a1",
+        "work/follower-mapping-20261007/Squirrel girl Follower_1.1/Fomod/Base_Files/meshes/Squirrel_Girl_Race/mouth/3D_Mouth_F.tri": "348e1c6164fc0ba9b3a17d24e205f41ea685089540b2bfecdef15e900d2dbe74",
+        "work/follower-mapping-20261007/Squirrel girl Follower_1.1/Fomod/Base_Files/meshes/Squirrel_Girl_Race/corner/Corner_female.tri": "ad819d81ef542f0fc021fbd540fae213e8766855db4fbea10969dced70e20de4",
+        "work/follower-mapping-20261007/Squirrel girl Follower_1.1/Fomod/Base_Files/meshes/Squirrel_Girl_Race/Eyes/3D_Eyes_F_2.tri": "fe1bb6136218ab81112fb682d283e5799b0a1557fad513ccc37afc96acbc5fda",
+        "work/follower-mapping-20261007/Squirrel girl Follower_1.1/Fomod/Base_Files/meshes/Squirrel_Girl_Race/Eyes/3D_Eyes_F_Wet.tri": "fe1bb6136218ab81112fb682d283e5799b0a1557fad513ccc37afc96acbc5fda",
+        "work/follower-mapping-20261007/Squirrel girl Follower_1.1/Fomod/Base_Files/meshes/Squirrel_Girl_Race/lashes/OW_Lashes_F.tri": "f6ac22680c2e0aedf222f4561aa9aed582936fc89677eaecf7e6bbd93977afff",
+        "work/follower-mapping-20261007/Squirrel girl Follower_1.1/Fomod/Base_Files/meshes/Squirrel_Girl_Race/Eyes/Eye_Shadow.tri": "a18c7150a8062cee321e445344b927c4c6b8cc2101db9b251e2c41c13cd92720",
+        "work/follower-mapping-20261007/Squirrel girl Follower_1.1/Fomod/Base_Files/meshes/Squirrel_Girl_Race/Eyes/3D_Eyes_F_1.tri": "fe1bb6136218ab81112fb682d283e5799b0a1557fad513ccc37afc96acbc5fda",
+        "work/follower-mapping-20261007/Squirrel girl Follower_1.1/Fomod/Base_Files/meshes/Squirrel_Girl_Race/Brow/femaleheadbrows.tri": "64cc9f0fdbdee2d7a6c0e36192000978796200a3d0379d9a0be171eb1b1860eb",
+        "work/follower-mapping-20261007/Squirrel girl Follower_1.1/Fomod/Base_Files/meshes/Squirrel_Girl_Race/head/femalehead.tri": "15641c13396c14049c5f4685ab5ae13cab2d5fa78de38ef869bfe4e8bc5e31d0"
+      }
+    },
+    {
+      "file": "Squirrel girl Follower_1.1-smp.bin",
+      "sha256": "575f0a0ab5a8467b55b5c59461abba3dda6727f64f9b38a433da129209610c96",
+      "source_sha256": {
+        "work/follower-mapping-20261007/Squirrel girl Follower_1.1-smp.bin": "4ea9dc88ee74b80791d8f29cc28832c369c2397bc6a71cadd7b44151ca614ffc",
+        "work/follower-mapping-20261007/Squirrel girl Follower_1.1/Fomod/Base_Files/meshes/Squirrel_Girl_Race/mouth/3D_Teeth_F.tri": "b8c7d0f2f7d95afeb61eb49f0853c417f8b88114ad302a4cf21a0c4c76cd56a1",
+        "work/follower-mapping-20261007/Squirrel girl Follower_1.1/Fomod/Base_Files/meshes/Squirrel_Girl_Race/mouth/3D_Mouth_F.tri": "348e1c6164fc0ba9b3a17d24e205f41ea685089540b2bfecdef15e900d2dbe74",
+        "work/follower-mapping-20261007/Squirrel girl Follower_1.1/Fomod/Base_Files/meshes/Squirrel_Girl_Race/corner/Corner_female.tri": "ad819d81ef542f0fc021fbd540fae213e8766855db4fbea10969dced70e20de4",
+        "work/follower-mapping-20261007/Squirrel girl Follower_1.1/Fomod/Base_Files/meshes/Squirrel_Girl_Race/Eyes/3D_Eyes_F_2.tri": "fe1bb6136218ab81112fb682d283e5799b0a1557fad513ccc37afc96acbc5fda",
+        "work/follower-mapping-20261007/Squirrel girl Follower_1.1/Fomod/Base_Files/meshes/Squirrel_Girl_Race/Eyes/3D_Eyes_F_Wet.tri": "fe1bb6136218ab81112fb682d283e5799b0a1557fad513ccc37afc96acbc5fda",
+        "work/follower-mapping-20261007/Squirrel girl Follower_1.1/Fomod/Base_Files/meshes/Squirrel_Girl_Race/lashes/OW_Lashes_F.tri": "f6ac22680c2e0aedf222f4561aa9aed582936fc89677eaecf7e6bbd93977afff",
+        "work/follower-mapping-20261007/Squirrel girl Follower_1.1/Fomod/Base_Files/meshes/Squirrel_Girl_Race/Eyes/Eye_Shadow.tri": "a18c7150a8062cee321e445344b927c4c6b8cc2101db9b251e2c41c13cd92720",
+        "work/follower-mapping-20261007/Squirrel girl Follower_1.1/Fomod/Base_Files/meshes/Squirrel_Girl_Race/Eyes/3D_Eyes_F_1.tri": "fe1bb6136218ab81112fb682d283e5799b0a1557fad513ccc37afc96acbc5fda",
+        "work/follower-mapping-20261007/Squirrel girl Follower_1.1/Fomod/Base_Files/meshes/Squirrel_Girl_Race/Brow/femaleheadbrows.tri": "64cc9f0fdbdee2d7a6c0e36192000978796200a3d0379d9a0be171eb1b1860eb",
+        "work/follower-mapping-20261007/Squirrel girl Follower_1.1/Fomod/Base_Files/meshes/Squirrel_Girl_Race/head/femalehead.tri": "15641c13396c14049c5f4685ab5ae13cab2d5fa78de38ef869bfe4e8bc5e31d0"
+      }
+    }
+  ],
+  "anatomy": {
+    "file": "tooth-regions.bin",
+    "sha256": "e6fbeb152b7339c1a42190b35d144d7acf91745206ffcf0044c649620c8410f7",
+    "labels": {
+      "0": "upper teeth and gums",
+      "1": "lower teeth and gums",
+      "2": "tongue"
+    },
+    "counts": [
+      1784,
+      1945,
+      739
+    ],
+    "method": "Independent TRI connectivity: component 12 is the visually inspected tongue, components 0-11 lower dentition, 13-24 upper dentition. Identical topology and vertex ordering checked for all five source TRIs. Labels do not depend on BFA jaw or tongue weights.",
+    "triangles_sha256": "a589f31034f32a106b170bfc80ee0a417a35bbc44423236b46603e0f4d13442a"
+  }
+}

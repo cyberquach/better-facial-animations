@@ -7,7 +7,7 @@
 #   ./build.sh compat             also run the compatibility contracts in tests/compatibility.json
 #                                 (no Skyrim launch) and write their evidence to build/compatibility/
 #   ./build.sh test               also run the contracts, check every supported runtime (tests/runtimes_test.cc) and the
-#                                 Direct mesh placement, voice-start gating, losing and regaining the GPU
+#                                 Direct mesh placement, voice-start gating, GPU failure fallback for the
 #                                 session (tests/net_keeper_test.cc) and the CPU session
 #                                 (tests/ort_net_test.cc: the packaged networks load and run) and the
 #                                 line's emotion and call sites shared with another plugin, under $WINE
@@ -24,6 +24,10 @@ if [ "$1" = release ]; then
         n=${f##*/}; n=${n#"Better Facial Animations-$V."}; n=${n%.7z}; n=${n%%-*}
         case "$n" in ""|*[!0-9]*) ;; *) [ "$n" -gt "$N" ] && N=$n ;; esac
     done
+    if [ "$N" -ge 15 ]; then
+        echo "Release build exceeds SKSE revision limit (15); version unchanged." >&2
+        exit 1
+    fi
     V=$V.$((N + 1))
     BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
     case "$BRANCH" in
@@ -46,11 +50,11 @@ case "$JOBS" in ""|*[!0-9]*|0*) echo "JOBS must be a positive integer" >&2; exit
 mkdir -p build
 CXX="x86_64-w64-mingw32-g++ -std=c++17 -O2"
 # a test that includes the plugin's main source links its other objects (also read by tools/compatibility.py)
-PLUGIN_OBJS="build/player_speech.o build/settings.o build/pose.o build/net_keeper.o build/head_cache.o build/menu.o build/skse.o build/direct.o build/live_core.o build/ort_net.o"
+PLUGIN_OBJS="build/native_speech_hook.o build/player_speech.o build/settings.o build/pose.o build/net_keeper.o build/head_cache.o build/menu.o build/skse.o build/direct.o build/live_core.o build/ort_net.o"
 PLUGIN_LIBS="-L$FFMPEG/lib -lavformat -lavcodec -lswresample -lavutil -lbcrypt -lshell32 -lole32 -luuid -ldxgi"
 make -f tools/build.mk -B -j "$JOBS" CXX="$CXX" BFA_VERSION="$V" \
     FFMPEG="$FFMPEG" ORT="$ORT" build/better_facial_animations.o $PLUGIN_OBJS &&
-$CXX -shared -s build/better_facial_animations.o build/player_speech.o build/settings.o build/pose.o build/net_keeper.o build/head_cache.o build/menu.o build/skse.o build/direct.o build/live_core.o build/ort_net.o -o build/BetterFacialAnimations.dll \
+$CXX -shared -s build/better_facial_animations.o $PLUGIN_OBJS -o build/BetterFacialAnimations.dll \
     -L$FFMPEG/lib -lavformat -lavcodec -lswresample -lavutil -lbcrypt -lshell32 -lole32 -luuid -ldxgi -static -static-libgcc -static-libstdc++ || exit 1
 
 PKG=build/mod; P=$PKG/SKSE/Plugins; L=$P/BetterFacialAnimations/licenses
@@ -91,7 +95,7 @@ test)
     $CXX -Wall -static tests/passive_report_test.cc build/ort_net.o -o $T/passive_report_test.exe -Wl,--wrap=__imp_CreateDXGIFactory1 -ldxgi &&
     WINEDEBUG=-all ${WINE-wine64} $T/passive_report_test.exe &&
     $CXX -Wall -static src/net_keeper.cc tests/net_keeper_test.cc -o $T/net_keeper_test.exe &&
-    $CXX -Wall -static tests/ort_net_test.cc build/ort_net.o -o $T/ort_net_test.exe -ldxgi &&
+    $CXX -Wall -static tests/ort_net_test.cc build/ort_net.o -o $T/ort_net_test.exe -Wl,--wrap=__imp_CreateDXGIFactory1 -ldxgi &&
     WINEDEBUG=-all ${WINE-wine64} $T/runtimes_test.exe build/BetterFacialAnimations.dll $T &&
     WINEDEBUG=-all ${WINE-wine64} $T/net_keeper_test.exe &&
     WINEDEBUG=-all ${WINE-wine64} $T/ort_net_test.exe $P/BetterFacialAnimations "$P/BetterFacialAnimations/$(basename "$MODEL")" "$MODEL_FP32" &&

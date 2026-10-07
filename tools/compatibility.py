@@ -148,8 +148,18 @@ def run_case(case, result, fixtures, build_ok, version, out):
         return
     if case.get('python'):
         result['run_command'] = [sys.executable, case['python']]
-        rc = run_command(result['run_command'], out / (case['id'] + '.log'), 90)
-        result.update(status='pass' if rc == 0 else 'fail', returncode=rc)
+        if case.get('fixture_directory'):
+            fixture = fixtures.get(case['id'])
+            if fixture:
+                path = fixture if isinstance(fixture, str) else fixture['path']
+                result['run_command'] += ['--fixtures', path]
+            result['run_command'] += ['--output', str(out / case['id'])]
+        rc = run_command(result['run_command'], out / (case['id'] + '.log'),
+                         600 if case.get('fixture_directory') else 90)
+        status = 'pass' if rc == 0 else 'fail'
+        if rc == 2 and case.get('fixture_directory'):
+            status = 'blocked'
+        result.update(status=status, returncode=rc)
         return
     if not build_ok:
         result['reason'] = 'production build failed'
@@ -210,6 +220,8 @@ def main():
               ROOT / 'tests/compatibility.json', Path(__file__)]
     inputs += sorted((ROOT / 'src').glob('*')) + sorted((ROOT / 'tests').glob('*.cc'))
     inputs += sorted((ROOT / 'tests').glob('*.py'))
+    inputs += [ROOT / c['python'] for c in selected if c.get('python')]
+    inputs += [ROOT / 'tests/follower_teeth.json']
     report = {
         'schema': 1,
         'tier': args.tier,

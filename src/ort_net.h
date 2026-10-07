@@ -26,7 +26,7 @@ struct OrtOptions {
 // dll_dir: folder holding onnxruntime.dll / DirectML.dll. info receives a
 // one-line description for the log. The session has run one batch when this
 // returns: on the GPU all its VRAM (weights and work buffers) is allocated
-// and stays allocated until the Net is destroyed.
+// and stays allocated until the Net is destroyed (OS residency is not guaranteed).
 std::unique_ptr<Net> CreateOrtNet(const std::wstring& dll_dir,
                                   const std::wstring& model,
                                   const OrtOptions& o, std::string& err,
@@ -43,19 +43,14 @@ std::unique_ptr<Net> CreateOrtNet3(const std::wstring& dll_dir,
 GpuState QueryGpu();
 
 // What a bug report about the GPU session needs, one line each: Windows, the
-// adapters and their drivers, what Direct3D 12 offers on adapter 0 (the
-// driver's metacommands among it) and the modules loaded in the game that
+// adapters, drivers, memory budget and the modules loaded in the game that
 // are not Windows' own, with their versions. With probe_gpu=false, only
 // passive OS/module metadata is collected; no graphics device is created.
 std::vector<std::string> GpuReport(bool probe_gpu);
 
-// True once onnxruntime.dll creates its Direct3D 12 device through the plugin
-// (the test checks the import is still there).
-bool DeviceRedirected();
-
 // true: sessions run on the wrapper of the Direct3D 12 device that ReShade (or
 // the like) hands out, not on the device inside it. Set before the first
-// session and GpuReport.
+// session. Default true; false is an explicit legacy unwrapping experiment.
 void SetUseDeviceWrapper(bool use);
 
 // Where onnxruntime's own warnings and errors go (the first 200; any

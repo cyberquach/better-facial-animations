@@ -66,10 +66,10 @@ void CheckScales() {
     config.expressive_faces[1] = mask & 2;
     for (bool female : {false, true}) {
       for (float value : {0.f, 0.5f, 1.f, 2.f}) {
-        Tune tune;
-        tune.direct_scale[direct::kMouth] = value;
+        FaceTune settings;
+        settings.direct_scale[direct::kMouth] = value;
         float scales[direct::kNumRegions];
-        SpeechScales(head, tune, female, scales);
+        SpeechScales(head, settings, female, scales);
         const float gain = (mask & (female ? 2 : 1)) ? 0.85f : 1.f;
         assert(std::fabs(scales[direct::kMouth] - value * 0.5f * gain) < 1e-6f);
         for (int r = 0; r < direct::kNumRegions; ++r)

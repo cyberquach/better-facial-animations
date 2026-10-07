@@ -28,7 +28,8 @@
 struct OrtDmlApi {
   OrtStatus*(ORT_API_CALL* SessionOptionsAppendExecutionProvider_DML)(
       OrtSessionOptions*, int device_id);
-  void* SessionOptionsAppendExecutionProvider_DML1;
+  OrtStatus*(ORT_API_CALL* SessionOptionsAppendExecutionProvider_DML1)(
+      OrtSessionOptions*, IUnknown* dml_device, ID3D12CommandQueue* queue);
   void* CreateGPUAllocationFromD3DResource;
   void* FreeGPUAllocation;
   void* GetD3D12ResourceFromAllocation;
@@ -36,7 +37,8 @@ struct OrtDmlApi {
   // The DirectML device (IDMLDevice, no reference added) the options'
   // provider was made with.
   OrtStatus*(ORT_API_CALL* GetDMLDevice)(OrtSessionOptions*, IUnknown** device);
-  void* GetDMLCommandQueue;
+  OrtStatus*(ORT_API_CALL* GetDMLCommandQueue)(OrtSessionOptions*,
+                                             ID3D12CommandQueue** queue);
 };
 
 namespace a2f {
@@ -51,6 +53,14 @@ bool Check(OrtStatus* s, std::string& err, const char* what) {
   if (!s) return true;
   err = std::string(what) + ": " + api->GetErrorMessage(s);
   api->ReleaseStatus(s);
+  return false;
+}
+
+bool CheckHr(HRESULT hr, std::string& err, const char* what) {
+  if (SUCCEEDED(hr)) return true;
+  char code[16];
+  snprintf(code, sizeof code, "%08lX", static_cast<unsigned long>(hr));
+  err = std::string(what) + ": " + code;
   return false;
 }
 
@@ -97,12 +107,8 @@ FARPROC D3d12Export(const char* id) {
   return d3d12 ? GetProcAddress(d3d12, id) : nullptr;
 }
 
-// Set when D3D12CreateDevice handed out a wrapper of the device.
-std::atomic<bool> device_wrapped{false};
-// Set when onnxruntime.dll creates its device with CreateRealDevice.
-bool device_redirected;
-// The ini's UseDeviceWrapper: CreateRealDevice returns the wrapper as it is.
-std::atomic<bool> use_wrapper{false};
+// Keep the API-provided identity unless Debug/UnwrapDevice is explicitly set.
+std::atomic<bool> use_wrapper{true};
 
 // Retain each wrapper until all session/device references have been released.
 using Wrappers = std::vector<ComPtr<IUnknown>>;
@@ -122,11 +128,10 @@ class ScopedWrappers {
 };
 
 // Consumes GetDevice's reference. Only unwrap when this thread has an owner
-// that can retain the wrapper, including when the import runs on another thread.
+// that can retain the wrapper. No import table or shared vtable is modified.
 void SelectDevice(ComPtr<IUnknown> real, void** out) {
   IUnknown* const wrapper = static_cast<IUnknown*>(*out);
   if (real.get() != wrapper) {
-    device_wrapped = true;
     if (use_wrapper || !wrappers_kept) return;
     wrappers_kept->emplace_back(wrapper);
   } else {
@@ -135,11 +140,9 @@ void SelectDevice(ComPtr<IUnknown> real, void** out) {
   *out = real.release();
 }
 
-// D3D12CreateDevice, returning the device Direct3D itself made. ReShade hooks
-// that function and hands out a wrapper of the device, on which DirectML
-// loses the device on some systems (887A0005). A wrapper passes fence
-// creation on to the device, and the fence names the device that made it.
-HRESULT WINAPI CreateRealDevice(IUnknown* adapter, D3D_FEATURE_LEVEL level,
+// Keep the API-provided device by default. The explicit debug opt-out uses
+// a fence's parent to select a native device, retaining its original wrapper.
+HRESULT WINAPI CreateSelectedDevice(IUnknown* adapter, D3D_FEATURE_LEVEL level,
                                 REFIID riid, void** out) {
   using Fn = HRESULT(WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
   static const auto create = reinterpret_cast<Fn>(
@@ -147,6 +150,7 @@ HRESULT WINAPI CreateRealDevice(IUnknown* adapter, D3D_FEATURE_LEVEL level,
   if (!create) return E_NOINTERFACE;
   const HRESULT hr = create(adapter, level, riid, out);
   if (FAILED(hr) || !out) return hr;  // no out: only asked whether it can
+  if (use_wrapper) return hr;  // Keep the API-provided identity by default.
   IUnknown* const got = static_cast<IUnknown*>(*out);
   const ComPtr<ID3D12Device> device = As<ID3D12Device>(got);
   ID3D12Fence* made = nullptr;
@@ -161,46 +165,6 @@ HRESULT WINAPI CreateRealDevice(IUnknown* adapter, D3D_FEATURE_LEVEL level,
   return hr;
 }
 
-// Makes onnxruntime.dll create its Direct3D 12 device with CreateRealDevice,
-// by replacing the entry of its delay-load import table for D3D12CreateDevice
-// (imported by ordinal). False when it has no such import.
-bool RedirectCreateDevice(HMODULE ort) {
-  const FARPROC create = D3d12Export("D3D12CreateDevice");
-  if (!create) return false;
-  auto* base = reinterpret_cast<uint8_t*>(ort);
-  auto* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(
-      base + reinterpret_cast<IMAGE_DOS_HEADER*>(base)->e_lfanew);
-  const IMAGE_DATA_DIRECTORY& dir =
-      nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT];
-  if (!dir.VirtualAddress) return false;
-  for (auto* d = reinterpret_cast<IMAGE_DELAYLOAD_DESCRIPTOR*>(
-           base + dir.VirtualAddress);
-       d->DllNameRVA; ++d) {
-    if (_stricmp(reinterpret_cast<char*>(base + d->DllNameRVA), "d3d12.dll"))
-      continue;
-    auto* name =
-        reinterpret_cast<IMAGE_THUNK_DATA*>(base + d->ImportNameTableRVA);
-    auto* slot =
-        reinterpret_cast<IMAGE_THUNK_DATA*>(base + d->ImportAddressTableRVA);
-    for (; name->u1.AddressOfData; ++name, ++slot) {
-      const char* const id =
-          IMAGE_SNAP_BY_ORDINAL(name->u1.Ordinal)
-              ? reinterpret_cast<const char*>(IMAGE_ORDINAL(name->u1.Ordinal))
-              : reinterpret_cast<IMAGE_IMPORT_BY_NAME*>(
-                    base + name->u1.AddressOfData)
-                    ->Name;
-      if (D3d12Export(id) != create) continue;
-      DWORD protect;
-      if (!VirtualProtect(slot, sizeof *slot, PAGE_READWRITE, &protect))
-        return false;
-      slot->u1.Function = reinterpret_cast<ULONGLONG>(&CreateRealDevice);
-      VirtualProtect(slot, sizeof *slot, protect, &protect);
-      return true;
-    }
-  }
-  return false;
-}
-
 // Adapter 0's Direct3D 12 device: one per adapter per process, so the very
 // device DirectML runs on. Null without Direct3D 12. Its wrapper, if any, is
 // kept by the caller's ScopedWrappers.
@@ -210,7 +174,7 @@ ComPtr<ID3D12Device> OpenDevice() {
   if (!factory || FAILED(factory->EnumAdapters(0, &first))) return nullptr;
   const ComPtr<IDXGIAdapter> adapter(first);
   ID3D12Device* device = nullptr;
-  if (FAILED(CreateRealDevice(adapter.get(), D3D_FEATURE_LEVEL_11_0,
+  if (FAILED(CreateSelectedDevice(adapter.get(), D3D_FEATURE_LEVEL_11_0,
                               __uuidof(ID3D12Device),
                               reinterpret_cast<void**>(&device))))
     device = nullptr;
@@ -251,10 +215,12 @@ class OrtNet : public Net {
   // device, dml (may be null): held to ask why they were lost when a run
   // fails.
   OrtNet(OrtPtr<OrtSession> sess, OrtPtr<OrtMemoryInfo> mem, int batch,
-         ComPtr<ID3D12Device> device, ComPtr<IUnknown> dml, Wrappers wrappers)
+         ComPtr<ID3D12Device> device, ComPtr<IUnknown> dml,
+         ComPtr<ID3D12CommandQueue> queue, Wrappers wrappers)
       : wrappers_(std::move(wrappers)),
         device_(std::move(device)),
         dml_(std::move(dml)),
+        queue_(std::move(queue)),
         mem_(std::move(mem)),
         sess_(std::move(sess)),
         batch_(batch) {}
@@ -304,6 +270,7 @@ class OrtNet : public Net {
   Wrappers wrappers_;
   ComPtr<ID3D12Device> device_;
   ComPtr<IUnknown> dml_;
+  ComPtr<ID3D12CommandQueue> queue_;
   OrtPtr<OrtMemoryInfo> mem_;
   OrtPtr<OrtSession> sess_;
   int batch_;
@@ -314,10 +281,12 @@ class OrtNet3 : public Net {
  public:
   // device, dml: as OrtNet's.
   OrtNet3(OrtPtr<OrtSession> sess, OrtPtr<OrtMemoryInfo> mem,
-          ComPtr<ID3D12Device> device, ComPtr<IUnknown> dml, Wrappers wrappers)
+          ComPtr<ID3D12Device> device, ComPtr<IUnknown> dml,
+         ComPtr<ID3D12CommandQueue> queue, Wrappers wrappers)
       : wrappers_(std::move(wrappers)),
         device_(std::move(device)),
         dml_(std::move(dml)),
+        queue_(std::move(queue)),
         mem_(std::move(mem)),
         sess_(std::move(sess)) {}
   int Version() const override { return 3; }
@@ -385,6 +354,7 @@ class OrtNet3 : public Net {
   Wrappers wrappers_;
   ComPtr<ID3D12Device> device_;
   ComPtr<IUnknown> dml_;
+  ComPtr<ID3D12CommandQueue> queue_;
   OrtPtr<OrtMemoryInfo> mem_;
   OrtPtr<OrtSession> sess_;
 };
@@ -404,6 +374,37 @@ void ORT_API_CALL OrtLog(void*, OrtLoggingLevel severity, const char* category,
           (severity >= ORT_LOGGING_LEVEL_ERROR ? "error" : "warning") + " [" +
           (category ? category : "") + "] " + (location ? location : "") +
           ": " + (message ? message : ""));
+}
+
+// GPU-only load. ORT delay-loads DirectML by name, so load the packaged
+// module before touching its GPU provider. Never load or probe it on CPU.
+// DMLCreateDevice1(device, DML_CREATE_DEVICE_FLAGS, DML_FEATURE_LEVEL, ...).
+using CreateDml = HRESULT(WINAPI*)(ID3D12Device*, UINT, UINT, REFIID, void**);
+CreateDml create_dml;
+// IDMLDevice and DML_FEATURE_LEVEL_5_0 from DirectML.h, matching ORT 1.24.
+constexpr GUID kIidDmlDevice = {
+    0x6dbd6437,
+    0x96fd,
+    0x423f,
+    {0xa9, 0x8c, 0xae, 0x5e, 0x7c, 0x2a, 0x57, 0x3f}};
+constexpr UINT kDmlFeatureLevel5_0 = 0x5000;
+bool LoadDirectMl(const std::wstring& dll_dir, std::string& err) {
+  if (create_dml) return true;
+  const HMODULE module = LoadLibraryExW((dll_dir + L"\\DirectML.dll").c_str(),
+                                       nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+  if (!module) {
+    err = "cannot load DirectML.dll (error " + std::to_string(GetLastError()) + ")";
+    return false;
+  }
+  create_dml = reinterpret_cast<CreateDml>(
+      reinterpret_cast<void*>(GetProcAddress(module, "DMLCreateDevice1")));
+  if (!create_dml) {
+    FreeLibrary(module);
+    err = "DirectML.dll: DMLCreateDevice1 unavailable";
+    return false;
+  }
+  // Successful modules stay loaded as long as the worker and its sessions.
+  return true;
 }
 
 // Loads onnxruntime.dll from dll_dir, once.
@@ -436,19 +437,16 @@ bool LoadApi(const std::wstring& dll_dir, std::string& err) {
   }
   // The successful module and environment live as long as the worker.
   version = base()->GetVersionString();
-  device_redirected = RedirectCreateDevice(h);
-  if (!device_redirected && ort_log)
-    ort_log("onnxruntime.dll does not import D3D12CreateDevice as expected: "
-            "a wrapper of Direct3D 12 (ReShade) stays in the model's way");
   return true;
 }
 
 // What a session is made of. Destroyed in reverse: the session first, the
-// device after it and the wrappers the devices came out of last.
+// queue/device after it and the wrappers the devices came out of last.
 struct Session {
   Wrappers wrappers;  // of device and of the device onnxruntime made
   ComPtr<ID3D12Device> device;  // held to ask why it was lost; null on the CPU
   ComPtr<IUnknown> dml_device;  // the session's DirectML device, or null
+  ComPtr<ID3D12CommandQueue> queue;
   OrtPtr<OrtMemoryInfo> mem;
   OrtPtr<OrtSession> sess;
 };
@@ -462,7 +460,6 @@ bool CreateSession(const std::wstring& model, bool gpu, bool metacommands,
                    Session& out, std::string& err) {
   Session s;
   const ScopedWrappers keep(s.wrappers);
-  if (gpu) s.device = OpenDevice();
   OrtSessionOptions* options = nullptr;
   bool ok = Check(api->CreateSessionOptions(&options), err, "options");
   const OrtPtr<OrtSessionOptions> so(options);
@@ -476,26 +473,66 @@ bool CreateSession(const std::wstring& model, bool gpu, bool metacommands,
                    reinterpret_cast<const void**>(&dml)),
                err, "DML api");
     if (ok && metacommands) {
-      ok = Check(dml->SessionOptionsAppendExecutionProvider_DML(so.get(), 0),
-                 err, "DirectML");
+      s.device = OpenDevice();
+      if (!s.device) {
+        err = "DirectML: cannot create D3D12 device";
+        ok = false;
+      }
+      IUnknown* made = nullptr;
+      if (ok)
+        ok = CheckHr(create_dml(s.device.get(), 0, kDmlFeatureLevel5_0,
+                                kIidDmlDevice, reinterpret_cast<void**>(&made)),
+                     err, "DML device");
+      s.dml_device.reset(made);
+      D3D12_COMMAND_QUEUE_DESC desc{};
+      desc.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
+      desc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+      // No DISABLE_GPU_TIMEOUT: preserve Windows' normal recovery policy.
+      ID3D12CommandQueue* queue = nullptr;
+      if (ok) ok = CheckHr(s.device->CreateCommandQueue(
+          &desc, __uuidof(ID3D12CommandQueue), reinterpret_cast<void**>(&queue)),
+          err, "DML compute queue");
+      s.queue.reset(queue);
+      if (ok) {
+        s.queue->SetName(L"Better Facial Animations inference");
+        // ORT validates the COM identities of the queue and DML parents.
+        ok = Check(dml->SessionOptionsAppendExecutionProvider_DML1(
+                       so.get(), s.dml_device.get(), s.queue.get()), err,
+                   "DirectML explicit device/queue");
+      }
     } else if (ok) {
-      // only the provider's key / value form can turn them off
+      // ORT 1.24's DML1 API cannot disable metacommands. Preserve one bounded
+      // supported fallback; ORT owns this device/queue, with no import patch
+      // or unwrapping. Never mix it with objects from the explicit path.
       const char* const keys[] = {"device_id", "disable_metacommands"};
       const char* const values[] = {"0", "true"};
       ok = Check(api->SessionOptionsAppendExecutionProvider(so.get(), "DML",
                                                             keys, values, 2),
-                 err, "DirectML");
-    }
-    // the session's DirectML device (handed out without a reference), to ask
-    // it why it stopped
-    IUnknown* dml_device = nullptr;
-    if (ok && !dml->GetDMLDevice(so.get(), &dml_device) && dml_device) {
-      dml_device->AddRef();
-      s.dml_device.reset(dml_device);
+                 err, "DirectML without metacommands");
+      IUnknown* device = nullptr;
+      ID3D12CommandQueue* queue = nullptr;
+      if (ok)
+        ok = Check(dml->GetDMLDevice(so.get(), &device), err, "DML device query");
+      if (ok)
+        ok = Check(dml->GetDMLCommandQueue(so.get(), &queue), err, "DML queue query");
+      if (ok && (!device || !queue)) {
+        err = "DirectML: provider returned no device or queue";
+        ok = false;
+      }
+      if (ok) {
+        device->AddRef();
+        s.dml_device.reset(device);
+        queue->AddRef();
+        s.queue.reset(queue);
+        ID3D12Device* parent = nullptr;
+        ok = CheckHr(queue->GetDevice(__uuidof(ID3D12Device),
+                                     reinterpret_cast<void**>(&parent)), err, "DML queue parent");
+        s.device.reset(parent);
+      }
     }
     // DML's memory arena stays on: it keeps the work buffers of a run
-    // allocated between runs (~16 MB more resident than freeing them), so a
-    // loaded session never has to find VRAM again.
+    // allocated between runs (~16 MB more resident than freeing them). This
+    // avoids reallocation; Windows can still evict resident GPU memory.
     for (const char* name : dims) {
       if (ok) {
         ok = Check(api->AddFreeDimensionOverrideByName(so.get(), name, batch),
@@ -539,6 +576,7 @@ std::unique_ptr<Net> CreateOrtNet(const std::wstring& dll_dir,
                                   const std::wstring& model,
                                   const OrtOptions& o, std::string& err,
                                   std::string& info) {
+  if (o.gpu && !LoadDirectMl(dll_dir, err)) return nullptr;
   if (!LoadApi(dll_dir, err)) return nullptr;
   const int batch = std::max(1, o.batch);
   Session s;
@@ -549,12 +587,12 @@ std::unique_ptr<Net> CreateOrtNet(const std::wstring& dll_dir,
     return nullptr;
   info = std::string("Audio2Face-3D v2.3, onnxruntime ") + version +
          (!o.gpu ? ", CPU 2 threads"
-          : o.metacommands ? ", DirectML device 0, metacommands on"
-                           : ", DirectML device 0, metacommands off") +
+          : o.metacommands ? ", DirectML device 0, explicit compute queue, metacommands on"
+                           : ", DirectML device 0, provider-owned queue, metacommands off") +
          ", batch " + std::to_string(batch);
   auto net = std::make_unique<OrtNet>(std::move(s.sess), std::move(s.mem),
                                       batch, std::move(s.device),
-                                      std::move(s.dml_device),
+                                      std::move(s.dml_device), std::move(s.queue),
                                       std::move(s.wrappers));
   // One run now: a session that cannot run fails here and not on the first
   // line, and DirectML allocates its work buffers.
@@ -569,6 +607,7 @@ std::unique_ptr<Net> CreateOrtNet3(const std::wstring& dll_dir,
                                    const std::wstring& model,
                                    const OrtOptions& o, std::string& err,
                                    std::string& info) {
+  if (o.gpu && !LoadDirectMl(dll_dir, err)) return nullptr;
   if (!LoadApi(dll_dir, err)) return nullptr;
   Session s;
   if (!CreateSession(model, o.gpu, o.metacommands,
@@ -578,11 +617,11 @@ std::unique_ptr<Net> CreateOrtNet3(const std::wstring& dll_dir,
     return nullptr;
   info = std::string("Audio2Face-3D v3.0, onnxruntime ") + version +
          (!o.gpu ? ", CPU 2 threads"
-          : o.metacommands ? ", DirectML device 0, metacommands on"
-                           : ", DirectML device 0, metacommands off");
+          : o.metacommands ? ", DirectML device 0, explicit compute queue, metacommands on"
+                           : ", DirectML device 0, provider-owned queue, metacommands off");
   auto net = std::make_unique<OrtNet3>(std::move(s.sess), std::move(s.mem),
                                        std::move(s.device),
-                                       std::move(s.dml_device),
+                                       std::move(s.dml_device), std::move(s.queue),
                                        std::move(s.wrappers));
   // One run now, as CreateOrtNet's.
   std::vector<float> x(kWindow3), emo(kFrames3 * kNumMod), state(kState3),
@@ -635,12 +674,10 @@ std::string FileVersion(const wchar_t* path) {
 
 void SetOrtLog(void (*log)(const std::string&)) { ort_log = log; }
 
-bool DeviceRedirected() { return device_redirected; }
-
 void SetUseDeviceWrapper(bool use) { use_wrapper = use; }
 
 // GpuReport's lines about the graphics: the adapters and their drivers and
-// what Direct3D 12 offers on adapter 0, for which a device is created.
+// memory budget. No diagnostic D3D12 device is created.
 static void ReportGraphics(std::vector<std::string>& out) {
   char b[900];
   // every adapter, with its driver version
@@ -672,49 +709,6 @@ static void ReportGraphics(std::vector<std::string>& out) {
              g.used_mb, g.budget_mb);
     out.push_back(b);
   }
-  // what Direct3D 12 offers DirectML on adapter 0
-  Wrappers wrappers;  // released after the device
-  const ScopedWrappers keep(wrappers);
-  if (const ComPtr<ID3D12Device> device = OpenDevice()) {
-    const D3D_FEATURE_LEVEL levels[] = {
-        D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_12_0,
-        D3D_FEATURE_LEVEL_12_1};
-    D3D12_FEATURE_DATA_FEATURE_LEVELS fl{};
-    fl.NumFeatureLevels = 4;
-    fl.pFeatureLevelsRequested = levels;
-    device->CheckFeatureSupport(D3D12_FEATURE_FEATURE_LEVELS, &fl, sizeof fl);
-    D3D12_FEATURE_DATA_D3D12_OPTIONS4 o4{};
-    const bool has4 = SUCCEEDED(device->CheckFeatureSupport(
-        D3D12_FEATURE_D3D12_OPTIONS4, &o4, sizeof o4));
-    snprintf(b, sizeof b,
-             "Direct3D 12 on adapter 0: feature level %X, 16-bit shader "
-             "operations %s, device removed reason %08lX",
-             static_cast<unsigned>(fl.MaxSupportedFeatureLevel),
-             !has4 ? "unknown" : o4.Native16BitShaderOpsSupported ? "yes" : "no",
-             static_cast<unsigned long>(device->GetDeviceRemovedReason()));
-    out.push_back(b);
-    const ComPtr<ID3D12Device5> device5 = As<ID3D12Device5>(device.get());
-    UINT n = 0;
-    if (device5 && SUCCEEDED(device5->EnumerateMetaCommands(&n, nullptr))) {
-      std::vector<D3D12_META_COMMAND_DESC> descs(n);
-      std::string names;
-      if (n && SUCCEEDED(device5->EnumerateMetaCommands(&n, descs.data())))
-        for (UINT i = 0; i < n && i < 60; ++i)
-          names += (i ? ", " : ": ") +
-                   (descs[i].Name ? Utf8(descs[i].Name) : std::string("?"));
-      out.push_back("driver metacommands offered: " + std::to_string(n) +
-                    names);
-    } else {
-      out.push_back("driver metacommands offered: unknown");
-    }
-  } else {
-    out.push_back("Direct3D 12 on adapter 0: no device");
-  }
-  if (device_wrapped)
-    out.push_back(std::string("Direct3D 12 hands out a wrapper of its device "
-                              "(ReShade does): the model runs on ") +
-                  (use_wrapper ? "the wrapper (UseDeviceWrapper=1)"
-                               : "the device itself"));
 }
 
 std::vector<std::string> GpuReport(bool probe_gpu) {

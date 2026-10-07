@@ -97,18 +97,23 @@ void RenderProblems(const Stats& st, size_t queued, const Tune& tune,
   if (!st.net_error.empty()) {
     // the problem, its cause and the advice; the rest on the last of them
     for (const auto& line : st.net_error) Notice(kRed, line);
-    snprintf(b, sizeof b, "\nTried %d time(s); next try in %.0f s. %s",
-             st.net_attempts, std::max(0.0, st.net_retry_at - Now()),
-             net_loaded ? "Lines run on the CPU meanwhile."
-                        : "Vanilla lip-sync plays meanwhile.");
+    if (st.net_gpu_disabled)
+      snprintf(b, sizeof b, "\nGPU disabled until restart. %s",
+               net_loaded ? "Lines run on the CPU." : "Vanilla lip-sync plays.");
+    else
+      snprintf(b, sizeof b, "\nTried %d time(s); next try in %.0f s. %s",
+               st.net_attempts, std::max(0.0, st.net_retry_at - Now()),
+               net_loaded ? "Lines run on the CPU meanwhile."
+                          : "Vanilla lip-sync plays meanwhile.");
     Tip(&kNetTip, ("Runtime message: " + st.net_detail + b).c_str());
   } else if (ready && tune.enabled && !net_loaded) {
     Notice(kYellow, "Loading the model.");
   }
   if (net_loaded && !st.net_gpu && config.gpu) {
-    Notice(kYellow, "On the CPU until the GPU is back: long lines start late.");
+    Notice(kYellow, "On the CPU until restart: long lines may start late.");
   }
-  for (const auto& w : a2f::GpuWarnings(gpu)) Notice(kYellow, w);
+  if (config.gpu && !st.net_gpu_disabled)
+    for (const auto& w : a2f::GpuWarnings(gpu)) Notice(kYellow, w);
   const double speed = st.audio_sec / std::max(st.gen_sec, 1e-6);
   if (st.lines >= 5 && speed < 2 && (st.net_gpu || !config.gpu)) {
     snprintf(b, sizeof b, "Slow (%.1fx realtime): lines start late.", speed);
@@ -133,18 +138,21 @@ void RenderProblems(const Stats& st, size_t queued, const Tune& tune,
 void RenderMenu() {
   static a2f::GpuState& gpu = *new a2f::GpuState;
   static double gpu_at = -1e9;
-  if (Now() - gpu_at > 1) {  // DXGI is too slow to ask every frame
+  size_t cached, queued;
+  const Stats st = SnapshotStats(cached, queued);
+  // CPU mode and a latched GPU failure must not probe graphics from the UI.
+  if (config.gpu && !st.net_gpu_disabled && Now() - gpu_at > 1) {
     gpu = a2f::QueryGpu();
     gpu_at = Now();
   }
-  size_t cached, queued;
-  const Stats st = SnapshotStats(cached, queued);
   const Tune tune = SnapshotTune();
   char b[400];
   ig.SeparatorText("Status");
   ig.Text("%s | %s", kVersion,
           st.net_info.empty() ? "model not loaded" : st.net_info.c_str());
-  if (gpu.known) {
+  if (!config.gpu || st.net_gpu_disabled) {
+    ig.Text("GPU diagnostics paused in CPU mode");
+  } else if (gpu.known) {
     ig.Text("GPU: %s, %.0f / %.0f MB VRAM", gpu.adapter.c_str(), gpu.used_mb,
             gpu.budget_mb);
     Tip(&gpu, "The VRAM the game uses, of what Windows grants it.");
@@ -161,31 +169,48 @@ void RenderMenu() {
     Tip(&kLinesTip, b);
   }
   RenderProblems(st, queued, tune, gpu);
-  ig.Text("Expressive Facial Animation: Men %s | Women %s",
-          config.expressive_faces[0] ? "detected" : "not detected",
-          config.expressive_faces[1] ? "detected" : "not detected");
-  Tip(config.expressive_faces,
-      "Mouth strength is multiplied by 0.85 for each detected edition; "
-      "otherwise it uses 1.0. Checks active Male 1.21 and Female 1.7 assets "
-      "at startup. Modified versions may not be recognized.");
+  ig.Text("Expressive Facial Animation - Male Edition: %s",
+          config.expressive_faces[0] ? "Installed mod detected" : "Not detected");
+  ig.Text("Expressive Facial Animation - Female Edition: %s",
+          config.expressive_faces[1] ? "Installed mod detected" : "Not detected");
+  snprintf(b, sizeof b,
+           "Mouth strength is multiplied by %g for each detected edition; "
+           "otherwise it uses 1.0. Checks active Male 1.21 and Female 1.7 "
+           "assets at startup. Modified versions may not be recognized.",
+           kExpressiveMouthScale);
+  Tip(config.expressive_faces, b);
   static const char* const kHeaders[] = {
       nullptr, "Model", "Playback", "Strength", "Emotion", "Debug"};
   Sec cur = Sec::kGeneral;
   bool changed = false;
+  int profile = -1;
   for (size_t i = 0; i < kNumParams; ++i) {
     const Param& p = kParams[i];
-    if (p.sec != cur) {
+    if (p.sec != cur || p.profile != profile) {
       cur = p.sec;
-      ig.SeparatorText(kHeaders[static_cast<int>(cur)]);
+      profile = p.profile;
+      snprintf(b, sizeof b, "%s%s",
+               profile < 0 ? ""
+               : profile == 2 ? "Player — "
+               : profile   ? "Female NPC — "
+                           : "Male NPC — ",
+               kHeaders[static_cast<int>(cur)]);
+      ig.SeparatorText(b);
     }
+    snprintf(b, sizeof b, "%s##%zu", p.label, i);
     ScopedLock guard(settings_lock);
-    if (p.flag ? ig.Checkbox(p.label, p.flag)
-               : ig.SliderFloat(p.label, p.value, p.lo, p.hi, "%.3g", 0)) {
+    if (p.flag ? ig.Checkbox(b, p.flag)
+               : ig.SliderFloat(b, p.value, p.lo, p.hi, "%.3g", 0)) {
       changed = true;
       if (p.flag)
         Log("setting %s = %d", p.key, *p.flag);
       else
-        Log("setting %s = %g", p.key, *p.value);
+        Log("setting %s%s = %g",
+            p.profile < 0 ? ""
+            : p.profile == 2 ? "Player "
+            : p.profile   ? "Female "
+                          : "Male ",
+            p.key, *p.value);
     }
     guard.Unlock();
     Tip(&p, p.tip);
@@ -200,7 +225,10 @@ void RenderMenu() {
     ResetTune();
     changed = true;
   }
-  if (changed) SaveIni();
+  if (changed) {
+    WakeWorker();
+    ScheduleSaveIni();
+  }
   Tip(kDefaults, "Resets the sliders and switches, except Model and Debug.");
   ig.SameLine(0, -1);
   if (ig.Button(kClear, ImVec2{0, 0})) {
