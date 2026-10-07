@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <initializer_list>
+#include <iterator>
 #include <utility>
 
 namespace direct {
@@ -360,6 +361,11 @@ float MaxAbs(const std::vector<float>& v) {
   return m;
 }
 
+bool IsFinite(const std::vector<float>& values) {
+  return std::all_of(values.begin(), values.end(),
+                     [](float value) { return std::isfinite(value); });
+}
+
 std::vector<float> Shifted(const std::vector<float>& v, const float off[3]) {
   std::vector<float> o(v);
   for (size_t i = 0; i < o.size(); ++i) o[i] += off[i % 3];
@@ -382,6 +388,19 @@ void RegionWeights(V3 p, float mid, float z_eye, float z_brow, float z_lips,
   w[kCheeks] =
       (1 - w[kBrows] - w[kEyes]) * Smoothstep((p.z - b3) / 1.5f + 0.5f);
   w[kMouth] = 1 - w[kBrows] - w[kEyes] - w[kCheeks];
+}
+
+// Lip controls taper into the surrounding skin and share mouth corners.
+void LipWeights(V3 p, float mid, V3 lips, float jaw_follow, float w[2]) {
+  const float edge = std::min({(2.6f - std::fabs(p.x - mid)) / .6f,
+                               (p.y - lips.y + 1.5f) / .5f,
+                               (2.f - std::fabs(p.z - lips.z)) / .5f});
+  const float weight = a2f::Smoothstep(edge);
+  // Use the same jaw-follow distinction as mapping: upper below .12,
+  // lower above .25, smoothly shared at the corners.
+  const float lower = a2f::Smoothstep((jaw_follow - .12f) / .13f);
+  w[0] = weight * (1 - lower);
+  w[1] = weight * lower;
 }
 
 // A skin vertex's scale: scales (kNumSkinRegions) by its region weights.
@@ -701,11 +720,11 @@ void Mouth(const Mark& mk, const ShapeIn& sh, std::vector<float> pos,
   float most = 0;
   for (uint32_t i = 0; i < nv; ++i)
     most = std::max(most, mag[i] = Len(At(&big[i * 3])));
-  if (most < 1e-4f) return;
+  const bool has_jaw_motion = most >= 1e-4f;
   // the lower teeth: the most moved, less those off their common motion
   std::vector<uint32_t> teeth;
   for (uint32_t i = 0; i < nv; ++i)
-    if (mag[i] >= 0.5f * most) teeth.push_back(i);
+    if (has_jaw_motion && mag[i] >= 0.5f * most) teeth.push_back(i);
   std::vector<float> rigid(static_cast<size_t>(nv) * 3);
   bool fitted = false;
   for (int pass = 0; pass < 4; ++pass) {
@@ -736,10 +755,11 @@ void Mouth(const Mark& mk, const ShapeIn& sh, std::vector<float> pos,
                      : mag[i] / most;
     out.jaw[i] = std::clamp(w, 0.f, 1.f);
   }
-  ModelTongue(mk, sh, teeth, mag, most, scale, rotation, out);
-  // BigAah's rigid set can include tongue vertices. Refine the jaw sample
-  // for each tongue phoneme before estimating its noise; do not exclude that
-  // whole set from the tongue, or require the tongue to move in BigAah.
+  if (has_jaw_motion)
+    ModelTongue(mk, sh, teeth, mag, most, scale, rotation, out);
+  // Refine the jaw sample per phoneme: BigAah can also move the tongue.
+  // With no jaw sample, classify independent phoneme motion directly; a
+  // separate tongue can be still in BigAah, while static teeth have no signal.
   std::vector<float> score(nv, 0.f);
   float noise = 0;
   for (int ph = 0; ph < kNumTonguePhonemes; ++ph) {
@@ -773,7 +793,7 @@ void Mouth(const Mark& mk, const ShapeIn& sh, std::vector<float> pos,
     for (uint32_t i = 0; i < nv; ++i)
       score[i] = std::max(score[i], residual[i]);
   }
-  const float lo = std::max(1.5f * noise, 0.02f * most),
+  const float lo = std::max({1e-4f, 1.5f * noise, 0.02f * most}),
               top = *std::max_element(score.begin(), score.end());
   for (uint32_t i = 0; i < nv; ++i) head.jaw_verts += out.jaw[i] > 0;
   if (top < 2.5f * lo || top < 0.05f * most) return;
@@ -899,8 +919,10 @@ namespace {
 // similarity that puts Mark on them.
 struct Registration {
   float mid, s, rot[9];
+  float unit;  // Head-space distance per nominal fitting unit.
   V3 t, lm[kNumLandmarks];
   V3 ToHead(V3 mark) const { return Rotate(rot, mark) * s + t; }
+  V3 InFittingUnits(V3 point) const { return point * (1.f / unit); }
 };
 
 Registration Register(const Mark& mk, const ShapeIn& skin, Head& out) {
@@ -915,6 +937,8 @@ Registration Register(const Mark& mk, const ShapeIn& skin, Head& out) {
     g.lm[i] = centroid(kLandmarkMorph[i], kLandmarkSide[i], g.mid);
     ml[i] = At(&mk.landmarks[i * 3]);
   }
+  // Normalize fitting distances to a nominal six-unit eye separation.
+  g.unit = Len(g.lm[1] - g.lm[0]) / 6.f;
   Similarity(ml, g.lm, kNumLandmarks, g.s, g.rot, g.t);
   for (int i = 0; i < kNumLandmarks; ++i)
     out.residual[i] = Len(g.lm[i] - g.ToHead(ml[i]));
@@ -941,8 +965,40 @@ void AutoScale(const ShapeIn& skin, float s, Head& out) {
 // The lips: a box around the pucker's centroid.
 bool InLipBox(const Registration& g, V3 p) {
   const V3 lips = g.lm[kLandmarkLips];
-  return std::fabs(p.x - g.mid) < 2.6f && p.y > lips.y - 1.5f &&
-         std::fabs(p.z - lips.z) < 2.0f;
+  return std::fabs(p.x - g.mid) < 2.6f * g.unit &&
+         p.y > lips.y - 1.5f * g.unit &&
+         std::fabs(p.z - lips.z) < 2.0f * g.unit;
+}
+
+// Ambiguous parts must fit behind this face's lips, with extents scaled by
+// its smile and eye separation. Work in the skin's space, as Mouth does.
+// Existing explicitly identified mouths keep their established mapping.
+bool OralGeometry(const ShapeIn& shape, const Registration& g,
+                  const float skin_offset[3]) {
+  if (!shape.nv || shape.morphs.size() <= kBigAah ||
+      shape.morphs[kBigAah].size() != shape.verts.size())
+    return false;
+  const V3 lips = g.lm[kLandmarkLips];
+  const float width = std::max(0.5f * Len(g.lm[7] - g.lm[6]),
+                               0.3f * Len(g.lm[1] - g.lm[0]));
+  if (!std::isfinite(width) || width < 1e-4f) return false;
+  float offset[3];
+  FrameOffset(shape.verts.data(), shape.nv, offset);
+  uint32_t inside = 0;
+  for (uint32_t i = 0; i < shape.nv; ++i) {
+    const V3 p = At(&shape.verts[i * 3]) + At(offset) - At(skin_offset);
+    const V3 delta = At(&shape.morphs[kBigAah][i * 3]);
+    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) ||
+        !std::isfinite(delta.x) || !std::isfinite(delta.y) ||
+        !std::isfinite(delta.z))
+      return false;
+    inside += std::fabs(p.x - g.mid) <= 1.5f * width &&
+              p.y >= lips.y - 3.f * width && p.y <= lips.y + 0.6f * width &&
+              std::fabs(p.z - lips.z) <= 1.5f * width;
+  }
+  // A few gum seam vertices may extend beyond the cavity. A static BigAah
+  // is valid for separate upper teeth; a missing morph vector is not.
+  return inside >= 0.9 * shape.nv;
 }
 
 // How far each of n vertices (pos; dz: its z under the open jaw, every
@@ -975,7 +1031,7 @@ void MapSkin(const Mark& mk, const Registration& g, const ShapeIn& skin,
   std::vector<uint32_t> mark_lips;
   for (uint32_t i = 0; i < mk.nv; ++i) {
     std::copy_n(&mw[i * 3], 3, &mw4[i * 4]);
-    mw4[i * 4 + 3] = kJawFollow * mark_f[i];
+    mw4[i * 4 + 3] = kJawFollow * g.unit * mark_f[i];
     if (mark_f[i] >= 0) mark_lips.push_back(i);
   }
   const KdTree all(mw.data(), mk.nv), lip(mw4.data(), mark_lips, 4);
@@ -989,12 +1045,12 @@ void MapSkin(const Mark& mk, const Registration& g, const ShapeIn& skin,
     uint32_t idx[kKnn];
     float dist[kKnn];
     V3 p = At(&skin.verts[v * 3]);
-    const float q[4] = {p.x, p.y, p.z, kJawFollow * head_f[v]};
+    const float q[4] = {p.x, p.y, p.z, kJawFollow * g.unit * head_f[v]};
     int n = head_f[v] >= 0 && !mark_lips.empty()
                 ? lip.Nearest(q, kKnn, idx, dist)
                 : all.Nearest(p, kKnn, idx, dist);
     double w[kKnn];
-    IdwWeights(dist, n, 1e-3, w);
+    IdwWeights(dist, n, 1e-3 * g.unit, w);
     std::fill(acc.begin(), acc.end(), 0.f);
     V3 matched{0, 0, 0};
     bool moves = false;
@@ -1047,11 +1103,15 @@ bool BuildHead(const Mark& mk, const std::vector<ShapeIn>& shapes,
     why = "no head skin shape";
     return false;
   }
+  if (!IsFinite(skin->verts)) {
+    why = "non-finite head vertices";
+    return false;
+  }
   const uint32_t nv = skin->nv;
   const size_t n3 = static_cast<size_t>(nv) * 3;
   auto has = [](const ShapeIn& s, size_t m) {
     return m < s.morphs.size() && s.morphs[m].size() == s.nv * 3 &&
-           MaxAbs(s.morphs[m]) >= 1e-4f;
+           IsFinite(s.morphs[m]) && MaxAbs(s.morphs[m]) >= 1e-4f;
   };
   for (Morph m : {kBlinkLeft, kBlinkRight, kBrowUpLeft, kBrowUpRight, kBigAah,
                   kOohQ, kHappy})
@@ -1064,6 +1124,23 @@ bool BuildHead(const Mark& mk, const std::vector<ShapeIn>& shapes,
     return skin->morphs[m];
   };
   const Registration g = Register(mk, *skin, out);
+  // Nonzero morphs can still identify the same point. Reject collapsed or
+  // inverted layouts before they produce a plausible-looking invalid fit.
+  const float eye_span = 6.f * g.unit;
+  const float eye_z = 0.5f * (g.lm[0].z + g.lm[1].z);
+  if (!std::isfinite(g.s) || g.s <= 0 || !std::isfinite(eye_span) ||
+      eye_span < 1e-4f ||
+      std::fabs(g.lm[1].x - g.lm[0].x) < 0.5f * eye_span ||
+      eye_z - g.lm[kLandmarkLips].z < 0.1f * eye_span ||
+      Len(g.lm[3] - g.lm[2]) < 0.1f * eye_span ||
+      Len(g.lm[7] - g.lm[6]) < 0.1f * eye_span ||
+      !std::all_of(std::begin(out.residual), std::end(out.residual),
+                   [eye_span](float residual) {
+                     return std::isfinite(residual) && residual < eye_span;
+                   })) {
+    why = "invalid facial landmark layout";
+    return false;
+  }
   AutoScale(*skin, g.s, out);
   std::vector<float> mw(static_cast<size_t>(mk.nv) * 3);  // Mark on the head
   for (uint32_t i = 0; i < mk.nv; ++i)
@@ -1086,14 +1163,22 @@ bool BuildHead(const Mark& mk, const std::vector<ShapeIn>& shapes,
   MapSkin(mk, g, *skin, mw, head_f, mark_f, lab, out);
   // region weights from the head's own eye and brow lines
   const V3 lips = g.lm[kLandmarkLips];
-  float z_eye = MovedZ(verts, morph(kBlinkLeft), morph(kBlinkRight), nv, 0.2f,
-                       0.5f * (g.lm[0].z + g.lm[1].z));
+  float z_eye = MovedZ(verts, morph(kBlinkLeft), morph(kBlinkRight), nv,
+                       0.2f * g.unit, 0.5f * (g.lm[0].z + g.lm[1].z));
   float z_brow = MovedZ(verts, morph(kBrowUpLeft), morph(kBrowUpRight), nv,
-                        0.1f, 0.5f * (g.lm[2].z + g.lm[3].z));
+                        0.1f * g.unit, 0.5f * (g.lm[2].z + g.lm[3].z));
   out.region_w.resize(static_cast<size_t>(nv) * kNumSkinRegions);
   for (uint32_t v = 0; v < nv; ++v)
-    RegionWeights(At(&verts[v * 3]), g.mid, z_eye, z_brow, lips.z,
+    RegionWeights(g.InFittingUnits(At(&verts[v * 3])), g.mid / g.unit,
+                  z_eye / g.unit, z_brow / g.unit, lips.z / g.unit,
                   &out.region_w[v * kNumSkinRegions]);
+  out.lip_w.assign(static_cast<size_t>(nv) * 2, 0.f);
+  for (uint32_t v = 0; v < nv; ++v) {
+    if (head_f[v] < 0) continue;
+    const V3 p = At(&verts[v * 3]);
+    LipWeights(g.InFittingUnits(p), g.mid / g.unit, g.InFittingUnits(lips),
+               head_f[v], &out.lip_w[v * 2]);
+  }
   MapJaw(mk, g, out);
   // Every shape: skin, followers, model jaw and authored tongue motion.
   float off[3];
@@ -1103,17 +1188,23 @@ bool BuildHead(const Mark& mk, const std::vector<ShapeIn>& shapes,
   for (size_t i = 0; i < n3; ++i)
     blink[i] = morph(kBlinkLeft)[i] + morph(kBlinkRight)[i];
   for (const ShapeIn& sh : shapes) {
-    if (sh.part == Part::kNone || sh.verts.size() != sh.nv * 3) continue;
+    if (!sh.nv || sh.verts.size() != static_cast<size_t>(sh.nv) * 3) continue;
+    Part part = sh.part;
+    if (sh.mouth_candidate && (part == Part::kPinned || part == Part::kNone) &&
+        OralGeometry(sh, g, off))
+      part = Part::kMouth;
+    if (part == Part::kNone) continue;
     Head::Shape hs;
     hs.name = sh.name;
-    hs.part = sh.part;
+    hs.part = part;
     hs.nv = sh.nv;
     for (int e = 0; e < kNumExpressions; ++e)
-      if (PlaysExpression(e) && has(sh, kExpression + e))
+      if (PlaysExpression(e) && Reads(sh.skin, part, kExpression + e) &&
+          has(sh, kExpression + e))
         hs.expr[e] = sh.morphs[kExpression + e];
     if (&sh == skin) {
       out.skin = static_cast<uint32_t>(out.shapes.size());
-    } else if (sh.part == Part::kMouth) {
+    } else if (part == Part::kMouth) {
       // into the skin's space: both to shape-local, the skin's back
       float mo[3];
       FrameOffset(sh.verts.data(), sh.nv, mo);
@@ -1121,7 +1212,7 @@ bool BuildHead(const Mark& mk, const std::vector<ShapeIn>& shapes,
       Mouth(mk, sh, Shifted(sh.verts, mo), g.s, g.rot, out, hs);
     } else {
       Follow(sh, local, nv, lab, lips.z + off[2], blink, g.mid, hs);
-      if (sh.part == Part::kPinned)
+      if (part == Part::kPinned)
         Pin(sh, local, nv, lab, lips.z + off[2], hs);
     }
     out.shapes.push_back(std::move(hs));
@@ -1144,9 +1235,13 @@ bool Coefficients(const Head& h, const a2f::Line* line, float frame,
 
 bool Evaluate(const Head& h, const float* coefficients, const float* scales,
               const float* expressions, const float* phonemes,
-              TongueMode tongue_mode, std::vector<std::vector<float>>& out) {
+              TongueMode tongue_mode, std::vector<std::vector<float>>& out,
+              float upper_lip, float lower_lip) {
   // Keep the authored tongue default at 1 in the user settings.
   constexpr float kAuthoredTongueGain = 1.5f;
+  // The authored cues' total: overlapping phonemes share it instead of
+  // stacking into an exaggerated held pose.
+  constexpr float kTongueCueTotal = 0.35f;
   const float authored_tongue_scale = scales[kTongue] * kAuthoredTongueGain;
   const uint32_t nk = h.k;
   out.resize(h.shapes.size());
@@ -1162,7 +1257,10 @@ bool Evaluate(const Head& h, const float* coefficients, const float* scales,
   if (speaking) {
     for (uint32_t v = 0; v < h.nv; ++v) {
       if (h.row[v] < 0) continue;
-      const float sv = RegionScale(h, v, scales);
+      float sv = RegionScale(h, v, scales);
+      if (!h.lip_w.empty())
+        sv *= 1 + (kUpperLipCalibration * upper_lip - 1) * h.lip_w[v * 2] +
+              (kLowerLipCalibration * lower_lip - 1) * h.lip_w[v * 2 + 1];
       const float* b = &h.basis[static_cast<size_t>(h.row[v]) * nk * 3];
       float d[3] = {};
       for (uint32_t k = 0; k < nk; ++k)
@@ -1195,16 +1293,16 @@ bool Evaluate(const Head& h, const float* coefficients, const float* scales,
     float one;
     Similarity(rest, now, kNumJawPoints, one, jr, jt, true);
   }
-  // Use every authored phoneme on the tongue mask. Keep
-  // overlaps from stacking into an exaggerated held pose. These are visual
-  // tuning defaults, not an anatomical reconstruction from the LIP track.
+  // Use every authored phoneme on the tongue mask. These are visual tuning
+  // defaults, not an anatomical reconstruction from the LIP track.
   float tongue_cues[kNumPhonemes] = {};
   float cue_sum = 0;
   for (int ph = 0; phonemes && ph < kNumPhonemes; ++ph) {
     tongue_cues[ph] = std::max(0.f, phonemes[ph]);
     cue_sum += tongue_cues[ph];
   }
-  for (float& cue : tongue_cues) cue *= 0.35f / std::max(1.f, cue_sum);
+  for (float& cue : tongue_cues)
+    cue *= kTongueCueTotal / std::max(1.f, cue_sum);
   for (size_t si = 0; si < h.shapes.size(); ++si) {
     const Head::Shape& s = h.shapes[si];
     std::vector<float>& o = out[si];

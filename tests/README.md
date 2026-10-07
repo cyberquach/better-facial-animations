@@ -59,3 +59,23 @@ a `contracts` entry for code behavior. Contract tests include the production
 source and mock only engine calls (see `scene_compat_test.cc`). Include a
 negative control (absent mod, wrong version, actor leaving the scene) so the
 case fails when the integration breaks.
+
+The `follower-teeth` asset case requires the ten locally prepared captures
+and the independent anatomical-label file pinned in
+[follower_teeth.json](follower_teeth.json), plus a native C++17 compiler
+(`HOST_CXX`, default `g++`). Add `"follower-teeth": {"path": "/path/to/captures"}`
+to the fixture map, then run:
+
+```sh
+python3 tools/compatibility.py --tier assets --case follower-teeth --fixtures fixtures.json
+```
+
+It checks both model bins, base/SMP heads, both tongue modes, tooth/jaw
+separation, preserved embedded-tongue articulation, skin/lip independence and
+finite basis responses. The meshes contain teeth, gums and a tongue; labels
+come from inspected TRI connectivity, not from BigAah or BFA tongue weights. Missing captures
+are blocked; changed hashes fail. Captures contain original local NIF positions
+and all 36 named TRI morphs, with source hashes in the manifest. Regenerate and
+review the pins when the morph inventory changes; do not pad missing captured
+channels to pass. Captures are not distributed. This is an offline geometry
+contract, not an in-game or SMP-physics test.

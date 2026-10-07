@@ -47,6 +47,11 @@ extern "C" uint64_t __wrap__ZN4skse4AddrEy(uint64_t id) {
     return reinterpret_cast<uint64_t>(&Lookup);
   return 0; // Unexpected engine calls must not silently succeed.
 }
+bfa::Tune LegacyTune() {
+  bfa::Tune t;
+  t.potato_mode = false;
+  return t;
+}
 int main() {
   using namespace bfa;
   for (uint32_t runtime : {skse::Version(1, 5, 97), skse::Version(1, 6, 1170),
@@ -118,7 +123,7 @@ int main() {
       // before attempting face/resource engine calls or queueing inference.
       for (uint32_t id : {0x14u, 0x123u}) {
         Field<uint32_t>(actor, kFormId) = id;
-        BeginSpeech(actor, "scene", 0, 2, 0, 0, Tune{}, world_epoch);
+        BeginSpeech(actor, "scene", 0, 2, 0, 0, LegacyTune(), world_epoch);
         CHECK(playing.empty() && queue.empty());
       }
       alignas(16) std::array<uint8_t, 0x300> storage{}, node{};
@@ -145,14 +150,15 @@ int main() {
         Count();
       };
       seed();
-      CHECK(Apply(fg, Tune{}, true, actor, 42, a2f::kNoSound, -1) &
+      CHECK(Apply(fg, LegacyTune(), true, actor, 42, a2f::kNoSound, -1) &
             kFaceChanged);
       CHECK(playing.empty());
       // Scene expressions just computed by the original update survive.
-      CHECK(Expressions(fg, 0, Tune{}, true, actor, 42) & kFaceChanged);
+      CHECK(Expressions(fg, 0, LegacyTune(), true, actor, 42) & kFaceChanged);
       CHECK(faces.empty());
       for (float v : values) CHECK(v == 0.65f);
-      CHECK(Expressions(fg, 0.016f, Tune{}, true, actor, 42) == kNoUpdate);
+      CHECK(Expressions(fg, 0.016f, LegacyTune(), true, actor, 42) ==
+            kNoUpdate);
       seed();
       Field<uint8_t*>(node.data(), kNodeFg.Get()) = fg;
       // No animation update before this morph call: no head mapping or
@@ -175,7 +181,7 @@ int main() {
       membership = nullptr;
       CHECK(!InScene(actor));
       partner_fg = fg; partner_ref = actor; partner_handle = 42;
-      Expressions(fg, 0.1f, Tune{}, false, actor, 42);
+      Expressions(fg, 0.1f, LegacyTune(), false, actor, 42);
       CHECK(faces.count(fg) && faces.at(fg).ownership_blend > 0);
       ResetPlayback(false);
     }

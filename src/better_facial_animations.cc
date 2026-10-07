@@ -33,6 +33,7 @@
 #include "net_keeper.h"
 #include "ort_net.h"
 #include "player_speech.h"
+#include "native_speech_hook.h"
 #include "plugin.h"
 #include "pose.h"
 #include "scoped_lock.h"
@@ -56,11 +57,16 @@ constexpr uint32_t PackVersion(const char* s) {
       part[i] = part[i] * 10 + (*s - '0');
     }
   }
-  return skse::Version(part[0], part[1], part[2]) | (part[3] & 0xF);
+  if (part[0] > 255 || part[1] > 255 || part[2] > 4095 || part[3] > 15)
+    return 0;
+  return skse::Version(part[0], part[1], part[2]) | part[3];
 }
 
 static_assert(PackVersion("3.0.1") == 0x03000010);
 static_assert(PackVersion("3.0.1.1") == 0x03000011);
+static_assert(PackVersion("3.2.0.15") == 0x0302000F);
+static_assert(PackVersion("3.2.0.16") == 0);
+static_assert(PackVersion(BFA_VERSION) != 0, "version cannot be encoded by SKSE");
 
 }  // namespace
 
@@ -105,6 +111,14 @@ struct Entry {
   State state = State::kPending;
   std::shared_ptr<const a2f::Line> line;
   uint64_t last_use = 0;
+  struct Requester {
+    uint32_t handle;
+    bool player;
+  };
+  // Pending content is reusable, but each requester has its own eligibility.
+  // Accessed under lock, including from inference cancellation callbacks.
+  std::vector<Requester> requesters;
+  uint64_t epoch = 0;
 };
 struct Job {
   std::string cache_key, path;
@@ -112,6 +126,7 @@ struct Job {
   a2f::Emotion emotion;
   // the speaker's sex: with v3.0 the identity that speaks it
   bool female = false;
+  std::shared_ptr<Entry> entry;
 };
 enum FaceUpdate { kNoUpdate = 0, kFaceChanged = 1, kKeepUpdating = 2 };
 constexpr int kDirectTail = 3;  // forced resets after the last Direct frame
@@ -195,6 +210,7 @@ constexpr size_t kMaxFaces = 8;
 
 SRWLOCK lock = SRWLOCK_INIT;  // guards everything below
 CONDITION_VARIABLE queue_cv = CONDITION_VARIABLE_INIT;
+uint64_t settings_revision = 0;  // lock held; prevents a lost settings wakeup
 auto& cache = *new std::unordered_map<std::string, std::shared_ptr<Entry>>;
 auto& queue = *new std::deque<Job>;
 // by FaceGen animation data
@@ -286,6 +302,12 @@ Stats SnapshotStats(size_t& cached, size_t& queued) {
   cached = cache.size();
   queued = queue.size();
   return st;
+}
+
+void WakeWorker() {
+  ScopedLock guard(lock);
+  ++settings_revision;
+  WakeConditionVariable(&queue_cv);
 }
 
 void ClearLines() {
@@ -403,23 +425,62 @@ bool InScene(const uint8_t* actor) {
   return false;
 }
 
+// speaker is cleared by the engine when dialogue closes; lastSpeaker (0x6C)
+// deliberately is not used. The same singleton already drives TrackPartner.
+uint32_t PartnerHandle() {
+  static auto mtm = reinterpret_cast<uint8_t**>(Addr(kIdMenuTopicManager));
+  return !loading_game && mtm && *mtm ? Field<uint32_t>(*mtm, kMtmSpeaker) : 0;
+}
+
+// Whether the actor is one the plugin animates at all: everyone, or in Potato
+// mode the player and the dialogue partner. Enabled is not part of it: that
+// pauses (Apply's snap) and resumes, this drops.
+bool DialogueAllows(const Tune& tune, uint32_t handle, bool player = false) {
+  return !tune.potato_mode || player || (handle && handle == PartnerHandle());
+}
+
+// Lock held: keep shared work while at least one requester still needs it.
+bool EntryAllowed(const Entry& entry, const Tune& tune) {
+  return entry.state == State::kPending && CurrentWorld(entry.epoch) &&
+         std::any_of(entry.requesters.begin(), entry.requesters.end(),
+                     [&](const Entry::Requester& requester) {
+                       return DialogueAllows(tune, requester.handle,
+                                             requester.player);
+                     });
+}
+
+bool JobAllowed(const Job& j) {
+  ScopedLock guard(lock, ScopedLock::kShared);
+  return EntryAllowed(*j.entry, SnapshotTune());
+}
+
+// Lock held. Never leave cancelled entries pending or poison future requests.
+void CancelJob(const Job& j) {
+  j.entry->state = State::kFailed;
+  auto it = cache.find(j.cache_key);
+  if (it != cache.end() && it->second == j.entry) cache.erase(it);
+}
+
 // Queue a line unless it is cached or in flight (with the emotion settings
 // as now: after a change the next line spoken is generated anew). Returns
 // its entry. female: the speaker's sex; with a face per sex (v3.0) a line is
 // generated for each.
 std::shared_ptr<Entry> Request(const std::string& stem, int emo, int val,
-                               bool female, bool urgent, const Tune& tune) {
+                               bool female, bool urgent, const Tune& tune,
+                               uint32_t speaker, uint64_t epoch,
+                               bool player = false) {
   std::string key = Lower(stem.c_str());
+  const FaceTune& settings = tune.ForActor(female, player);
   // neutral: no emotion to feed, or none wanted
-  if (tune.voice_emotion <= 0 || emo < 1 || emo > 7) {
+  if (settings.voice_emotion <= 0 || emo < 1 || emo > 7) {
     emo = 0;
     val = 0;
   }
   a2f::Emotion em;
   em.type = emo;
   em.value = val;
-  em.gain = emo ? tune.voice_emotion : 0;
-  em.swell = em.gain > 0 ? tune.voice_swell : 0;
+  em.gain = emo ? settings.voice_emotion : 0;
+  em.swell = em.gain > 0 ? settings.voice_swell : 0;
   auto part = [&key](double v) {
     key += '|';
     key += std::to_string(std::lround(v));
@@ -428,10 +489,19 @@ std::shared_ptr<Entry> Request(const std::string& stem, int emo, int val,
     part(v);
   if (model.faces.size() > 1) key += female ? "|f" : "|m";
   ScopedLock guard(lock);
+  if (!CurrentWorld(epoch) || !DialogueAllows(tune, speaker, player)) return {};
+  // Include in-flight work: it may already have left the queue.
+  auto previous = cache.find(key);
+  if (previous != cache.end() && previous->second->state == State::kPending &&
+      !EntryAllowed(*previous->second, tune)) {
+    previous->second->state = State::kFailed;
+    cache.erase(previous);
+  }
   auto& e = cache[key];
   if (!e) {
     e = std::make_shared<Entry>();
-    Job j{key, stem, em, female};
+    e->epoch = epoch;
+    Job j{key, stem, em, female, e};
     if (urgent) {
       queue.push_front(j);
     } else {
@@ -447,6 +517,14 @@ std::shared_ptr<Entry> Request(const std::string& stem, int emo, int val,
         queue.push_front(j);
         break;
       }
+  }
+  if (e->state == State::kPending &&
+      std::none_of(e->requesters.begin(), e->requesters.end(),
+                   [&](const Entry::Requester& requester) {
+                     return requester.handle == speaker &&
+                            requester.player == player;
+                   })) {
+    e->requesters.push_back({speaker, player});
   }
   e->last_use = ++use_clock;
   return e;
@@ -509,9 +587,10 @@ void LoadExpressiveFaces() {
         ReadGameFile(kExpressiveHeads[female].path, bytes) &&
         IsExpressiveHead(bytes, female);
   }
-  Log("Expressive Facial Animation: men %s, women %s",
-      config.expressive_faces[0] ? "detected (mouth x0.85)" : "not detected",
-      config.expressive_faces[1] ? "detected (mouth x0.85)" : "not detected");
+  Log("Expressive Facial Animation: men %s, women %s (mouth x%g if detected)",
+      config.expressive_faces[0] ? "detected" : "not detected",
+      config.expressive_faces[1] ? "detected" : "not detected",
+      kExpressiveMouthScale);
 }
 
 // ---------------- worker ----------------
@@ -531,16 +610,6 @@ a2f::Metacommands metacommands;
 std::unique_ptr<a2f::Net> CreateNet(bool gpu, std::string& err,
                                     std::string& info) {
   const std::wstring dir = PluginDir(), file = dir + L"\\" + config.model;
-  static bool dml_loaded;
-  if (gpu && !dml_loaded) {
-    // onnxruntime delay-loads DirectML.dll by name: load ours first so that
-    // is the one it gets
-    dml_loaded = LoadLibraryExW((dir + L"\\DirectML.dll").c_str(), nullptr,
-                                LOAD_WITH_ALTERED_SEARCH_PATH) != nullptr;
-    if (!dml_loaded)
-      skse::Report("DirectML.dll not loaded from %ls (error %lu)", dir.c_str(),
-                   GetLastError());
-  }
   a2f::OrtOptions o;
   o.gpu = gpu;
   o.batch = config.batch;
@@ -584,6 +653,9 @@ void PublishNet(const a2f::NetKeeper& keeper) {
     why.clear();
   } else if (keeper.attempts() != diagnosed) {
     diagnosed = keeper.attempts();
+    // The VRAM as the GPU session failed (DXGI only; no device is made).
+    // on_gpu() is already false here, so a latched failure is the one time
+    // after the latch the graphics are asked.
     why = a2f::DiagnoseNet(
         config.gpu, keeper.error(), diagnosed,
         config.gpu ? a2f::QueryGpu() : a2f::GpuState{},
@@ -595,7 +667,7 @@ void PublishNet(const a2f::NetKeeper& keeper) {
     if (config.gpu && !reported) {
       reported = true;
       skse::Report("-- at the first failure");
-      for (const auto& line : a2f::GpuReport(true))
+      for (const auto& line : a2f::GpuReport(false))
         skse::Report("%s", line.c_str());
     }
   }
@@ -607,10 +679,17 @@ void PublishNet(const a2f::NetKeeper& keeper) {
   stats.net_attempts = keeper.attempts();
   stats.net_retry_at = keeper.retry_at();
   stats.net_gpu = keeper.on_gpu();
+  stats.net_gpu_disabled = keeper.GpuDisabled();
 }
 
 // Generates one queued line and stores the result in the cache.
 void Process(const Job& j, a2f::NetKeeper& keeper) {
+  const auto allowed = [&] { return JobAllowed(j); };
+  if (!allowed()) {
+    ScopedLock guard(lock);
+    CancelJob(j);
+    return;
+  }
   static std::atomic<int> logged;
   std::vector<uint8_t> bytes;
   std::string err, file;
@@ -635,23 +714,27 @@ void Process(const Job& j, a2f::NetKeeper& keeper) {
                 if (net.Version() != 3)
                   return a2f::Generate(net, pcm.data(), pcm.size(), j.emotion,
                                        face.proj.data(), face.rest.data(),
-                                       face.k, *line, e);
+                                       face.k, *line, e, allowed);
                 // Claire speaks the women's lines, Mark the men's
                 const a2f::Face3 f{j.female ? 0 : 2, face.proj.data(),
                                    face.tongue_proj.data(), face.rest.data(),
                                    face.k};
-                return a2f::Generate3(net, pcm.data(), pcm.size(), j.emotion,
-                                      f, *line, e);
+                return a2f::Generate3(net, pcm.data(), pcm.size(), j.emotion, f,
+                                      *line, e, allowed);
               },
-              err, no_net))
+              err, no_net, allowed))
         line.reset();
       PublishNet(keeper);
     }
   }
   double ms = (Now() - t) * 1e3;
   ScopedLock guard(lock);
+  if (!EntryAllowed(*j.entry, SnapshotTune())) {
+    CancelJob(j);
+    return;
+  }
   auto it = cache.find(j.cache_key);
-  if (it != cache.end()) {
+  if (it != cache.end() && it->second == j.entry) {
     it->second->state = line ? State::kReady : State::kFailed;
     it->second->line = line;
     if (!line && no_net) cache.erase(it);
@@ -703,6 +786,44 @@ void Process(const Job& j, a2f::NetKeeper& keeper) {
   }
 }
 
+// One lifecycle/queue iteration. Tests can inspect the wait policy without
+// blocking; production waits under lock so jobs and settings cannot be lost.
+DWORD WorkerStep(a2f::NetKeeper& keeper, bool wait = true) {
+  uint64_t revision;
+  {
+    ScopedLock guard(lock);
+    revision = settings_revision;
+  }
+  const Tune tune = SnapshotTune();
+  // Keep the session ready in both modes; Potato mode restricts speakers,
+  // not residency. A GPU failure stays latched to CPU until restart.
+  if (tune.enabled && !keeper.Settled()) {
+    keeper.Ensure();
+    PublishNet(keeper);
+  }
+  ScopedLock worker_guard(lock);
+  for (auto it = queue.begin(); it != queue.end();) {
+    if (!EntryAllowed(*it->entry, SnapshotTune())) {
+      CancelJob(*it);
+      it = queue.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  if (queue.empty()) {
+    const DWORD timeout =
+        tune.enabled && !keeper.Settled() ? 1000 : INFINITE;
+    if (revision != settings_revision) return 0;
+    if (wait) SleepConditionVariableSRW(&queue_cv, &lock, timeout, 0);
+    return timeout;
+  }
+  Job j = queue.front();
+  queue.pop_front();
+  worker_guard.Unlock();
+  Process(j, keeper);
+  return 0;
+}
+
 DWORD WINAPI Worker(void*) {
   std::string err;
   if (!model.Load(PluginDir() + L"\\" + config.direct, err)) {
@@ -718,35 +839,11 @@ DWORD WINAPI Worker(void*) {
   skse::Report("settings: GPU=%d, batch %d, model %ls", config.gpu,
                config.batch, config.model.c_str());
   a2f::SetUseDeviceWrapper(config.use_device_wrapper);
-  for (const auto& line :
-       a2f::GpuReport(config.gpu && SnapshotTune().enabled))
+  for (const auto& line : a2f::GpuReport(config.gpu && SnapshotTune().enabled))
     skse::Report("%s", line.c_str());
   a2f::SetOrtLog([](const std::string& s) { skse::Report("%s", s.c_str()); });
-  // Loads the network at the main menu (little VRAM in use) and never
-  // unloads it: the worker does not end.
   a2f::NetKeeper keeper(config.gpu, CreateNet, Now, NetEvent);
-  auto load = [&keeper] {
-    keeper.Ensure();
-    PublishNet(keeper);
-  };
-  if (SnapshotTune().enabled) load();
-  for (;;) {
-    ScopedLock worker_guard(lock);
-    while (queue.empty()) {
-      // Without the wanted session: wake up to try it again.
-      SleepConditionVariableSRW(&queue_cv, &lock,
-                                keeper.Wanted() ? INFINITE : 1000, 0);
-      if (queue.empty() && SnapshotTune().enabled && !keeper.Wanted()) {
-        worker_guard.Unlock();
-        load();
-        worker_guard.Lock();
-      }
-    }
-    Job j = queue.front();
-    queue.pop_front();
-    worker_guard.Unlock();
-    Process(j, keeper);
-  }
+  for (;;) WorkerStep(keeper);
 }
 
 // ---------------- call-site hooks ----------------
@@ -829,12 +926,6 @@ uint32_t HandleOf(uint8_t* ref) {
   return handle;
 }
 
-// The handle of the reference the player is in a conversation with, or 0.
-uint32_t PartnerHandle() {
-  static auto mtm = reinterpret_cast<uint8_t**>(Addr(kIdMenuTopicManager));
-  return mtm && *mtm ? Field<uint32_t>(*mtm, kMtmSpeaker) : 0;
-}
-
 // The node is in the reference's 3D.
 bool OfRef(uint8_t* node, const uint8_t* ref) {
   for (int i = 0; node && i < 32; node = Field<uint8_t*>(node, kAvParent), ++i)
@@ -859,6 +950,7 @@ void BeginSpeech(uint8_t* actor, const std::string& stem, uint32_t sound_id,
                  float dur, int emo_type, int emo_value, const Tune& tune,
                  uint64_t epoch, PlayerSpeechPtr external = {}) {
   if (!CurrentWorld(epoch)) return;
+  if (!DialogueAllows(tune, HandleOf(actor), IsPlayer(actor))) return;
   if (InScene(actor)) {
     static std::atomic<int> logged;
     if (LogMore(logged)) Log("skip %s: its actor is in a scene", stem.c_str());
@@ -893,7 +985,10 @@ void BeginSpeech(uint8_t* actor, const std::string& stem, uint32_t sound_id,
     return;
   }
   const bool female = IsFemale(actor);
-  auto e = Request(stem, emo_type, emo_value, female, true, tune);
+  auto e =
+      Request(stem, emo_type, emo_value, female, true, tune, handle, epoch,
+              IsPlayer(actor));
+  if (!e) return;
   Playing p;
   p.entry = e;
   p.name = stem;
@@ -927,14 +1022,18 @@ void BeginSpeech(uint8_t* actor, const std::string& stem, uint32_t sound_id,
   Count();
 }
 
-__attribute__((noinline)) float SpeakHook(
-    uint8_t* actor, const char* voice, void* handle, uint64_t emo_type,
-    uint64_t emo_value, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9,
-    uint64_t a10, uint64_t a11, uint64_t a12, uint64_t a13, uint64_t a14) {
-  auto orig = SiteOrig<SpeakFn>(__builtin_return_address(0), kIdSpeakVoiceLine);
-  const uint64_t epoch = world_epoch;
-  float dur = orig(actor, voice, handle, emo_type, emo_value, a6, a7, a8, a9,
-                   a10, a11, a12, a13, a14);
+// Shared observation runs only once when a call-site hook enters the native
+// entry hook. Native plugin calls have no call-site wrapper.
+thread_local unsigned speech_depth = 0;
+struct SpeechCallScope {
+  SpeechCallScope() { ++speech_depth; }
+  ~SpeechCallScope() { --speech_depth; }
+};
+SpeakFn native_speech_original = nullptr;
+
+float ObserveSpeech(uint8_t* actor, const char* voice, void* handle,
+                    uint64_t emo_type, uint64_t emo_value, float dur,
+                    uint64_t epoch) {
   if (!CurrentWorld(epoch)) return dur;
   // dialogue first calls this without a sound, then again with it
   static std::atomic<int> logged;
@@ -961,6 +1060,39 @@ __attribute__((noinline)) float SpeakHook(
   return dur;
 }
 
+__attribute__((noinline)) float SpeakHook(
+    uint8_t* actor, const char* voice, void* handle, uint64_t emo_type,
+    uint64_t emo_value, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9,
+    uint64_t a10, uint64_t a11, uint64_t a12, uint64_t a13, uint64_t a14) {
+  auto orig = SiteOrig<SpeakFn>(__builtin_return_address(0), kIdSpeakVoiceLine);
+  const uint64_t epoch = world_epoch;
+  SpeechCallScope scope;
+  float dur = orig(actor, voice, handle, emo_type, emo_value, a6, a7, a8, a9,
+                   a10, a11, a12, a13, a14);
+  return ObserveSpeech(actor, voice, handle, emo_type, emo_value, dur, epoch);
+}
+
+__attribute__((noinline)) float NativeSpeakHook(
+    uint8_t* actor, const char* voice, void* handle, uint64_t emo_type,
+    uint64_t emo_value, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9,
+    uint64_t a10, uint64_t a11, uint64_t a12, uint64_t a13, uint64_t a14) {
+  const uint64_t epoch = world_epoch;
+  const bool nested = speech_depth != 0;
+  SpeechCallScope scope;
+  float dur = native_speech_original(actor, voice, handle, emo_type, emo_value,
+                                    a6, a7, a8, a9, a10, a11, a12, a13, a14);
+  if (nested || !CurrentWorld(epoch) || !actor || !IsPlayer(actor) ||
+      !EnabledFor(SnapshotTune(), true)) return dur;
+  // Native SpeakSound accepts paths relative to Data/Sound; DBVO 2 uses
+  // that form. Keep the actual path passed to the engine unchanged.
+  std::string stem, absolute;
+  if (voice && *voice && !VoiceStem(voice, stem)) {
+    absolute = std::string("Sound\\") + voice;
+    voice = absolute.c_str();
+  }
+  return ObserveSpeech(actor, voice, handle, emo_type, emo_value, dur, epoch);
+}
+
 __attribute__((noinline)) uint8_t* ResponseHook(uint8_t* self, void* topic,
                                                 void* info, uint8_t* speaker,
                                                 void* response) {
@@ -973,10 +1105,13 @@ __attribute__((noinline)) uint8_t* ResponseHook(uint8_t* self, void* topic,
   const Tune tune = SnapshotTune();
   const char* voice = r ? Field<const char*>(r, kRespVoice) : nullptr;
   if ((tune.enabled || net_loaded) && tune.prefetch && voice && ready &&
-      SpeakerOk(speaker) && !InScene(speaker) && VoiceStem(voice, stem))
+      SpeakerOk(speaker) &&
+      DialogueAllows(tune, HandleOf(speaker), IsPlayer(speaker)) &&
+      !InScene(speaker) && VoiceStem(voice, stem))
     Request(stem, static_cast<int>(Field<uint32_t>(r, kRespEmoType)),
             static_cast<int>(Field<uint32_t>(r, kRespEmoValue)),
-            IsFemale(speaker), false, tune);
+            IsFemale(speaker), false, tune, HandleOf(speaker), epoch,
+            IsPlayer(speaker));
   return r;
 }
 
@@ -1124,6 +1259,7 @@ int Apply(uint8_t* fg, const Tune& tune, bool in_scene, uint8_t* actor,
     return kNoUpdate;
   }
   Playing& p = it->second;
+  const FaceTune& settings = tune.ForActor(p.female, p.player);
   p.seen = play_clock;
   // the line began after the caller looked its actor up: from the next update
   if (actor_handle != p.actor_handle) return kKeepUpdating;
@@ -1136,9 +1272,9 @@ int Apply(uint8_t* fg, const Tune& tune, bool in_scene, uint8_t* actor,
   }
   // The actor joined a scene: drop the line. Expressions releases its
   // Face immediately and requests an engine mesh rebuild.
-  if (in_scene) {
+  if (in_scene || !DialogueAllows(tune, actor_handle, p.player)) {
     if (LogMore(logged_ends))
-      Log("drop %s: its actor is in a scene", p.name.c_str());
+      Log("drop %s: its actor is no longer eligible", p.name.c_str());
     const bool played = p.direct_frames != 0;
     playing.erase(it);
     Count();
@@ -1179,13 +1315,13 @@ int Apply(uint8_t* fg, const Tune& tune, bool in_scene, uint8_t* actor,
   }
   p.late = p.ready_at > kLateStart;
   const float mix =
-      p.late ? std::clamp((t - p.ready_at) / std::max(tune.blend_in, 1e-3f),
+      p.late ? std::clamp((t - p.ready_at) / std::max(settings.blend_in, 1e-3f),
                           0.f, 1.f)
              : 1.f;
   p.last_t = t;
   ++p.direct_frames;
   p.direct_frame =
-      std::fmax(0.f, (t + tune.time_offset) * p.entry->line->fps);
+      std::fmax(0.f, (t + settings.time_offset) * p.entry->line->fps);
   p.direct_tail = kDirectTail;
   const bool first = !p.logged;
   p.logged = true;
@@ -1333,7 +1469,8 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene,
   // Exclusive scenes own the face immediately, including paused frames.
   // The original update has already produced their keyframes. Do not fade
   // our expressions or speech pose over those values.
-  if (in_scene) {
+  if (in_scene ||
+      !DialogueAllows(tune, actor_handle, actor && IsPlayer(actor))) {
     ScopedLock guard(lock);
     const bool changed = playing.erase(fg) || faces.count(fg);
     DropFace(fg);
@@ -1369,6 +1506,7 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene,
   if (actor && (actor != f.actor || !f.actor_handle)) {
     f.actor = actor;
     f.player = IsPlayer(actor);
+    f.female = IsFemale(actor);
     f.actor_handle = actor_handle;
   }
   if (wanted) {
@@ -1389,9 +1527,10 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene,
                         (pit->second.direct_frame >= 0 ||
                          (pit->second.entry->state == State::kPending &&
                           f.head_state != State::kFailed));
+  const FaceTune& settings = tune.ForActor(f.female, f.player);
   f.speech_blend = std::clamp(
-      f.speech_blend + (speaking ? dt / std::max(tune.face_in, 1e-3f)
-                                 : -dt / std::max(tune.face_out, 1e-3f)),
+      f.speech_blend + (speaking ? dt / std::max(settings.face_in, 1e-3f)
+                                 : -dt / std::max(settings.face_out, 1e-3f)),
       0.f, 1.f);
   float lv[direct::kNumExpressions];
   for (int i = 0; i < direct::kNumExpressions; ++i)
@@ -1497,7 +1636,10 @@ bool AddDeltas(uint8_t* node, const direct::Head& head,
     added = true;
     const std::vector<float>& d = deltas[si];
     // pinned pieces count with the head's followers
-    int pi = part == direct::Part::kPinned ? 0 : static_cast<int>(part);
+    const direct::Part mapped_part = head.shapes[si].part;
+    int pi = mapped_part == direct::Part::kPinned
+                 ? 0
+                 : static_cast<int>(mapped_part);
     thread_local std::vector<float> xyz;
     xyz.resize(nv * 3);
     float* data = Engine<LockDynamicFn, kIdLockDynamic>()(shape);
@@ -1515,11 +1657,12 @@ bool AddDeltas(uint8_t* node, const direct::Head& head,
 
 // Apply asset calibration at playback, independently of the model's sex. In
 // particular, v2.3 uses Mark for both sexes and may share a cached mapping.
-void SpeechScales(const direct::Head& head, const Tune& tune, bool female,
-                  float* scales) {
+void SpeechScales(const direct::Head& head, const FaceTune& settings,
+                  bool female, float* scales) {
   for (int r = 0; r < direct::kNumRegions; ++r)
-    scales[r] = tune.direct_scale[r] * head.auto_scale[r];
-  if (config.expressive_faces[female]) scales[direct::kMouth] *= 0.85f;
+    scales[r] = settings.direct_scale[r] * head.auto_scale[r];
+  if (config.expressive_faces[female])
+    scales[direct::kMouth] *= kExpressiveMouthScale;
 }
 
 // Finds the face's mapping, then (after the engine rebuilt the shapes from
@@ -1530,9 +1673,18 @@ void AddDirect(uint8_t* node, bool reset) {
   if (!fg) return;
   // Morph calls can arrive without an intervening animation update. Query
   // the retained actor outside our locks before reading or applying a pose.
+  TrackPartner(node, fg);
   const FaceActor known = FaceActorOf(fg);
   ScopedReference reference(known.handle);
-  if (reference.get() == known.actor && InScene(reference.get())) {
+  const Tune tune = SnapshotTune();
+  if (!DialogueAllows(tune, known.handle,
+                      reference.get() && reference.get() == known.actor &&
+                          IsPlayer(reference.get())) ||
+      (reference.get() == known.actor && InScene(reference.get()))) {
+    {
+      ScopedLock guard(lock, ScopedLock::kShared);
+      if (!faces.count(fg) && !playing.count(fg)) return;
+    }
     // Request an engine rebuild on the next update if this call did not
     // reset the mesh; never add even the old pose's fade-out to a scene.
     skse::ScopedFaceLock face_guard(Field<skse::SpinLock>(fg, skse::kFgLock));
@@ -1548,11 +1700,10 @@ void AddDirect(uint8_t* node, bool reset) {
     fg[kFgDirty] = 1;
     return;
   }
-  TrackPartner(node, fg);
-  const Tune tune = SnapshotTune();
   bool enabled = false;
   // the face's sex: its line's speaker's or the partner's, else as last known
   bool female = false;
+  bool player = false;
   {
     ScopedLock guard(lock);
     Face* face = LiveFace(fg);
@@ -1563,7 +1714,9 @@ void AddDirect(uint8_t* node, bool reset) {
     else if (fg == partner_fg)
       face->female = partner_female;
     female = face->female;
+    player = it != playing.end() ? it->second.player : face->player;
   }
+  const FaceTune& settings = tune.ForActor(female, player);
   const std::string key = HeadKey(node, female);
   std::shared_ptr<const a2f::Line> line;
   std::shared_ptr<const direct::Head> head;
@@ -1625,21 +1778,21 @@ void AddDirect(uint8_t* node, bool reset) {
     auto it = playing.find(fg);
     const bool snap = line && it != playing.end() && it->second.snap;
     if (snap) it->second.snap = false;
-    const float fade = !line  ? tune.face_out
-                       : late ? tune.blend_in
-                              : tune.face_in;
+    const float fade = !line  ? settings.face_out
+                       : late ? settings.blend_in
+                              : settings.face_in;
     speaking =
         face->transition.Blend(line, Now(), fade, enabled, snap, coefficients);
   }
   // a head made for smaller facial motion takes the speech scaled down
   float scales[direct::kNumRegions];
-  SpeechScales(*head, tune, female, scales);
+  SpeechScales(*head, settings, female, scales);
   thread_local std::vector<std::vector<float>> deltas;
   if (!direct::Evaluate(*head, speaking ? coefficients.data() : nullptr, scales,
                         levels, coefficients.data() + tongue_start,
                         tune.disable_tongue ? direct::TongueMode::kModel
                                             : direct::TongueMode::kAuthored,
-                        deltas))
+                        deltas, settings.upper_lip, settings.lower_lip))
     return;
   float peak[3] = {};
   const bool added = AddDeltas(node, *head, deltas, peak);
@@ -1684,6 +1837,16 @@ void OnMessage(skse::SKSEMessage* m) {
         static_cast<unsigned long long>(world_epoch.load()));
   }
   PlayerSpeechMessage(m->type);
+  if (m->type == skse::kMessagePostLoad && DbvoInstalled() &&
+      !native_speech_original) {
+    if (NativeSpeechRuntimeSupported(skse::Runtime()))
+      native_speech_original = reinterpret_cast<SpeakFn>(HookNativeSpeech(
+          reinterpret_cast<uint8_t*>(Addr(kIdSpeakVoiceLine)),
+          reinterpret_cast<void*>(&NativeSpeakHook)));
+    Log("native player speech: %s", native_speech_original
+        ? "entry observer installed (experimental)"
+        : "unavailable: unsupported runtime or modified entry; native lips retained");
+  }
   if (m->type != skse::kMessageDataLoaded) return;
   LoadExpressiveFaces();
   LoadHeadPartTypes();  // before the worker, which turns Direct on

@@ -30,7 +30,14 @@ blocked, not passing. Do not download third-party fixtures automatically.
 
 # Branches
 
-Reuse a dedicated branch for each feature or fix; preserve unrelated work.
+Use `feature/<short-kebab-case-name>` for features and `fix/<short-kebab-case-name>`
+for bug fixes. These are explicit user-required prefixes for this repository,
+including new worktrees; do not use the Codex default `codex/` prefix unless
+the user explicitly requests it for that branch.
+
+Before creating a branch or worktree, inspect existing branches and reuse the
+dedicated feature/fix branch if it exists. Verify the actual branch name after
+creation. Preserve unrelated work.
 Commit scoped changes before making release archives, and record the source
 commit and artifact hashes in the main checkout's untracked research journal.
 
