@@ -65,6 +65,8 @@ void Report(const char* fmt, ...) {
   va_end(a);
 }
 
+uint32_t Runtime() { return runtime; }
+
 void SetRuntime(uint32_t runtime_version) {
   runtime = runtime_version;
   // SKSE's folder per store, from the version's last field (skse_version.h)

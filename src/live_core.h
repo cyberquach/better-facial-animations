@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -117,9 +118,11 @@ struct Emotion {
 // Per frame, with d = y - rest (rest: kNumOut), the k skin coefficients
 // d[0:kNumPca] . proj[k] (proj: k x kNumPca), then
 // d[kNumPca : kNumPca + kNumTongue + kNumJaw]. out is written anew.
+// Both generators check allowed before each network run, if supplied.
+// Cancellation returns false; discard the partial output.
 bool Generate(Net& net, const float* pcm, size_t n, const Emotion& emotion,
               const float* proj, const float* rest, uint32_t k, Line& out,
-              std::string& err);
+              std::string& err, const std::function<bool()>& allowed = {});
 
 // v3.0: the same coefficients from the folded network's output, with d = y -
 // rest (rest: kNumOut3): the skin's d[0:kLatent3] . proj[k], the tongue's
@@ -133,7 +136,8 @@ struct Face3 {
   uint32_t k;
 };
 bool Generate3(Net& net, const float* pcm, size_t n, const Emotion& emotion,
-               const Face3& face, Line& out, std::string& err);
+               const Face3& face, Line& out, std::string& err,
+               const std::function<bool()>& allowed = {});
 
 // The emotion alone: frames (at kFps) x kNumMod.
 void EmotionTrack(const float* pcm, size_t n, int frames,

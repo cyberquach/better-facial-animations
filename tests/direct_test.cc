@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -65,6 +66,8 @@ bool BuildFixture(TongueMotion mode, MouthFixture& fixture) {
   for (int i = 0; i < 64; ++i)
     for (float c : {(i % 4) * 2.f - 3, 6.f + i % 3, (i / 4) - 8.f})
       v.push_back(c);
+  // Boundary samples exercise both lip controls under anatomical scaling.
+  v.insert(v.end(), {2.3f, 9.f, -2.f, -2.3f, 9.f, -2.f});
   mk.nv = static_cast<uint32_t>(v.size() / 3);
   mk.k = 1;
   mk.verts = v;
@@ -87,6 +90,8 @@ bool BuildFixture(TongueMotion mode, MouthFixture& fixture) {
       kBlinkLeft, kBlinkRight, kBrowUpLeft, kBrowUpRight,
       kBigAah,    kOohQ,       kHappy,      kHappy};
   for (int i = 0; i < kNumLandmarks; ++i) skin.morphs[at[i]][i * 3 + 2] = -1;
+  skin.morphs[kBigAah][v.size() - 4] = -0.1f;
+  mk.jaw[mk.nv - 2] = -0.1f;
   ShapeIn mouth;
   mouth.part = Part::kMouth;
   mouth.nv = 16;  // 8 upper teeth (z = -2), 8 lower (z = -3)
@@ -163,6 +168,214 @@ bool BuildFixture(TongueMotion mode, MouthFixture& fixture) {
   line.direct.assign(line.direct_dim, 0.f);
   for (int i = 0; i < kNumJawPoints; ++i)
     line.direct[mk.k + a2f::kNumTongue + i * 3 + 1] = -0.25f;
+  if (ok && mode == TongueMotion::kStill) {
+    // Splitting a stationary-in-BigAah tongue off its teeth must preserve
+    // authored motion, while the legacy opt-out keeps the old behavior.
+    ShapeIn teeth = mouth, tongue = mouth;
+    teeth.nv = 16;
+    teeth.verts.resize(48);
+    tongue.nv = 4;
+    tongue.verts.erase(tongue.verts.begin(), tongue.verts.begin() + 48);
+    for (int m = 0; m < kNumMorphs; ++m) {
+      if (teeth.morphs[m].empty()) continue;
+      teeth.morphs[m].resize(48);
+      tongue.morphs[m].erase(tongue.morphs[m].begin(),
+                             tongue.morphs[m].begin() + 48);
+    }
+    Head split;
+    Check(BuildHead(mk, {skin, teeth, tongue}, split, why) &&
+              split.tongue_verts == h.tongue_verts,
+          "separate stationary tongue retains authored classification");
+    std::vector<float> pose;
+    Coefficients(h, &line, 0, pose);
+    for (int ph = 0; ph < kNumPhonemes; ++ph) {
+      float cues[kNumPhonemes] = {};
+      cues[ph] = 1;
+      std::vector<std::vector<float>> combined, separate;
+      bool equal = Evaluate(h, pose.data(), kScales, kNoExpressions, cues,
+                            TongueMode::kAuthored, combined) &&
+                   Evaluate(split, pose.data(), kScales, kNoExpressions, cues,
+                            TongueMode::kAuthored, separate);
+      for (size_t i = 0; equal && i < separate[2].size(); ++i)
+        equal = std::fabs(combined[1][48 + i] - separate[2][i]) < 1e-5f;
+      Check(equal, "separate tongue preserves phoneme deformation");
+    }
+    for (auto& morph : tongue.morphs)
+      std::fill(morph.begin(), morph.end(), 0.f);
+    Check(BuildHead(mk, {skin, teeth, tongue}, split, why) &&
+              split.tongue_verts == 0,
+          "static separate oral part is not a tongue");
+  }
+  // Separate oral parts and head-scale checks use the tongue-free fixture.
+  if (ok && mode == TongueMotion::kNone) {
+    std::vector<float> pose;
+    std::vector<std::vector<float>> d;
+    Coefficients(h, &line, 0, pose);
+    Evaluate(h, pose.data(), kScales, kNoExpressions, nullptr,
+             TongueMode::kAuthored, d);
+    // Asset-derived cases: all five supplied followers name their separate
+    // Misc teeth this way. Their name/relationship hint is checked separately
+    // in head_parts_test; here it must produce the known rigid-jaw result.
+    for (float factor : {0.5f, 2.f}) {
+      ShapeIn scaled = skin;
+      for (float& value : scaled.verts) value *= factor;
+      for (auto& morph : scaled.morphs) {
+        for (float& value : morph) value *= factor;
+      }
+      Head mapped;
+      bool passed = BuildHead(mk, {scaled}, mapped, why) &&
+                    mapped.lips[0] == h.lips[0] && mapped.lips[1] == h.lips[1] &&
+                    mapped.region_w.size() == h.region_w.size();
+      for (size_t i = 0; passed && i < h.region_w.size(); ++i) {
+        passed = std::fabs(mapped.region_w[i] - h.region_w[i]) < 1e-5f;
+      }
+      Check(passed, "anatomical scaling preserves lips and region weights");
+      bool lips_match = mapped.lip_w.size() == h.lip_w.size();
+      for (size_t i = 0; lips_match && i < h.lip_w.size(); ++i)
+        lips_match = std::fabs(mapped.lip_w[i] - h.lip_w[i]) < 1e-5f;
+      Check(lips_match, "anatomical scaling preserves upper/lower lip weights");
+      // Isolate skin speech from jaw/followers and compare both slider ends.
+      Head reference = h;
+      reference.shapes.resize(1);
+      reference.row.assign(reference.nv, 0);
+      reference.basis = {1, 1, 1};
+      mapped.row.assign(mapped.nv, 0);
+      mapped.basis = {factor, factor, factor};
+      std::vector<float> speech(1 + kNumMouthCoef, 0);
+      speech[0] = 1;
+      for (float upper : {0.f, 2.f}) {
+        std::vector<std::vector<float>> base_deltas, scaled_deltas;
+        bool equal = Evaluate(reference, speech.data(), kScales, kNoExpressions,
+                              nullptr, TongueMode::kAuthored, base_deltas,
+                              upper, 2 - upper) &&
+                     Evaluate(mapped, speech.data(), kScales, kNoExpressions,
+                              nullptr, TongueMode::kAuthored, scaled_deltas,
+                              upper, 2 - upper);
+        for (size_t i = 0; equal && i < base_deltas[0].size(); ++i)
+          equal = std::fabs(scaled_deltas[0][i] / factor - base_deltas[0][i]) <
+                  1e-5f;
+        Check(equal, "lip slider deformation follows anatomical scale");
+      }
+    }
+    ShapeIn collapsed = skin;
+    for (int m : {kBlinkLeft, kBlinkRight, kBrowUpLeft, kBrowUpRight, kOohQ,
+                  kHappy}) {
+      collapsed.morphs[m] = skin.morphs[kBigAah];
+    }
+    Head invalid_head;
+    Check(!BuildHead(mk, {collapsed}, invalid_head, why),
+          "nonzero but collapsed landmarks are rejected");
+    ShapeIn nonfinite = skin;
+    nonfinite.verts[0] = std::numeric_limits<float>::quiet_NaN();
+    Check(!BuildHead(mk, {nonfinite}, invalid_head, why),
+          "non-finite skin vertices are rejected");
+    nonfinite = skin;
+    nonfinite.morphs[kBlinkLeft][0] = std::numeric_limits<float>::infinity();
+    Check(!BuildHead(mk, {nonfinite}, invalid_head, why),
+          "non-finite landmark morphs are rejected");
+    ShapeIn candidate = mouth;
+    candidate.part = Part::kPinned;
+    candidate.mouth_candidate = true;
+    for (const char* name : {"Female_Teeth_Lily", "Female_Teeth_Alma",
+                             "Female_Teeth_DVA", "Female_Teeth_Eve",
+                             "Female_Teeth_Squirrel_Girl"}) {
+      candidate.name = name;
+      Head mapped;
+      std::vector<std::vector<float>> actual;
+      bool passed = BuildHead(mk, {skin, candidate, rings}, mapped, why) &&
+                    mapped.shapes[1].part == Part::kMouth &&
+                    Evaluate(mapped, pose.data(), kScales, kNoExpressions, nullptr,
+                              TongueMode::kAuthored, actual) &&
+                    actual == d;
+      Check(passed, name);
+    }
+    auto mapped_part = [&](ShapeIn part, Part expected, const char* label) {
+      Head mapped;
+      bool passed = BuildHead(mk, {skin, part}, mapped, why);
+      passed = passed && (expected == Part::kNone
+                             ? mapped.shapes.size() == 1
+                             : mapped.shapes.size() == 2 &&
+                                   mapped.shapes[1].part == expected);
+      Check(passed, label);
+    };
+    for (int axis = 0; axis < 3; ++axis) {
+      for (float distance : {-30.f, 30.f}) {
+        ShapeIn remote = candidate;
+        for (uint32_t i = 0; i < remote.nv; ++i)
+          remote.verts[i * 3 + axis] += distance;
+        mapped_part(remote, Part::kPinned, "remote anatomy name stays accessory");
+      }
+    }
+    ShapeIn rejected = candidate;
+    for (uint32_t i = 0; i < rejected.nv; ++i) rejected.verts[i * 3] += 30;
+    rejected.morphs[kHappy].assign(rejected.verts.size(), 0.5f);
+    Head rejected_head;
+    Check(BuildHead(mk, {skin, rejected}, rejected_head, why) &&
+              rejected_head.shapes[1].part == Part::kPinned &&
+              rejected_head.shapes[1].expr[10].empty(),
+          "rejected candidate does not gain expression writes");
+    ShapeIn missing = candidate;
+    missing.morphs.clear();
+    mapped_part(missing, Part::kPinned, "missing morph data keeps fallback");
+    ShapeIn unhinted = candidate;
+    unhinted.mouth_candidate = false;
+    mapped_part(unhinted, Part::kPinned, "position alone is insufficient");
+    ShapeIn unknown = candidate;
+    unknown.part = Part::kNone;
+    mapped_part(unknown, Part::kMouth, "unregistered oral name with geometry");
+    unknown.morphs.clear();
+    mapped_part(unknown, Part::kNone, "rejected unregistered part stays excluded");
+    ShapeIn upper_only = candidate;
+    std::fill(upper_only.morphs[kBigAah].begin(),
+              upper_only.morphs[kBigAah].end(), 0.f);
+    Head upper_head;
+    std::vector<std::vector<float>> upper_deltas;
+    bool static_upper = BuildHead(mk, {skin, upper_only}, upper_head, why) &&
+                        upper_head.shapes[1].part == Part::kMouth &&
+                        Evaluate(upper_head, pose.data(), kScales, kNoExpressions,
+                                 nullptr, TongueMode::kAuthored, upper_deltas);
+    if (static_upper)
+      for (float value : upper_deltas[1]) static_upper &= value == 0;
+    Check(static_upper, "separate upper teeth remain stationary");
+    ShapeIn skeleton = candidate;
+    for (uint32_t i = 0; i < skeleton.nv; ++i) {
+      skeleton.verts[i * 3 + 1] -= 1.55f;
+      skeleton.verts[i * 3 + 2] += 120.34f;
+    }
+    mapped_part(skeleton, Part::kMouth, "skeleton-space teeth use head-space bounds");
+    // Both the face and the cavity change size, so the gate must scale too.
+    for (float scale : {0.5f, 2.f}) {
+      ShapeIn scaled_skin = skin, scaled_part = candidate;
+      for (ShapeIn* sh : {&scaled_skin, &scaled_part}) {
+        for (float& value : sh->verts) value *= scale;
+        for (auto& morph : sh->morphs)
+          for (float& value : morph) value *= scale;
+      }
+      Head mapped;
+      Check(BuildHead(mk, {scaled_skin, scaled_part}, mapped, why) &&
+                mapped.shapes[1].part == Part::kMouth,
+            "oral bounds scale with the face");
+    }
+    ShapeIn invalid = candidate;
+    invalid.morphs[kBigAah][0] = std::numeric_limits<float>::quiet_NaN();
+    invalid.part = Part::kNone;
+    mapped_part(invalid, Part::kNone, "nonfinite oral morph rejected");
+  }
+  // A second controlled head with real lip motion exercises BuildHead's
+  // weight storage, not just the standalone deformation test's weights.
+  skin.morphs[kBigAah][5 * 3 + 2] = -.5f;
+  Head lip_head;
+  bool lip_ok = BuildHead(mk, {skin}, lip_head, why) &&
+                lip_head.lip_w.size() == skin.nv * 2;
+  float upper_weight = 0, lower_weight = 0;
+  for (uint32_t v = 0; lip_ok && v < skin.nv; ++v) {
+    float u = lip_head.lip_w[v * 2], l = lip_head.lip_w[v * 2 + 1];
+    lip_ok = std::isfinite(u) && std::isfinite(l) && u >= 0 && l >= 0 &&
+             u + l <= 1.00001f;
+    upper_weight += u;
+    lower_weight += l;
+  }
+  Check(lip_ok && upper_weight > 0 && lower_weight > 0, "mapped lip weights");
   return ok;
 }
 

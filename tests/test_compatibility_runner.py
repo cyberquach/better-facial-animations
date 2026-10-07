@@ -83,6 +83,26 @@ class ReaderTest(unittest.TestCase):
         self.assertEqual(result['status'], 'blocked')
         self.assertEqual(result['results'][0]['status'], 'blocked')
 
+    def test_follower_fixture_controls(self):
+        # The asset gate must not turn missing or changed geometry into a pass.
+        manifest = json.loads((ROOT/'tests/follower_teeth.json').read_text())
+        fixture_dir = Path(self.temp.name)/'captures'
+        fixture_dir.mkdir()
+        fixture_map = Path(self.temp.name)/'fixtures.json'
+        fixture_map.write_text(json.dumps({'follower-teeth': {'path': str(fixture_dir)}}))
+        for label, expected in [('missing', 2), ('changed', 1)]:
+            if label == 'changed':
+                (fixture_dir/manifest['fixtures'][0]['file']).write_bytes(b'wrong geometry')
+            out = Path(self.temp.name)/label
+            process = subprocess.run(
+                [sys.executable, str(ROOT/'tools/compatibility.py'),
+                 '--tier', 'assets', '--case', 'follower-teeth',
+                 '--fixtures', str(fixture_map), '--output', str(out)],
+                capture_output=True, text=True)
+            self.assertEqual(process.returncode, expected, process.stderr)
+            report = json.loads((out/'result.json').read_text())
+            self.assertEqual(report['status'], 'blocked' if expected == 2 else 'fail')
+
     def test_command_timeout(self):
         log = Path(self.temp.name)/'timeout.log'
         self.assertEqual(compat.run_command(

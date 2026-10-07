@@ -127,7 +127,9 @@ struct Model {
 };
 
 // Whether the shape reads morph m (see Morph).
-constexpr bool Reads(bool skin, Part part, int m) {
+constexpr bool Reads(bool skin, Part part, int m, bool mouth_candidate = false) {
+  if (mouth_candidate && (part == Part::kPinned || part == Part::kNone))
+    part = Part::kMouth;
   if (skin) return m < kTonguePhoneme || (m >= kExpression && m < kAah);
   if (part == Part::kMouth) return m >= kBigAah;
   return part == Part::kEyes && m <= kBlinkRight;
@@ -138,6 +140,7 @@ struct ShapeIn {
   std::string name;
   Part part = Part::kNone;
   bool skin = false;  // the head skin itself
+  bool mouth_candidate = false;  // ambiguous name/relationship; validate spatially
   uint32_t nv = 0;
   std::vector<float> verts;  // nv x 3, base (pre-morph)
   // by Morph, nv x 3 each: those it Reads (zero when the shape lacks it),
@@ -151,6 +154,8 @@ struct Head {
   std::vector<int32_t> row;     // nv: basis row, -1 where the speech is still
   std::vector<float> basis;     // rows x k x 3 (Mark's, through the mapping)
   std::vector<float> region_w;  // nv x kNumSkinRegions
+  // Upper/lower lip influence per skin vertex; fades out at the lip box edge.
+  std::vector<float> lip_w;  // nv x 2
   // Mark's jaw points at rest on this head, and the matrix that takes a
   // point's network output (less rest) to its displacement here
   float jaw_points[a2f::kNumJaw] = {}, jaw_motion[9] = {};
@@ -198,16 +203,25 @@ bool BuildHead(const Mark& mark, const std::vector<ShapeIn>& shapes,
 
 enum class TongueMode { kAuthored, kModel };
 
+// The lips' speech motion at the sliders' neutral 1: fixed calibration the
+// user multipliers apply on top of (LoadIni converts older multipliers).
+constexpr float kUpperLipCalibration = 0.8f;
+constexpr float kLowerLipCalibration = 1.2f;
+
 // Per-shape float3 deltas from final speech coefficients (head.k +
 // kNumMouthCoef; null for no speech), scaled per region, plus expression
 // levels (kNumExpressions). Followers inherit the skin's deltas. False when
 // neither speech nor expressions contribute. Optional vanilla phoneme weights
 // (kNumPhonemes) supply softened tongue cues over half-strength jaw follow.
 // Without weights the tongue only follows the jaw. TongueMode::kModel
-// restores the pre-feature mapping and network tongue scale.
+// restores the pre-feature mapping and network tongue scale. Lip multipliers
+// (times k{Upper,Lower}LipCalibration) affect speech skin motion only;
+// followers inherit it, jaw/tongue and engine expressions retain their
+// existing controls.
 bool Evaluate(const Head& head, const float* coefficients, const float* scales,
               const float* expressions, const float* phonemes,
-              TongueMode tongue_mode, std::vector<std::vector<float>>& out);
+              TongueMode tongue_mode, std::vector<std::vector<float>>& out,
+              float upper_lip = 1, float lower_lip = 1);
 
 // The line's coefficients (head.k + kNumMouthCoef) at a fractional frame (of
 // the line's own rate), as

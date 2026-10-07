@@ -38,6 +38,16 @@ uint64_t OriginalMorphs(uint8_t*, uint8_t) {
   ++original_morphs;
   return 123;
 }
+// Native callbacks returning across a world reset must not inspect the actor.
+float NativeReset(uint8_t*, const char*, void*, uint64_t, uint64_t,
+                  uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                  uint64_t, uint64_t, uint64_t, uint64_t) {
+  bfa::ResetPlayback(true);
+  return 2.5f;
+}
+float NativeReturn(uint8_t*, const char*, void*, uint64_t, uint64_t,
+                   uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                   uint64_t, uint64_t, uint64_t, uint64_t) { return 3.5f; }
 // A Win64 caller with shadow space and a real call-site return address.
 template <typename Fn>
 Fn Hooked(void* original, void* hook) {
@@ -110,6 +120,18 @@ int main() {
   // An old speech hook returning after a load must not use its old actor.
   BeginSpeech(poison, "old", 0, 1, 0, 0, Tune{}, old_epoch);
   Empty();
+  native_speech_original = NativeReset;
+  CHECK(NativeSpeakHook(poison, nullptr, nullptr, 0,0,0,0,0,0,0,0,0,0,0) == 2.5f);
+  CHECK(speech_depth == 0);
+  Empty();
+  Message(skse::kMessagePostLoadGame);
+  native_speech_original = NativeReturn;
+  {
+    SpeechCallScope outer;  // call-site hook already owns observation
+    CHECK(NativeSpeakHook(poison, nullptr, nullptr, 0,0,0,0,0,0,0,0,0,0,0) == 3.5f);
+    CHECK(speech_depth == 1);  // no actor access or duplicate observation
+  }
+  CHECK(speech_depth == 0);
   // Nothing of the old world is left for a face update to find.
   CHECK(Apply(poison, Tune{}, false, nullptr, 0, a2f::kNoSound, -1) ==
         kNoUpdate);

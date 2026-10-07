@@ -283,7 +283,7 @@ void EmotionTrack(const float* pcm, size_t n, int frames,
 // ---------------- the whole line ----------------
 bool Generate(Net& net, const float* pcm, size_t n, const Emotion& emotion,
               const float* proj, const float* rest, uint32_t k, Line& out,
-              std::string& err) {
+              std::string& err, const std::function<bool()>& allowed) {
   out = Line();  // a second run (after a lost session) starts clean
   if (!n) {
     err = "empty audio";
@@ -332,6 +332,10 @@ bool Generate(Net& net, const float* pcm, size_t n, const Emotion& emotion,
                     : 0.f;
       }
     }
+    if (allowed && !allowed()) {
+      err = "generation cancelled";
+      return false;
+    }
     if (!net.Run(x.data(), em.data(), batch, y.data(), err)) return false;
     for (int i = 0; i < b; ++i) {
       const float* yt = &y[static_cast<size_t>(i) * kNumOut];
@@ -348,7 +352,8 @@ bool Generate(Net& net, const float* pcm, size_t n, const Emotion& emotion,
 }
 
 bool Generate3(Net& net, const float* pcm, size_t n, const Emotion& emotion,
-               const Face3& face, Line& out, std::string& err) {
+               const Face3& face, Line& out, std::string& err,
+               const std::function<bool()>& allowed) {
   out = Line();  // a second run (after a lost session) starts clean
   if (!n) {
     err = "empty audio";
@@ -399,6 +404,10 @@ bool Generate3(Net& net, const float* pcm, size_t n, const Emotion& emotion,
                         std::min(f * kFps / kFps3, emo_frames - 1)) *
                     kNumMod],
              kNumMod * sizeof(float));
+    }
+    if (allowed && !allowed()) {
+      err = "generation cancelled";
+      return false;
     }
     if (!net.Run3(x.data(), ident, em.data(), state.data(), skin.data(),
                   tongue.data(), jaw.data(), next.data(), err))

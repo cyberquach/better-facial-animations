@@ -25,6 +25,10 @@ void LoadHeadPartTypes();
 // brows / beard), whose lips the mapping aligns.
 direct::Part Classify(const char* name, bool& skin);
 
+// A name or Misc mouth-extra relationship suggests oral anatomy. This is
+// only a hint; BuildHead checks placement and morph data before promotion.
+bool MouthCandidate(const char* name);
+
 // Base (pre-morph) vertices of a face shape: its "FOD" extra data.
 const float* BaseVerts(uint8_t* shape, uint32_t& nv);
 
@@ -53,7 +57,7 @@ void ForFaceShapes(uint8_t* node, Fn fn) {
     const char* name = Field<const char*>(shape, kObjName);
     bool skin = false;
     direct::Part part = name ? Classify(name, skin) : direct::Part::kNone;
-    if (part == direct::Part::kNone) continue;
+    if (part == direct::Part::kNone && (!name || !MouthCandidate(name))) continue;
     uint32_t nv = Field<uint16_t>(shape, kDynNumVerts.Get());
     if (Field<uint32_t>(shape, kDynDataSize.Get()) != nv * 16) continue;
     uint32_t nb = 0;
