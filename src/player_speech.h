@@ -23,6 +23,8 @@ using PlayerSpeechPtr = std::shared_ptr<PlayerSpeech>;
 
 // Called on the game thread; uses the same renderer as ordinary actor speech.
 void StartPlayerSpeech(PlayerSpeechPtr speech);
+// Populated at SKSE PostLoad, after all plugins have registered.
+bool DbvoInstalled();
 void InitPlayerSpeech(const skse::SKSEInterface* iface);
 void PlayerSpeechMessage(unsigned type);
 

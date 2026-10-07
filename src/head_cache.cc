@@ -3,12 +3,14 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <deque>
 #include <iterator>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -45,6 +47,21 @@ bool mapper_started;
 // Head part type by lowercase editor id, which FaceGen names its shapes
 // after; filled once at data loaded, empty if the forms didn't look right.
 auto& head_part_types = *new std::unordered_map<std::string, uint32_t>;
+auto& mouth_extras = *new std::unordered_set<std::string>;
+
+bool JewelryName(const std::string& name) {
+  for (const char* word : {"pierc", "ring", "stud", "pendant", "necklace"})
+    if (name.find(word) != std::string::npos) return true;
+  return false;
+}
+
+bool MouthName(const std::string& name) {
+  if (JewelryName(name)) return false;
+  for (const char* word : {"mouth", "teeth", "tooth", "tongue", "gums",
+                           "dentition"})
+    if (name.find(word) != std::string::npos) return true;
+  return false;
+}
 
 }  // namespace
 
@@ -53,6 +70,8 @@ auto& head_part_types = *new std::unordered_map<std::string, uint32_t>;
 // Hair extras stay Misc (ear tufts, ear pieces); primary hair is excluded.
 // Custom slots (e.g. piercings) keep their full 32-bit type.
 void LoadHeadPartTypes() {
+  head_part_types.clear();
+  mouth_extras.clear();
   const BSTArray* parts = FormArray(kFtHeadPart);
   if (!parts) {
     Log("head parts: no form array, using shape names");
@@ -88,6 +107,33 @@ void LoadHeadPartTypes() {
       ++inherited;
     }
   }
+  // Mouths have no dedicated engine slot. Propagate a candidate hint along
+  // their Misc extras, not a type: geometry must still confirm the hint.
+  // A worklist handles nested extras and cycles without depending on order.
+  std::vector<uint8_t*> pending;
+  std::unordered_set<uint8_t*> visited;
+  for (uint32_t i = 0; i < parts->n; ++i) {
+    uint8_t* hp = parts->items[i];
+    const char* name = name_of(hp);
+    if (type_of(hp) == kHpMisc && name && MouthName(Lower(name)))
+      pending.push_back(hp);
+  }
+  while (!pending.empty()) {
+    uint8_t* hp = pending.back();
+    pending.pop_back();
+    if (!visited.insert(hp).second) continue;
+    const auto& extras = Field<BSTArray>(hp, kHeadPartExtras);
+    if (!extras.Ok()) continue;
+    for (uint32_t j = 0; j < extras.n; ++j) {
+      uint8_t* extra = extras.items[j];
+      if (!extra || extra[kFormType] != kFtHeadPart ||
+          type_of(extra) != kHpMisc) continue;
+      const char* name = name_of(extra);
+      if (!name || !*name || JewelryName(Lower(name))) continue;
+      mouth_extras.insert(Lower(name));
+      pending.push_back(extra);
+    }
+  }
   head_part_types = std::move(types);
   Log("head parts: %u, %zu named, %u extras typed by their parent", parts->n,
       head_part_types.size(), inherited);
@@ -98,6 +144,15 @@ constexpr uint32_t kHpUnknown = UINT32_MAX;
 static uint32_t HeadPartTypeOf(const std::string& n) {
   auto it = head_part_types.find(n);
   return it == head_part_types.end() ? kHpUnknown : it->second;
+}
+
+bool MouthCandidate(const char* name) {
+  const std::string n = Lower(name);
+  const uint32_t type = HeadPartTypeOf(n);
+  if (type != kHpUnknown && type != kHpMisc) return false;
+  // Explicit jewelry names win even when attached as mouth extras.
+  if (JewelryName(n)) return false;
+  return MouthName(n) || mouth_extras.count(n) != 0;
 }
 
 direct::Part Classify(const char* name, bool& skin) {
@@ -122,6 +177,9 @@ direct::Part Classify(const char* name, bool& skin) {
   }
   // a mod's own slot (piercings): rigid pieces pinned to the skin
   if (type != kHpUnknown && type > kHpEyebrows) return direct::Part::kPinned;
+  // Explicit jewelry stays attached to skin, even with "mouth" in its name.
+  if (JewelryName(n))
+    return type != kHpUnknown ? direct::Part::kPinned : direct::Part::kNone;
   // Misc (mouths, stray parts) or unknown: by name
   if (n.find("mouth") != std::string::npos) return direct::Part::kMouth;
   if (n.find("eyes") != std::string::npos) return direct::Part::kEyes;
@@ -164,7 +222,7 @@ void ReadMorphs(uint8_t* shape, direct::ShapeIn& s) {
   memcpy(before.data(), data, bytes);
   unlock_dyn(shape);
   for (int m = 0; m < direct::kNumMorphs; ++m) {
-    if (!direct::Reads(s.skin, s.part, m)) continue;
+    if (!direct::Reads(s.skin, s.part, m, s.mouth_candidate)) continue;
     apply(md, direct::kMorphIds[m].type, direct::kMorphIds[m].index, shape,
           1.f);
     std::vector<float>& out = s.morphs[m];
@@ -181,7 +239,7 @@ void ReadMorphs(uint8_t* shape, direct::ShapeIn& s) {
 // The memory a head mapping holds.
 size_t HeadBytes(const direct::Head& h) {
   auto n = [](const auto& v) { return v.size() * sizeof(v[0]); };
-  size_t b = n(h.row) + n(h.basis) + n(h.region_w) + n(h.shapes);
+  size_t b = n(h.row) + n(h.basis) + n(h.region_w) + n(h.lip_w) + n(h.shapes);
   for (const auto& s : h.shapes) {
     b += n(s.name) + n(s.idx) + n(s.w) + n(s.pos) + n(s.jaw) +
          n(s.tongue_weight) + n(s.tongue) + n(s.model_jaw) + n(s.model_tongue);
@@ -251,30 +309,37 @@ DWORD WINAPI Mapper(void*) {
 
 // What tells one head from another: the number of shapes, the skin's
 // vertices and a hash (FNV-1a) of each shape's name, type, all base vertices
-// and morph resource, and with a face per sex the sex, which tells the face
-// it is mapped onto. Empty: the node has no face shapes.
+// and morph resource, independent of child order. With a face per sex, the
+// sex selects the model face. Empty: the node has no face shapes.
 std::string HeadKey(uint8_t* node, bool female) {
   uint64_t h = 14695981039346656037ull;
   auto mix = [&h](const void* p, size_t n) {
     for (size_t i = 0; i < n; ++i)
       h = (h ^ static_cast<const uint8_t*>(p)[i]) * 1099511628211ull;
   };
-  uint32_t shapes = 0, skin_nv = 0;
+  std::vector<uint64_t> shape_hashes;
+  uint32_t skin_nv = 0;
   ForFaceShapes(node, [&](uint8_t* shape, const char* name, direct::Part part,
                           bool skin, uint32_t nv, const float* base) {
+    h = 14695981039346656037ull;
     mix(name, strlen(name) + 1);
     mix(&nv, sizeof nv);
     mix(&part, sizeof part);
     mix(&skin, sizeof skin);
+    const bool mouth_candidate = MouthCandidate(name);
+    mix(&mouth_candidate, sizeof mouth_candidate);
     mix(base, static_cast<size_t>(nv) * 3 * sizeof(float));
     const void* morphs = Engine<MorphDataFn, kIdMorphData>()(shape);
     mix(&morphs, sizeof morphs);
-    ++shapes;
-    if (skin && !skin_nv) skin_nv = nv;
+    shape_hashes.push_back(h);
+    if (skin) skin_nv = std::max(skin_nv, nv);
   });
-  if (!shapes) return "";
+  if (shape_hashes.empty()) return "";
+  std::sort(shape_hashes.begin(), shape_hashes.end());
+  h = 14695981039346656037ull;
+  mix(shape_hashes.data(), shape_hashes.size() * sizeof(uint64_t));
   char key[48];
-  snprintf(key, sizeof key, "%u/%u/%016llx%s", shapes, skin_nv,
+  snprintf(key, sizeof key, "%zu/%u/%016llx%s", shape_hashes.size(), skin_nv,
            static_cast<unsigned long long>(h),
            model.faces.size() < 2 ? "" : female ? "/f" : "/m");
   return key;
@@ -299,6 +364,7 @@ State FindHead(uint8_t* node, const std::string& key, bool female,
     direct::ShapeIn s;
     s.name = name;
     s.part = part;
+    s.mouth_candidate = MouthCandidate(name);
     s.skin = skin && part == direct::Part::kHead;
     s.nv = nv;
     s.verts.assign(base, base + nv * 3);

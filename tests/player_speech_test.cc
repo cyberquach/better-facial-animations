@@ -3,6 +3,7 @@
 #include "../src/player_speech.h"
 
 #include <cstdio>
+#include <cstring>
 #include <vector>
 
 #include "../src/DBReV_API.h"
@@ -21,7 +22,13 @@ std::vector<skse::TaskDelegate*> queued;
 // The lines the adapter started (StartPlayerSpeech below).
 std::vector<bfa::PlayerSpeechPtr> started;
 
+bool dbvo_present = false, dbrev_present = true;
+const void* PluginInfo(const char* name) {
+  return dbvo_present && !strcmp(name, "DBVO") ? &dbvo_present : nullptr;
+}
+
 bool Listen(uint32_t, const char*, void (*cb)(skse::SKSEMessage*)) {
+  if (!dbrev_present) return false;
   listener = cb;
   return true;
 }
@@ -63,6 +70,22 @@ int main() {
   skse::SKSEInterface api{};
   api.QueryInterface = Query;
   api.GetPluginHandle = Handle;
+  api.GetPluginInfo = PluginInfo;
+  for (bool dbvo : {false, true}) {
+    for (bool dbrev : {false, true}) {
+      dbvo_present = dbvo;
+      dbrev_present = dbrev;
+      listener = nullptr;
+      bfa::InitPlayerSpeech(&api);
+      Expect(!bfa::DbvoInstalled(), "provider detection waits for PostLoad");
+      bfa::PlayerSpeechMessage(skse::kMessagePostLoad);
+      Expect(bfa::DbvoInstalled() == dbvo, "detect only registered DBVO");
+      Expect(bool(listener) == dbrev, "register only installed DBReV");
+    }
+  }
+  dbvo_present = false;
+  dbrev_present = true;
+  listener = nullptr;
   bfa::InitPlayerSpeech(&api);
   Expect(!listener, "nothing is registered at load");
   bfa::PlayerSpeechMessage(skse::kMessagePostLoad);

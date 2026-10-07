@@ -1,4 +1,4 @@
-// Losing the GPU session and getting it back (src/net_keeper.h), with a fake
+// GPU failure latches until restart (src/net_keeper.h), with a fake
 // GPU that fails the way DirectML does.
 #include "../src/net_keeper.h"
 
@@ -88,67 +88,38 @@ bool Line(a2f::NetKeeper& k, bool* no_net = nullptr) {
   return ok;
 }
 
-// The GPU cannot load the model at the main menu for `error`; it can later.
+// Startup failure latches even if the driver or memory later recovers.
 void LoadFails(const char* error, const char* name) {
   printf("-- load fails: %s\n", name);
   Machine m;
   m.gpu_error = error;
   auto k = Keeper(&m);
-  Expect(k.Ensure() && !k.on_gpu() && !k.Wanted(), "CPU fallback is loaded");
-  Expect(k.error() == error && k.attempts() == 1 && k.retry_at() == 2,
-         "failure reported, retry in 2 s");
-  Expect(Line(k) && m.cpu_runs == 1, "lines run on the CPU meanwhile");
-  m.now = 1.9;
-  k.Ensure();
-  Expect(m.gpu_creates == 1, "no retry before its time");
-  // 2, 4, 8, 16, 30, 30 s apart
-  const double at[] = {2, 6, 14, 30, 60, 90};
-  for (int i = 0; i < 6; ++i) {
-    m.now = at[i];
-    k.Ensure();
-  }
-  Expect(m.gpu_creates == 7 && k.attempts() == 7 && k.retry_at() == 120,
-         "retries back off to every 30 s and never stop");
-  Expect(m.cpu_creates == 1, "the CPU session is created once");
+  Expect(k.Ensure() && !k.on_gpu() && !k.Wanted() && k.Settled(),
+         "CPU fallback is settled without pretending GPU recovered");
+  Expect(k.GpuDisabled() && k.error() == error && k.attempts() == 1 && k.retry_at() == 0,
+         "failure retained and GPU disabled until restart");
+  Expect(Line(k) && m.cpu_runs == 1, "CPU runs the line");
   m.gpu_error = nullptr;
-  m.now = 120;
-  Expect(k.Ensure() && k.on_gpu() && k.Wanted(), "GPU session takes over");
-  Expect(k.error().empty() && k.attempts() == 0 && k.info() == "GPU",
-         "error cleared");
-  Expect(Line(k) && m.gpu_runs == 1 && m.cpu_runs == 1,
-         "lines run on the GPU again");
-  m.now = 1e6;
-  k.Ensure();
-  Expect(m.gpu_creates == 8 && k.on_gpu(), "loaded session is kept for good");
+  for (double at : {2., 30., 120., 1e6}) {
+    m.now = at;
+    Expect(k.Ensure() && !k.on_gpu(), "GPU recovery does not reopen circuit");
+  }
+  Expect(m.gpu_creates == 1 && m.cpu_creates == 1, "no GPU retry or CPU churn");
 }
 
-// The device is lost during a line for `error`.
 void RunFails(const char* error, const char* name) {
   printf("-- device lost mid-line: %s\n", name);
-  {
-    Machine m;
-    auto k = Keeper(&m);
-    Expect(k.Ensure() && k.on_gpu() && Line(k), "loaded on the GPU");
-    m.run_error = error;
-    Expect(Line(k) && k.on_gpu() && m.gpu_creates == 2 && m.gpu_runs == 2 &&
-               m.cpu_creates == 0,
-           "new GPU session at once, the line is generated");
-    Expect(k.error().empty(), "no error left");
-  }
-  {
-    Machine m;
-    auto k = Keeper(&m);
-    k.Ensure();
-    m.run_error = error;
-    m.gpu_error = kRemoved;  // and it stays lost
-    Expect(Line(k) && !k.on_gpu() && m.cpu_runs == 1,
-           "GPU stays lost: the line is generated on the CPU");
-    Expect(k.error() == kRemoved && k.attempts() == 1, "failure reported");
-    m.gpu_error = nullptr;
-    m.now = 2;
-    Expect(Line(k) && k.on_gpu() && m.gpu_runs == 1 && k.error().empty(),
-           "back on the GPU at the retry");
-  }
+  Machine m;
+  auto k = Keeper(&m);
+  Expect(k.Ensure() && k.on_gpu() && Line(k), "loaded on GPU early");
+  m.run_error = error;
+  Expect(Line(k) && !k.on_gpu() && m.gpu_creates == 1 && m.cpu_runs == 1,
+         "failed line retried on CPU without another GPU session");
+  Expect(k.GpuDisabled() && k.error() == error && k.attempts() == 1,
+         "runtime failure is retained");
+  m.now = 1e6;
+  Expect(Line(k) && m.gpu_creates == 1 && m.cpu_creates == 1,
+         "later lines stay on CPU");
 }
 }  // namespace
 
@@ -176,11 +147,13 @@ int main() {
     Expect(!Line(k, &no_net) && no_net, "the line fails for want of a network");
     m.now = 2;
     k.Ensure();
-    Expect(m.gpu_creates == 2 && m.cpu_creates == 1,
-           "GPU retried, the CPU not at every retry");
-    m.gpu_error = nullptr;
-    m.now = 6;
-    Expect(Line(k) && k.on_gpu(), "GPU recovers without the CPU");
+    Expect(m.gpu_creates == 1 && m.cpu_creates == 1,
+           "failed CPU does not reopen GPU circuit or spin retries");
+    m.cpu_error = nullptr;
+    m.now = 30;
+    Expect(Line(k) && !k.on_gpu() && m.gpu_creates == 1 && m.cpu_creates == 2,
+           "CPU can recover while GPU stays disabled");
+
   }
   printf("-- driver metacommands\n");
   {
@@ -309,6 +282,16 @@ int main() {
                k.on_gpu(),
            "keeps the session and is the line's own");
   }
+  printf("-- early residency\n");
+  {
+    Machine m;
+    auto k = Keeper(&m);
+    auto* early = k.Ensure();
+    m.now = 1e6;
+    Expect(early && k.Ensure() == early && Line(k) && m.gpu_creates == 1 &&
+               m.cpu_creates == 0 && !k.GpuDisabled(),
+           "healthy early GPU session stays resident");
+  }
   printf("-- GPU=0\n");
   {
     Machine m;
@@ -335,6 +318,9 @@ int main() {
     return false;
   };
   const std::string removed = kRemoved;
+  Expect(any(DiagnoseNet(true, kOom, 1, roomy), "restart the game") &&
+             !any(DiagnoseNet(true, kOom, 1, roomy), "next retry"),
+         "GPU failure advice agrees with the restart-only latch");
   Expect(Has(first(DiagnoseNet(true, kOom, 1, roomy)), "no VRAM left"),
          "out of memory: no VRAM left");
   Expect(Has(first(DiagnoseNet(true, kRemoved, 1, full)),

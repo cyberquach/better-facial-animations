@@ -17,6 +17,8 @@ namespace {
 skse::SKSEMessagingInterface* messaging = nullptr;
 skse::SKSETaskInterface* tasks = nullptr;
 uint32_t plugin_handle = 0;
+const void* (*plugin_info)(const char*) = nullptr;
+bool dbvo_installed = false;
 SRWLOCK session_lock = SRWLOCK_INIT;
 // not destroyed at exit: the Papyrus thread may still be notifying
 PlayerSpeechPtr& active = *new PlayerSpeechPtr;
@@ -69,7 +71,11 @@ void Receive(skse::SKSEMessage* message) {
 }
 }  // namespace
 
+bool DbvoInstalled() { return dbvo_installed; }
+
 void InitPlayerSpeech(const skse::SKSEInterface* iface) {
+  plugin_info = iface->GetPluginInfo;
+  dbvo_installed = false;
   plugin_handle = iface->GetPluginHandle();
   messaging = static_cast<skse::SKSEMessagingInterface*>(
       iface->QueryInterface(skse::kInterfaceMessaging));
@@ -78,8 +84,10 @@ void InitPlayerSpeech(const skse::SKSEInterface* iface) {
 }
 
 void PlayerSpeechMessage(unsigned type) {
-  if (type == skse::kMessagePostLoad && messaging && tasks) {
-    bool found =
+  if (type == skse::kMessagePostLoad) {
+    dbvo_installed = plugin_info && plugin_info("DBVO");
+    skse::Log("player speech: DBVO %s", dbvo_installed ? "detected" : "not present");
+    bool found = messaging && tasks &&
         messaging->RegisterListener(plugin_handle, DBReV::kSender, Receive);
     skse::Log("player speech: DBReV listener %s",
               found ? "registered" : "not present");

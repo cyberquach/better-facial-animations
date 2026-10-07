@@ -2,6 +2,26 @@
   "schema": 1,
   "contracts": [
     {
+      "id": "potato-mode",
+      "test": "potato_mode_test",
+      "sources": [
+        "tests/potato_mode_test.cc"
+      ],
+      "plugin_objects": true,
+      "link": [
+        "-Wl,--wrap=_ZN4skse4AddrEy"
+      ],
+      "covers": [
+        "active dialogue admission and partner changes",
+        "cancelled queue cache retry",
+        "v2/v3 inference cancellation",
+        "persistent session across conversations and mode changes",
+        "player admission in Potato mode",
+        "immediate expression and morph handoff",
+        "shared player/NPC request ownership, mode switches and cancelled-work retry"
+      ]
+    },
+    {
       "id": "wrapper-lifetime",
       "test": "wrapper_lifetime_test",
       "sources": [
@@ -14,6 +34,20 @@
         "wrapper/native reference ownership",
         "nested and independent thread scopes",
         "v2/v3 and partial session teardown"
+      ]
+    },
+    {
+      "id": "gpu-circuit-breaker",
+      "test": "net_keeper_test",
+      "sources": [
+        "src/net_keeper.cc",
+        "tests/net_keeper_test.cc"
+      ],
+      "covers": [
+        "early session residency",
+        "GPU startup and inference failure latch",
+        "CPU fallback recovery",
+        "no timed GPU retries"
       ]
     },
     {
@@ -50,14 +84,17 @@
       "id": "head-parts",
       "test": "head_parts_test",
       "sources": [
-        "src/head_cache.cc",
         "src/direct.cc",
         "tests/head_parts_test.cc"
       ],
       "covers": [
         "Lulu INIGO",
         "Satisfactory Facial Piercings",
-        "synthetic HDPT classification"
+        "synthetic HDPT classification",
+        "Lily/Alma/DVA/Eve/Squirrel Girl mouth-extra names",
+        "nested/cyclic mouth extras and jewelry exclusions",
+        "candidate morph capture and vertex restoration",
+        "unregistered candidate traversal"
       ]
     },
     {
@@ -96,7 +133,9 @@
       "covers": [
         "generic supported head geometry",
         "tongue identification with shared or absent BigAah motion",
-        "softened tongue cues, partial jaw follow, bounded overlaps and teeth preservation"
+        "softened tongue cues, partial jaw follow, bounded overlaps and teeth preservation",
+        "oral region gating and fallback",
+        "separate upper/lower teeth, head scale and coordinate spaces"
       ]
     },
     {
@@ -141,6 +180,50 @@
         "SE/AE/VR resource dispatch and missing/unknown EFA rejection",
         "independent male/female Mouth calibration",
         "shared head mappings and single application of calibration"
+      ]
+    },
+    {
+      "id": "lip-strength",
+      "test": "lip_strength_test",
+      "sources": [
+        "tests/lip_strength_test.cc"
+      ],
+      "covers": [
+        "independent upper/lower lip deformation",
+        "neutral default and unchanged expressions",
+        "smooth lip boundary and attached followers"
+      ]
+    },
+    {
+      "id": "sex-settings",
+      "test": "sex_settings_test",
+      "sources": [
+        "tests/sex_settings_test.cc"
+      ],
+      "plugin_objects": true,
+      "covers": [
+        "legacy shared INI migration",
+        "independent male/female sliders and persistence",
+        "defaults and invalid values",
+        "sex-specific generation and cache keys with old model"
+      ]
+    },
+    {
+      "id": "native-speech-hook",
+      "test": "native_speech_hook_test",
+      "sources": [
+        "src/native_speech_hook.cc",
+        "tests/native_speech_hook_test.cc"
+      ],
+      "covers": [
+        "native speech ABI, trampoline and existing detour refusal"
+      ]
+    },
+    {
+      "id": "release-version",
+      "python": "tests/test_release_version.py",
+      "covers": [
+        "SKSE revision overflow rejected before build or packaging"
       ]
     }
   ],
@@ -225,6 +308,16 @@
           "id": "000D93",
           "editor_id": "OStimExcitementFaction"
         }
+      ]
+    },
+    {
+      "id": "follower-teeth",
+      "python": "tools/follower_teeth.py",
+      "fixture_directory": true,
+      "covers": [
+        "pinned Lily/Alma/DVA/Eve/Squirrel Girl base/SMP geometry",
+        "both models and tongue modes",
+        "stationary upper teeth, lower jaw motion, skin and lip independence"
       ]
     }
   ],

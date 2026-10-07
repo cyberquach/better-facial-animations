@@ -81,6 +81,7 @@ constexpr uint32_t kVrRuntime = Version(1, 4, 15) | 1;
 // Records the runtime: the My Games folder per store and the Address Library
 // file. Call first in SKSEPlugin_Load.
 void SetRuntime(uint32_t runtime_version);
+uint32_t Runtime();
 // The runtime set above is SE (1.5.x) / VR (1.4.x); neither (AE) until set.
 bool IsSe();
 bool IsVr();

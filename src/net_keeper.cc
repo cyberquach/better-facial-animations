@@ -105,7 +105,7 @@ std::vector<std::string> DiagnoseNet(bool gpu, const std::string& err,
     out.push_back(b);
     out.push_back(
         "Free VRAM (smaller textures, close other programs that "
-        "use the GPU): the model loads at the next retry.");
+        "use the GPU), then restart the game to retry the GPU.");
   } else if (lost) {
     snprintf(b, sizeof b, "GPU FAILED: the graphics device was lost (%s now).",
              vram);
@@ -194,7 +194,8 @@ std::unique_ptr<Net> CreateGpuNet(
     }
     // the runtime itself did not load: the same without them
     for (const char* other :
-         {"cannot load onnxruntime.dll", "onnxruntime.dll: wrong version"})
+         {"cannot load onnxruntime.dll", "onnxruntime.dll: wrong version",
+          "cannot load DirectML.dll", "DirectML.dll: DMLCreateDevice1 unavailable"})
       if (err.find(other) != std::string::npos) return nullptr;
     say("GPU session with driver metacommands failed (" + err +
         "): trying without them");
@@ -219,8 +220,8 @@ std::unique_ptr<Net> CreateGpuNet(
 }
 
 Net* NetKeeper::Ensure() {
-  if (Wanted()) return net_.get();
-  if (now_() >= retry_at_) {
+  if (Settled()) return net_.get();
+  if (!gpu_disabled_ && now_() >= retry_at_) {
     std::string err, info;
     if (auto n = create_(want_gpu_, err, info)) {
       net_ = std::move(n);
@@ -232,13 +233,17 @@ Net* NetKeeper::Ensure() {
       Log("network loaded: " + info);
     } else {
       ++attempts_;
-      retry_wait_ =
-          retry_wait_ ? std::min(retry_wait_ * 2, kRetryMax) : kRetryMin;
-      retry_at_ = now_() + retry_wait_;
       error_ = err;
-      Log("network not loaded (attempt " + std::to_string(attempts_) +
-          ", next in " + std::to_string(static_cast<int>(retry_wait_)) +
-          " s): " + err);
+      if (want_gpu_) {
+        gpu_disabled_ = true;
+        retry_at_ = 0;
+        Log("GPU initialization failed: " + err +
+            "; GPU disabled until restart; trying CPU");
+      } else {
+        retry_wait_ = retry_wait_ ? std::min(retry_wait_ * 2, kRetryMax) : kRetryMin;
+        retry_at_ = now_() + retry_wait_;
+        Log("CPU network not loaded: " + err);
+      }
     }
   }
   if (!net_ && want_gpu_ && now_() >= cpu_retry_at_) {

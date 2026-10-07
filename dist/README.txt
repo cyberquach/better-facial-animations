@@ -15,21 +15,29 @@ Requirements
   Skyrim Special Edition 1.6.1170, 1.6.1179 (GOG), 1.7.99 or 1.7.104 (AE), matching SKSE, Address Library for SKSE Plugins.
   Or Skyrim VR 1.4.15 with SKSEVR (no Address Library needed; not yet looked at in a headset).
   Not the Epic Games Store version: SKSE does not support it.
-  A DirectX 12 GPU (~250 MB of VRAM, ~100 MB with UseOldModel=1, held from the main menu until the game exits). If the model cannot
-  be loaded on the GPU the settings window says why, it is retried and lines run on the CPU meanwhile (slow).
+  A DirectX 12 GPU (~250 MB of VRAM, ~100 MB with UseOldModel=1). PotatoMode=1 processes only the active
+  conversation NPC and the player (DBReV or experimental DBVO 2 support). Other NPC speech stays vanilla.
+  Both modes keep the model loaded from the main menu until exit. An already submitted GPU run must finish
+  before cancellation. PotatoMode=0 (default) processes all speakers. If the model cannot
+  be loaded on the GPU after its startup fallback, or GPU inference fails, the settings window says why.
+  GPU attempts stop until restart, and lines use the CPU (slower).
+  ForceCPU=1 skips graphics initialization and probes.
   Optional: SKSE Menu Framework, for the in-game settings page (Better Facial Animations -> Settings).
 
 Player dialogue (optional)
   Dragonborn ReVoiced (DBReV) 1.4.4+ with a compatible voice pack animates the player through BFA.
   Select the voice in DBReV's MCM. A third-person/cinematic camera lets you see the player's face.
   General -> Player facial animations toggles this separately from NPC faces; the INI equivalent is
-  [General] PlayerFacialAnimations=0. The master Enabled setting still applies.
+  [General] PlayerFacialAnimations=0. Player animation also works in Potato mode. The master Enabled setting still applies.
   With Cinematic Conversation Camera, use [Performance] bSynthLipSync=0 in SKSE/Plugins/SD_user.ini
   to disable its synthesized fallback lips. Turning off BFA's player feature leaves DBReV's own lip sync.
   The same supported-head/race requirements apply. DBReV is optional, and its DLL is not patched.
 
 Settings
-  Data/SKSE/Plugins/BetterFacialAnimations.ini, or in game through SKSE Menu Framework.
+  Data/SKSE/Plugins/BetterFacialAnimations.ini, or in game through SKSE Menu Framework (saved automatically).
+  Male and Female NPCs and the Player each have independent playback, strength and emotion sliders.
+  Upper lip and Lower lip multiply Mouth strength; 1 uses permanent 0.8 upper / 1.2 lower calibration.
+  Older shared settings seed both NPC profiles; older lip values convert to preserve their effect.
 Log
   Documents/My Games/Skyrim Special Edition/SKSE/BetterFacialAnimations.log (Skyrim VR/SKSE/ on VR)
   The GPU, the driver and what went wrong loading the model are always written there: attach it to a bug
@@ -46,3 +54,18 @@ BetterFacialAnimations.dll statically links FFmpeg 8.0.1 (LGPL 2.1): wmav1/wmav2
 Better Facial Animations is free software under the GNU GPL v3 (licenses/BetterFacialAnimations-GPL-3.0.txt).
 Additional term under GPL v3 section 7(b): any copy or modified version must keep the attribution "Based on Better Facial Animations by Cyberquach" in its documentation and on any page it is distributed from.
 Source code: https://gitlab.com/cyberquach/better-facial-animations
+
+DBVO 2 EXPERIMENTAL PROTOTYPE
+DBVO2 prototype for Skyrim: detected automatically alongside DBReV.
+PlayerFacialAnimations controls both integrations and is on by default.
+The old NativePlayerSpeech setting is ignored. Use default DBVO pitch (100).
+The observer reuses BFA's player rendering without modifying DBVO. It refuses
+unrecognized or already-hooked engine entry bytes. Enabled experimentally on
+BFA-supported desktop runtimes: 1.5.97, 1.6.640, 1.6.1170, 1.6.1179 (GOG),
+1.7.99 and 1.7.104. VR and unknown runtimes are excluded. DBVO itself must
+support the runtime; the pinned DBVO 2.0.2.2 DLL excludes 1.7.99.
+1.6.640, GOG 1.6.1179 and 1.7.99 are enabled but unverified.
+Non-default pitch, no-LIP audio, skips and rapid replacements need validation.
+1.6.1170 has in-game playback evidence. On 1.5.97 and 1.7.104, binary
+hook/ABI and live SKSE/plugin startup checks pass; player playback
+still needs in-game validation.

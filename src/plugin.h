@@ -28,22 +28,15 @@ struct Config {  // fixed after load
   int network = 3;
   int batch = 2;
   int log_lines = 400;
-  bool use_device_wrapper = false;  // a2f::SetUseDeviceWrapper
+  bool use_device_wrapper = true;  // a2f::SetUseDeviceWrapper
   int cache_lines = 300;
-  // Winning EFA head assets, detected at data loaded: male, female.
+  // Winning EFA head assets, detected at data loaded: male, female. Their
+  // mouths were made for less speech: that face's Mouth scale is multiplied.
   bool expressive_faces[2] = {};
   std::wstring model, direct;  // the network's files, by network
 };
-struct Tune {  // menu; defaults as dist/BetterFacialAnimations.ini
-  bool enabled = true;
-  bool player = true;
-  bool prefetch = true;
-  bool disable_tongue = false;
-  // the v2.3 network (Config::network 2) and no GPU session (Config::gpu);
-  // they take effect at the next start
-  bool old_model = false;
-  bool force_cpu = false;
-  bool logging = true;
+constexpr float kExpressiveMouthScale = 0.85f;
+struct FaceTune {
   // how much louder speech adds to a line's emotion
   float voice_swell = 0.25f;
   // s for the game's expressions to fade out when a line starts (the face
@@ -55,6 +48,27 @@ struct Tune {  // menu; defaults as dist/BetterFacialAnimations.ini
   float direct_scale[direct::kNumRegions] = {1, 1, 1, 1, 1, 1};
   // how strongly a line's emotion drives the network
   float voice_emotion = 1;
+  float upper_lip = 1;
+  float lower_lip = 1;
+};
+struct Tune {  // menu; defaults as dist/BetterFacialAnimations.ini
+  bool enabled = true;
+  bool player = true;
+  bool prefetch = true;
+  bool potato_mode = false;
+  bool disable_tongue = false;
+  // the v2.3 network (Config::network 2) and no GPU session (Config::gpu);
+  // they take effect at the next start
+  bool old_model = false;
+  bool force_cpu = false;
+  bool logging = true;
+  FaceTune male, female, player_face;
+  const FaceTune& ForActor(bool is_female, bool is_player) const {
+    return is_player ? player_face : ForSex(is_female);
+  }
+  const FaceTune& ForSex(bool is_female) const {
+    return is_female ? female : male;
+  }
 };
 extern Config& config;
 Tune SnapshotTune();  // coherent copy for playback and workers
@@ -74,12 +88,15 @@ struct Param {
   const char* tip;
   Sec sec;
   bool* flag;
+  int profile = -1;  // -1: shared, 0: male NPC, 1: female NPC, 2: player
 };
-extern const Param kParams[];
+extern const std::vector<Param> kParams;
 extern const size_t kNumParams;
 
 void LoadIni();  // at load
 void SaveIni();
+void ScheduleSaveIni();  // debounce and persist on a dedicated writer thread
+void WakeWorker();  // after menu settings change, with settings_lock released
 void ResetTune();  // menu defaults
 // Turns the log on / off as tune.logging says; a new log starts with the
 // version.
@@ -89,7 +106,8 @@ void ApplyLogging();
 bool LogMore(std::atomic<int>& written);
 
 // ---------------- state ----------------
-// The network is loaded: lines keep generating while disabled (instant A/B).
+// The network is loaded. Only unrestricted mode keeps generating while
+// disabled.
 extern std::atomic<bool> net_loaded;
 // The A2FDirect bin is loaded and the morph hook in place.
 extern std::atomic<bool> ready;
@@ -109,6 +127,7 @@ struct Stats {
   std::string net_detail;
   int net_attempts = 0;
   double net_retry_at = 0;
+  bool net_gpu_disabled = false;
   bool net_gpu = false;  // the loaded session is the GPU one
   // Why the plugin is not running (the A2FDirect bin).
   std::string startup_error;
