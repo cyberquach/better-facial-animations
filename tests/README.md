@@ -21,6 +21,11 @@ fixture is blocked, never a pass).
 [compatibility.json](compatibility.json) lists the cases. `contracts` compile a
 test from `sources` (plus the plugin objects when `plugin_objects` is set, and
 any `link` flags), or run a `python` test; `build.sh test` uses the same entries.
+`runtime-layout` checks supported AE declarations, AE ID selection, and actor
+race/voice reads before and after the 1.6.629 layout change. `build.sh test`
+also checks the built DLL and every required ID against local Address Libraries,
+including Steam 1.6.353 and GOG 1.6.659.
+
 `assets` check that a locally extracted plugin owns the FACT records BFA looks
 up, by local id and editor id. `coverage_gaps` names what is not tested.
 

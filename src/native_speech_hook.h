@@ -10,7 +10,9 @@ namespace bfa {
 // bytes; an enabled runtime is not a claim of tested DBVO playback.
 inline constexpr bool NativeSpeechRuntimeSupported(uint32_t runtime) {
   return runtime == skse::Version(1, 5, 97) ||
+         runtime == skse::Version(1, 6, 353) ||
          runtime == skse::Version(1, 6, 640) ||
+         runtime == skse::Version(1, 6, 659, skse::kGog) ||
          runtime == skse::Version(1, 6, 1170) ||
          runtime == skse::Version(1, 6, 1179, skse::kGog) ||
          runtime == skse::Version(1, 7, 99) ||

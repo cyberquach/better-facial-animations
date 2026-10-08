@@ -23,7 +23,8 @@ using skse::Version;
 
 constexpr uint32_t kSupported[] = {
     skse::kVrRuntime,    Version(1, 5, 97),
-    Version(1, 6, 640),  Version(1, 6, 1170),
+    Version(1, 6, 353),  Version(1, 6, 640),
+    Version(1, 6, 659, skse::kGog), Version(1, 6, 1170),
     Version(1, 6, 1179, skse::kGog),
     Version(1, 7, 99),   Version(1, 7, 104),
 };
@@ -33,7 +34,8 @@ constexpr uint32_t kUnsupported[] = {
     Version(1, 4, 15),
     Version(1, 5, 80),
     Version(1, 6, 629),
-    Version(1, 6, 659, skse::kGog),
+    Version(1, 6, 659),
+    Version(1, 6, 353, skse::kGog),
     Version(1, 6, 1130),
     Version(1, 6, 1170, skse::kGog),
 };

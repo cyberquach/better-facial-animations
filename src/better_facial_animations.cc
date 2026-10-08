@@ -78,7 +78,8 @@ __declspec(dllexport) skse::SKSEPluginVersionData SKSEPlugin_Version = {
     "",
     0,
     0,
-    {skse::Version(1, 6, 640), skse::Version(1, 6, 1170),
+    {skse::Version(1, 6, 353), skse::Version(1, 6, 640),
+     skse::Version(1, 6, 659, skse::kGog), skse::Version(1, 6, 1170),
      skse::Version(1, 6, 1179, skse::kGog), skse::Version(1, 7, 99),
      skse::Version(1, 7, 104), 0},
     0};
@@ -330,6 +331,14 @@ bool VoiceStem(const char* voice, std::string& stem) {
   if (dot != std::string::npos && (sl == std::string::npos || dot > sl))
     stem.resize(dot);
   return !stem.empty();
+}
+
+// Confirmed silent, missing or unusable audio releases the speech pose.
+// Pending inference still prepares the head and eases out the previous pose.
+bool FailedSpeech(uint8_t* fg) {
+  ScopedLock guard(lock, ScopedLock::kShared);
+  auto it = playing.find(fg);
+  return it != playing.end() && it->second.entry->state == State::kFailed;
 }
 
 // Whether the actor (its base an NPC) is female.
@@ -717,30 +726,36 @@ void Process(const Job& j, a2f::NetKeeper& keeper) {
   std::shared_ptr<a2f::Line> line;
   double t = Now(), audio_sec = 0;
   bool no_net = false;  // not this line's fault: generate it again next time
+  bool silent = false;  // nothing to animate: vanilla, not a failure
   if (file.empty()) {
     err = "no voice file";
   } else {
     std::vector<float> pcm;
     if (a2f::DecodeAudio(bytes.data(), bytes.size(), pcm, err)) {
       audio_sec = pcm.size() / static_cast<double>(a2f::kSampleRate);
-      line = std::make_shared<a2f::Line>();
-      if (!keeper.Run(
-              [&](a2f::Net& net, std::string& e) {
-                const direct::Mark& face = model.Face(j.female);
-                if (net.Version() != 3)
-                  return a2f::Generate(net, pcm.data(), pcm.size(), j.emotion,
-                                       face.proj.data(), face.rest.data(),
-                                       face.k, *line, e, allowed);
-                // Claire speaks the women's lines, Mark the men's
-                const a2f::Face3 f{j.female ? 0 : 2, face.proj.data(),
-                                   face.tongue_proj.data(), face.rest.data(),
-                                   face.k};
-                return a2f::Generate3(net, pcm.data(), pcm.size(), j.emotion, f,
-                                      *line, e, allowed);
-              },
-              err, no_net, allowed))
-        line.reset();
-      PublishNet(keeper);
+      silent = !a2f::HasAudibleAudio(pcm.data(), pcm.size());
+      if (silent) {
+        err = "silent or unusable audio; keeping vanilla facial animation";
+      } else {
+        line = std::make_shared<a2f::Line>();
+        if (!keeper.Run(
+                [&](a2f::Net& net, std::string& e) {
+                  const direct::Mark& face = model.Face(j.female);
+                  if (net.Version() != 3)
+                    return a2f::Generate(net, pcm.data(), pcm.size(), j.emotion,
+                                         face.proj.data(), face.rest.data(),
+                                         face.k, *line, e, allowed);
+                  // Claire speaks the women's lines, Mark the men's
+                  const a2f::Face3 f{j.female ? 0 : 2, face.proj.data(),
+                                     face.tongue_proj.data(), face.rest.data(),
+                                     face.k};
+                  return a2f::Generate3(net, pcm.data(), pcm.size(),
+                                        j.emotion, f, *line, e, allowed);
+                },
+                err, no_net, allowed))
+          line.reset();
+        PublishNet(keeper);
+      }
     }
   }
   double ms = (Now() - t) * 1e3;
@@ -753,14 +768,16 @@ void Process(const Job& j, a2f::NetKeeper& keeper) {
   if (it != cache.end() && it->second == j.entry) {
     it->second->state = line ? State::kReady : State::kFailed;
     it->second->line = line;
-    if (!line && no_net) cache.erase(it);
+    // Re-read silent/missing assets on the next request: a TTS provider may
+    // replace them later. The active line retains its fallback entry.
+    if (!line && (no_net || silent || file.empty())) cache.erase(it);
   }
   if (line) {
     ++stats.lines;
     stats.audio_sec += audio_sec;
     stats.gen_sec += ms / 1e3;
     stats.last_ms = ms;
-  } else {
+  } else if (!silent) {
     ++stats.failed;
     stats.last_error = file.empty() ? j.path + ": " + err : err;
   }
@@ -1232,8 +1249,6 @@ float LineClock(uint8_t* fg, Playing& p, double now, bool& lip,
   if (!why && p.external && p.external->duration > 0 &&
       t >= p.external->duration)
     why = "the player audio ended";
-  if (!why && p.entry->state == State::kFailed)
-    why = "the line could not be generated";
   if (!why && p.entry->state == State::kReady &&
       t > p.entry->line->frames / p.entry->line->fps + 0.3f)
     why = "the line is over";
@@ -1378,6 +1393,18 @@ bool RestoreKeyframe(skse::KeyframeMultiple& ex, const float* src,
   return true;
 }
 
+// Both locks held: puts the engine's expressions back and drops the face.
+// Returns whether there was one.
+bool RestoreAndDropFace(uint8_t* fg) {
+  auto face = faces.find(fg);
+  if (face == faces.end()) return false;
+  auto& ex = Field<skse::KeyframeMultiple>(fg, skse::kFgExpr3);
+  if (RestoreKeyframe(ex, face->second.src, face->second.written))
+    ex.is_updated = true;
+  DropFace(fg);
+  return true;
+}
+
 // Before the engine's face update: puts back its own expression keyframe,
 // which Expressions overwrote, so the engine carries on from it. A parked
 // face's only while the keyframe is still as the plugin left it.
@@ -1503,6 +1530,13 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene,
       fg == partner_fg && actor && actor == partner_ref &&
       actor_handle == partner_handle;
   auto pit = playing.find(fg);
+  if (pit != playing.end() && pit->second.entry->state == State::kFailed) {
+    // The original update has already restored the engine keyframes.
+    // Discard the previous speech pose, including its release fade.
+    const bool changed = faces.count(fg) != 0;
+    DropFace(fg);
+    return changed ? kFaceChanged : kNoUpdate;
+  }
   const bool in_line = pit != playing.end();
   auto existing = faces.find(fg);
   const bool player = in_line ? pit->second.player
@@ -1531,19 +1565,18 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene,
   } else if (in_scene) {
     f.until = 0;  // back to the engine's
   }
-  const bool owns_expressions = enabled && clock < f.until;
+  // While inference runs the head is prepared (the Face is kept) but the
+  // expressions go back to the engine's, fading like after a line, until a
+  // generated animation is ready.
+  const bool pending = in_line && pit->second.entry->state == State::kPending;
+  const bool owns_expressions = enabled && clock < f.until && !pending;
   f.ownership_blend = std::clamp(
       f.ownership_blend + (owns_expressions ? dt / kOwnIn : -dt / kOwnOut), 0.f,
       1.f);
   // the levels to show: the engine's, faded out while a line plays (the
   // network alone shapes the speaking face; the game's emotion reaches it
-  // as the network's input) and back in after it; from the moment it is
-  // spoken, while it is still being generated too (not on a head that keeps
-  // vanilla lip-sync)
-  const bool speaking = in_line && enabled &&
-                        (pit->second.direct_frame >= 0 ||
-                         (pit->second.entry->state == State::kPending &&
-                          f.head_state != State::kFailed));
+  // as the network's input) and back in after it
+  const bool speaking = in_line && enabled && pit->second.direct_frame >= 0;
   const FaceTune& settings = tune.ForActor(f.female, f.player);
   f.speech_blend = std::clamp(
       f.speech_blend + (speaking ? dt / std::max(settings.face_in, 1e-3f)
@@ -1573,7 +1606,7 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene,
   if (!owns_expressions && f.ownership_blend <= 0) {
     if (easing) {
       updates |= kKeepUpdating;  // dropped once the pose has eased out
-    } else {
+    } else if (!pending) {
       DropFace(fg);  // back to the engine's
     }
   }
@@ -1706,15 +1739,19 @@ void AddDirect(uint8_t* node, bool reset) {
     // reset the mesh; never add even the old pose's fade-out to a scene.
     skse::ScopedFaceLock face_guard(Field<skse::SpinLock>(fg, skse::kFgLock));
     ScopedLock guard(lock);
-    auto face = faces.find(fg);
-    if (face != faces.end()) {
-      auto& ex = Field<skse::KeyframeMultiple>(fg, skse::kFgExpr3);
-      if (RestoreKeyframe(ex, face->second.src, face->second.written))
-        ex.is_updated = true;
-    }
+    RestoreAndDropFace(fg);
     playing.erase(fg);
-    DropFace(fg);
     fg[kFgDirty] = 1;
+    return;
+  }
+  if (FailedSpeech(fg)) {
+    skse::ScopedFaceLock face_guard(Field<skse::SpinLock>(fg, skse::kFgLock));
+    ScopedLock guard(lock);
+    // unless the line changed while waiting for the face lock
+    auto line = playing.find(fg);
+    if (line != playing.end() &&
+        line->second.entry->state == State::kFailed && RestoreAndDropFace(fg))
+      fg[kFgDirty] = 1;
     return;
   }
   bool enabled = false;

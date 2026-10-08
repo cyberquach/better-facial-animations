@@ -26,7 +26,16 @@ constexpr skse::Rel kDynDataSize{0x170, 0x170, 0x1B0};
 constexpr uint32_t kBaseVerts = 0x18;  // BSFaceGenBaseMorphExtraData ("FOD")
 constexpr uint32_t kBaseNumVerts = 0x24;
 constexpr uint32_t kFgDirty = 0x218;  // byte: run the face update next frame
-constexpr skse::Rel kActorProcess{0xF0, 0xF8, 0xF0};
+// Actor runtime data moved by eight bytes in 1.6.629 (CommonLibSSE-NG
+// Actor::GetActorRuntimeData). Earlier AE still uses AE Address Library ids.
+// Unlike Rel, Get depends on the exact runtime, so it is not constexpr.
+struct ActorOffset {
+  uint32_t before_629;
+  uint32_t Get() const {
+    return before_629 + (skse::Runtime() >= skse::Version(1, 6, 629) ? 8 : 0);
+  }
+};
+constexpr ActorOffset kActorProcess{0xF0};
 constexpr uint32_t kProcessHigh = 0x10;
 constexpr uint32_t kHighVoiceHandle = 0x2FC;
 constexpr uint32_t kFormId = 0x14;
@@ -44,7 +53,7 @@ constexpr uint32_t kRefCountMask = 0x3FF;
 // NiAVObject: parent NiNode, and the reference a 3D root belongs to
 constexpr uint32_t kAvParent = 0x30;
 constexpr skse::Rel kAvUserData{0xF8, 0xF8, 0x110};
-constexpr skse::Rel kActorRace{0x1F0, 0x1F8, 0x1F0};
+constexpr ActorOffset kActorRace{0x1F0};
 constexpr uint32_t kRaceFlags = 0x108;
 // Skyrim.esm ArgonianRace / ArgonianRaceVampire: their snout doesn't match the
 // human-trained model, so they keep vanilla lip-sync.
