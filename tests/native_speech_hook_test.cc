@@ -47,6 +47,9 @@ float Invoke(Fn fn) {
 
 int main() {
   CHECK(bfa::NativeSpeechRuntimeSupported(skse::Version(1, 5, 97)));
+  CHECK(bfa::NativeSpeechRuntimeSupported(skse::Version(1, 6, 353)));
+  CHECK(bfa::NativeSpeechRuntimeSupported(
+      skse::Version(1, 6, 659, skse::kGog)));
   CHECK(bfa::NativeSpeechRuntimeSupported(skse::Version(1, 6, 640)));
   CHECK(bfa::NativeSpeechRuntimeSupported(skse::Version(1, 6, 1170)));
   CHECK(bfa::NativeSpeechRuntimeSupported(

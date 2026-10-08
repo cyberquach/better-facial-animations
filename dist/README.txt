@@ -10,9 +10,11 @@ Each head is fitted to the animated face the first time it speaks, from its own 
 NPC replacers and High Poly Head animate like vanilla ones; a head whose .tri lacks one of the morphs it needs keeps
 vanilla lip-sync. Works with Creation Engine Raytracing. Per-region scales and the
 emotion strength are in the settings page. Vanilla, DLC and modded voices all work, packed or loose, with or without .lip files.
+Lines with missing or silent voice audio (including Fuz Ro D'oh dialogue) keep vanilla lip-sync and expressions. BFA takes over only when an animation from audible audio is ready.
 
 Requirements
-  Skyrim Special Edition 1.6.1170, 1.6.1179 (GOG), 1.7.99 or 1.7.104 (AE), matching SKSE, Address Library for SKSE Plugins.
+  Skyrim Special Edition 1.5.97, 1.6.353, 1.6.640, 1.6.659 (GOG), 1.6.1170,
+  1.6.1179 (GOG), 1.7.99 or 1.7.104, matching SKSE, Address Library for SKSE Plugins.
   Or Skyrim VR 1.4.15 with SKSEVR (no Address Library needed; not yet looked at in a headset).
   Not the Epic Games Store version: SKSE does not support it.
   A DirectX 12 GPU (~250 MB of VRAM, ~100 MB with UseOldModel=1). PotatoMode=1 processes only the active
@@ -61,10 +63,10 @@ PlayerFacialAnimations controls both integrations and is on by default.
 The old NativePlayerSpeech setting is ignored. Use default DBVO pitch (100).
 The observer reuses BFA's player rendering without modifying DBVO. It refuses
 unrecognized or already-hooked engine entry bytes. Enabled experimentally on
-BFA-supported desktop runtimes: 1.5.97, 1.6.640, 1.6.1170, 1.6.1179 (GOG),
+BFA-supported desktop runtimes: 1.5.97, 1.6.353, 1.6.640, 1.6.659 (GOG), 1.6.1170, 1.6.1179 (GOG),
 1.7.99 and 1.7.104. VR and unknown runtimes are excluded. DBVO itself must
 support the runtime; the pinned DBVO 2.0.2.2 DLL excludes 1.7.99.
-1.6.640, GOG 1.6.1179 and 1.7.99 are enabled but unverified.
+1.6.353, 1.6.640, GOG 1.6.659, GOG 1.6.1179 and 1.7.99 are enabled but unverified.
 Non-default pitch, no-LIP audio, skips and rapid replacements need validation.
 1.6.1170 has in-game playback evidence. On 1.5.97 and 1.7.104, binary
 hook/ABI and live SKSE/plugin startup checks pass; player playback

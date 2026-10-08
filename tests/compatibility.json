@@ -226,6 +226,46 @@
       "covers": [
         "SKSE revision overflow rejected before build or packaging"
       ]
+    },
+    {
+      "id": "audio-fallback",
+      "test": "audio_fallback_test",
+      "sources": [
+        "tests/audio_fallback_test.cc"
+      ],
+      "plugin_objects": true,
+      "link": [
+        "-Wl,--wrap=_ZN4skse4AddrEy",
+        "-Wl,--wrap=_ZN3bfa7HeadKeyB5cxx11EPhb",
+        "-Wl,--wrap=_ZN3bfa8FindHeadEPhRKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEbRSt10shared_ptrIKN6direct4HeadEE"
+      ],
+      "covers": [
+        "decoded silence, codec noise, DC, quiet and delayed audio",
+        "missing or silent assets bypass inference without cached failures; missing files are counted, silence is not",
+        "a line the network fails is counted, cached and vanilla until its sound ends",
+        "expression ownership fades out while a line is generated and back in when ready",
+        "later audible TTS replacement at the same path is generated, including Fuz Ro Doh paths",
+        "pending and failed audio preserve vanilla expressions and phonemes",
+        "immediate morph handoff, late readiness, sound/lip completion and load cleanup (synthetic SE/AE/VR)",
+        "mapping before inference completes, retained mapping and pose transition, readiness through expression/morph flow"
+      ]
+    },
+    {
+      "id": "runtime-layout",
+      "test": "runtime_layout_test",
+      "sources": [
+        "tests/runtime_layout_test.cc"
+      ],
+      "plugin_objects": true,
+      "link": [
+        "-Wl,--wrap=_ZN4skse4AddrEy"
+      ],
+      "covers": [
+        "supported AE declarations and native speech gate",
+        "1.6.353 uses AE ids with pre-1.6.629 actor layout",
+        "GOG 1.6.659 and existing SE/AE/VR race filtering and voice state",
+        "1.6.629 layout boundary"
+      ]
     }
   ],
   "assets": [
