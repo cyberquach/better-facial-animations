@@ -1,5 +1,5 @@
 // SKSE ABI, log, Address Library and engine layout (VR 1.4.15, SE 1.5.97, AE
-// 1.6.640 and 1.6.1170+).
+// 1.6.353, 1.6.640, GOG 1.6.659 and 1.6.1170+).
 #ifndef SRC_SKSE_H_
 #define SRC_SKSE_H_
 

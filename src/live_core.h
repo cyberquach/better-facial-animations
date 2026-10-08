@@ -104,6 +104,11 @@ T Smoothstep(T x) {
 bool DecodeAudio(const uint8_t* data, size_t n, std::vector<float>& pcm,
                  std::string& err);
 
+// Conservative silence gate, not speech recognition: any 20 ms window
+// with AC RMS above -70 dBFS is usable. Rejects digital silence, tiny codec
+// noise and DC while retaining quiet/short speech anywhere in the clip.
+bool HasAudibleAudio(const float* pcm, size_t n);
+
 // The emotion the network is given with a line, per frame:
 //   gain x the game's x (1 + swell x loudness)
 // for each explicit emotion, at most kMaxEmotion. The game's is the line's
