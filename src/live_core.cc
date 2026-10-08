@@ -74,6 +74,25 @@ template <typename T>
 using AvPtr = std::unique_ptr<T, AvDelete>;
 }  // namespace
 
+bool HasAudibleAudio(const float* pcm, size_t n) {
+  constexpr size_t window = kSampleRate / 50;  // 20 ms
+  constexpr double min_power = 1e-7;           // -70 dBFS
+  if (!pcm) return false;
+  for (size_t start = 0; start < n; start += window) {
+    const size_t count = std::min(window, n - start);
+    double sum = 0, square = 0;
+    for (size_t i = start; i < start + count; ++i) {
+      const double v = pcm[i];
+      if (!std::isfinite(v)) return false;
+      sum += v;
+      square += v * v;
+    }
+    const double mean = sum / count;
+    if (square / count - mean * mean > min_power) return true;
+  }
+  return false;
+}
+
 bool DecodeAudio(const uint8_t* data, size_t n, std::vector<float>& pcm,
                  std::string& err) {
   pcm.clear();

@@ -43,7 +43,8 @@ in-game animation behavior.
 ## Runtime coverage
 
 The entry observer is enabled experimentally on all BFA-supported desktop
-runtimes: 1.5.97, 1.6.640, 1.6.1170, GOG 1.6.1179, 1.7.99 and 1.7.104.
+runtimes: 1.5.97, 1.6.353, 1.6.640, GOG 1.6.659, 1.6.1170, GOG 1.6.1179,
+1.7.99 and 1.7.104.
 The native test checks this exact allowlist, including the GOG store field,
 and refusal of VR, other stores and unknown runtimes. The exact entry-byte
 check and refusal of existing detours remain mandatory. Reviewed local
