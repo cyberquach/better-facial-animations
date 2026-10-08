@@ -604,12 +604,23 @@ std::wstring PluginDir() {
 void NetEvent(const std::string& text) { skse::Report("%s", text.c_str()); }
 
 // Worker thread only: what the GPU sessions found out about the driver's
-// metacommands.
+// metacommands and about the device they run on.
 a2f::Metacommands metacommands;
+a2f::Device device;
 
 std::unique_ptr<a2f::Net> CreateNet(bool gpu, std::string& err,
                                     std::string& info) {
   const std::wstring dir = PluginDir(), file = dir + L"\\" + config.model;
+  static bool dml_loaded;
+  if (gpu && !dml_loaded) {
+    // onnxruntime delay-loads DirectML.dll by name: load ours first so that
+    // is the one it gets
+    dml_loaded = LoadLibraryExW((dir + L"\\DirectML.dll").c_str(), nullptr,
+                                LOAD_WITH_ALTERED_SEARCH_PATH) != nullptr;
+    if (!dml_loaded)
+      skse::Report("DirectML.dll not loaded from %ls (error %lu)", dir.c_str(),
+                   GetLastError());
+  }
   a2f::OrtOptions o;
   o.gpu = gpu;
   o.batch = config.batch;
@@ -630,18 +641,26 @@ std::unique_ptr<a2f::Net> CreateNet(bool gpu, std::string& err,
                                : a2f::CreateOrtNet(dir, file, o, e, i);
   };
   if (!gpu) return create(err, info);
-  // with the driver's metacommands, and without them when that fails
-  return a2f::CreateGpuNet(
-      [&](bool with, std::string& e, std::string& i) {
-        o.metacommands = with;
-        const double t = Now();
-        auto net = create(e, i);
-        skse::Report("GPU session with metacommands %s: %s after %.0f ms",
-                     with ? "on" : "off", net ? "loaded" : "failed",
-                     (Now() - t) * 1e3);
-        return net;
+  // with the driver's metacommands, and without them when that fails; on the
+  // device inside a graphics hook's wrapper, and on the wrapper when that is
+  // lost
+  return a2f::CreateDeviceNet(
+      [&](bool wrapper, std::string& e, std::string& i) {
+        a2f::SetUseDeviceWrapper(wrapper);
+        return a2f::CreateGpuNet(
+            [&](bool with, std::string& err_meta, std::string& info_meta) {
+              o.metacommands = with;
+              const double t = Now();
+              auto net = create(err_meta, info_meta);
+              skse::Report(
+                  "GPU session with metacommands %s on %s: %s after %.0f ms",
+                  with ? "on" : "off", wrapper ? "the wrapper" : "the device",
+                  net ? "loaded" : "failed", (Now() - t) * 1e3);
+              return net;
+            },
+            metacommands, e, i, NetEvent);
       },
-      metacommands, err, info, NetEvent);
+      device, a2f::DeviceWrapped, err, info, NetEvent);
 }
 
 // Copies the keeper's state to the settings window.
@@ -654,8 +673,6 @@ void PublishNet(const a2f::NetKeeper& keeper) {
   } else if (keeper.attempts() != diagnosed) {
     diagnosed = keeper.attempts();
     // The VRAM as the GPU session failed (DXGI only; no device is made).
-    // on_gpu() is already false here, so a latched failure is the one time
-    // after the latch the graphics are asked.
     why = a2f::DiagnoseNet(
         config.gpu, keeper.error(), diagnosed,
         config.gpu ? a2f::QueryGpu() : a2f::GpuState{},
@@ -667,7 +684,7 @@ void PublishNet(const a2f::NetKeeper& keeper) {
     if (config.gpu && !reported) {
       reported = true;
       skse::Report("-- at the first failure");
-      for (const auto& line : a2f::GpuReport(false))
+      for (const auto& line : a2f::GpuReport(true))
         skse::Report("%s", line.c_str());
     }
   }
@@ -679,7 +696,6 @@ void PublishNet(const a2f::NetKeeper& keeper) {
   stats.net_attempts = keeper.attempts();
   stats.net_retry_at = keeper.retry_at();
   stats.net_gpu = keeper.on_gpu();
-  stats.net_gpu_disabled = keeper.GpuDisabled();
 }
 
 // Generates one queued line and stores the result in the cache.
@@ -796,8 +812,8 @@ DWORD WorkerStep(a2f::NetKeeper& keeper, bool wait = true) {
   }
   const Tune tune = SnapshotTune();
   // Keep the session ready in both modes; Potato mode restricts speakers,
-  // not residency. A GPU failure stays latched to CPU until restart.
-  if (tune.enabled && !keeper.Settled()) {
+  // not residency. Without the wanted session: try it again.
+  if (tune.enabled && !keeper.Wanted()) {
     keeper.Ensure();
     PublishNet(keeper);
   }
@@ -812,7 +828,7 @@ DWORD WorkerStep(a2f::NetKeeper& keeper, bool wait = true) {
   }
   if (queue.empty()) {
     const DWORD timeout =
-        tune.enabled && !keeper.Settled() ? 1000 : INFINITE;
+        tune.enabled && !keeper.Wanted() ? 1000 : INFINITE;
     if (revision != settings_revision) return 0;
     if (wait) SleepConditionVariableSRW(&queue_cv, &lock, timeout, 0);
     return timeout;
@@ -838,7 +854,8 @@ DWORD WINAPI Worker(void*) {
   ready = true;
   skse::Report("settings: GPU=%d, batch %d, model %ls", config.gpu,
                config.batch, config.model.c_str());
-  a2f::SetUseDeviceWrapper(config.use_device_wrapper);
+  device.wrapper = device.fixed = config.use_device_wrapper;
+  a2f::SetUseDeviceWrapper(device.wrapper);
   for (const auto& line : a2f::GpuReport(config.gpu && SnapshotTune().enabled))
     skse::Report("%s", line.c_str());
   a2f::SetOrtLog([](const std::string& s) { skse::Report("%s", s.c_str()); });

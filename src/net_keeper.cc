@@ -89,8 +89,7 @@ std::vector<std::string> DiagnoseNet(bool gpu, const std::string& err,
     dml_reason = err.substr(at + sizeof kDmlReason - 1, 8);
   // E_OUTOFMEMORY; DXGI device removed / hung / reset / driver error
   const bool oom = has("8007000E") || (g.known && free_mb < need_mb);
-  const bool lost =
-      has("887A0005") || has("887A0006") || has("887A0007") || has("887A0020");
+  const bool lost = LostDevice(err);
   if (!lost && !oom && (has("DML api") || has("DirectML:"))) {
     out.push_back("GPU FAILED: DirectML is not available.");
     out.push_back(
@@ -194,8 +193,7 @@ std::unique_ptr<Net> CreateGpuNet(
     }
     // the runtime itself did not load: the same without them
     for (const char* other :
-         {"cannot load onnxruntime.dll", "onnxruntime.dll: wrong version",
-          "cannot load DirectML.dll", "DirectML.dll: DMLCreateDevice1 unavailable"})
+         {"cannot load onnxruntime.dll", "onnxruntime.dll: wrong version"})
       if (err.find(other) != std::string::npos) return nullptr;
     say("GPU session with driver metacommands failed (" + err +
         "): trying without them");
@@ -219,9 +217,41 @@ std::unique_ptr<Net> CreateGpuNet(
   return nullptr;
 }
 
+bool LostDevice(const std::string& err) {
+  // DXGI device removed / hung / reset / driver internal error
+  for (const char* code : {"887A0005", "887A0006", "887A0007", "887A0020"})
+    if (err.find(code) != std::string::npos) return true;
+  return false;
+}
+
+std::unique_ptr<Net> CreateDeviceNet(
+    const CreateOnDevice& create, Device& device,
+    const std::function<bool()>& wrapped, std::string& err, std::string& info,
+    const std::function<void(const std::string&)>& log) {
+  auto say = [&log](const std::string& s) {
+    if (log) log(s);
+  };
+  if (auto net = create(device.wrapper, err, info)) return net;
+  if (device.wrapper || device.fixed || !LostDevice(err) || !wrapped())
+    return nullptr;
+  say("the GPU session was lost on the device inside the wrapper (" + err +
+      "): trying the wrapper itself");
+  std::string err_wrapper;
+  if (auto net = create(true, err_wrapper, info)) {
+    say("the model runs on the wrapper from now on (as with "
+        "UseDeviceWrapper=1): the device inside it is lost under this "
+        "system's graphics hooks");
+    device.wrapper = true;
+    device.error = err;
+    return net;
+  }
+  say("the wrapper failed too (" + err_wrapper + ")");
+  return nullptr;
+}
+
 Net* NetKeeper::Ensure() {
-  if (Settled()) return net_.get();
-  if (!gpu_disabled_ && now_() >= retry_at_) {
+  if (Wanted()) return net_.get();
+  if (now_() >= retry_at_) {
     std::string err, info;
     if (auto n = create_(want_gpu_, err, info)) {
       net_ = std::move(n);
@@ -233,17 +263,13 @@ Net* NetKeeper::Ensure() {
       Log("network loaded: " + info);
     } else {
       ++attempts_;
+      retry_wait_ =
+          retry_wait_ ? std::min(retry_wait_ * 2, kRetryMax) : kRetryMin;
+      retry_at_ = now_() + retry_wait_;
       error_ = err;
-      if (want_gpu_) {
-        gpu_disabled_ = true;
-        retry_at_ = 0;
-        Log("GPU initialization failed: " + err +
-            "; GPU disabled until restart; trying CPU");
-      } else {
-        retry_wait_ = retry_wait_ ? std::min(retry_wait_ * 2, kRetryMax) : kRetryMin;
-        retry_at_ = now_() + retry_wait_;
-        Log("CPU network not loaded: " + err);
-      }
+      Log("network not loaded (attempt " + std::to_string(attempts_) +
+          ", next in " + std::to_string(static_cast<int>(retry_wait_)) +
+          " s): " + err);
     }
   }
   if (!net_ && want_gpu_ && now_() >= cpu_retry_at_) {

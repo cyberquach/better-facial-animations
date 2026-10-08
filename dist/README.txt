@@ -19,9 +19,9 @@ Requirements
   conversation NPC and the player (DBReV or experimental DBVO 2 support). Other NPC speech stays vanilla.
   Both modes keep the model loaded from the main menu until exit. An already submitted GPU run must finish
   before cancellation. PotatoMode=0 (default) processes all speakers. If the model cannot
-  be loaded on the GPU after its startup fallback, or GPU inference fails, the settings window says why.
-  GPU attempts stop until restart, and lines use the CPU (slower).
-  ForceCPU=1 skips graphics initialization and probes.
+  be loaded on the GPU the settings window says why, it is retried and lines run on the CPU meanwhile (slow).
+  Under ReShade the model runs on the device inside ReShade's wrapper, and switches to the wrapper itself
+  when that device is lost (DLSS 5 bridges); UseDeviceWrapper=1 in the ini always takes the wrapper.
   Optional: SKSE Menu Framework, for the in-game settings page (Better Facial Animations -> Settings).
 
 Player dialogue (optional)
