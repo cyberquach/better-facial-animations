@@ -28,17 +28,6 @@ int main() {
   LoadIni();
   CHECK(SnapshotTune().male.upper_lip == 1 &&
         SnapshotTune().female.lower_lip == 1);
-  CHECK(config.use_device_wrapper);
-  write("Debug", "UseDeviceWrapper", "0");
-  LoadIni();
-  CHECK(config.use_device_wrapper);  // Old shipped default is not a new opt-in.
-  write("Debug", "UnwrapDevice", "1");
-  LoadIni();
-  CHECK(!config.use_device_wrapper);
-  write("Debug", "UnwrapDevice", "0");
-  LoadIni();
-  CHECK(config.use_device_wrapper);
-  CHECK(DeleteFileA(ini));  // Separate fixture for legacy slider migration.
   write("General", "IniVersion", "3");
   write("General", "UseOldModel", "1");
   write("Debug", "Logging", "0");
@@ -118,15 +107,39 @@ int main() {
     }
     ScheduleSaveIni();
   }
-  const ULONGLONG deadline = GetTickCount64() + 5000;
-  char saved[32];
-  do {
-    Sleep(20);
-    GetPrivateProfileStringA("LocalAnimationStrengthMale", "UpperLip", "",
-                             saved, sizeof saved, ini);
-  } while (!(std::fabs(std::strtof(saved, nullptr) - 1.95f) < 1e-5f) &&
-           GetTickCount64() < deadline);
-  CHECK(std::fabs(std::strtof(saved, nullptr) - 1.95f) < 1e-5f);
+  // The writer thread's save: the key's value in the file, once it is value
+  // (as a number) or 5 s passed.
+  auto written = [&](const char* section, const char* key, float value) {
+    const ULONGLONG deadline = GetTickCount64() + 5000;
+    char saved[32];
+    do {
+      Sleep(20);
+      GetPrivateProfileStringA(section, key, "", saved, sizeof saved, ini);
+    } while (!(std::fabs(std::strtof(saved, nullptr) - value) < 1e-5f) &&
+             GetTickCount64() < deadline);  // also while it is "nan"
+    return std::strtof(saved, nullptr);
+  };
+  CHECK(std::fabs(written("LocalAnimationStrengthMale", "UpperLip", 1.95f) -
+                  1.95f) < 1e-5f);
+  // Every switch, flipped in the menu's way, is on disk before the next
+  // launch and comes back from it (a switch's tune field, not its ini key).
+  for (const Param& p : kParams) {
+    if (!p.flag) continue;
+    const bool flipped = !*p.flag;
+    {
+      ScopedLock guard(settings_lock);
+      *p.flag = flipped;
+    }
+    ScheduleSaveIni();
+    const char* section = p.sec == Sec::kDebug    ? "Debug"
+                          : p.sec == Sec::kDirect ? "LocalAnimationStrength"
+                                                  : "General";
+    CHECK(written(section, p.key, flipped) == flipped);
+    *p.flag = !flipped;
+    LoadIni();
+    CHECK(*p.flag == flipped);
+  }
+  CHECK(SnapshotTune().potato_mode);
   SaveIni();  // joins any current write before removing the test directory
   CHECK(DeleteFileA(ini));
   CHECK(RemoveDirectoryA("Data\\SKSE\\Plugins"));

@@ -1,5 +1,6 @@
-// Keeps the early GPU session resident. A failed GPU startup or run disables
-// GPU attempts until restart; the CPU handles lines after safe teardown.
+// Keeps the network loaded: the wanted session (GPU unless ForceCPU=1) is created
+// once and held; while it cannot be created, or after it was lost, it is
+// retried with a doubling wait and the CPU runs the lines meanwhile.
 #ifndef SRC_NET_KEEPER_H_
 #define SRC_NET_KEEPER_H_
 
@@ -54,6 +55,28 @@ std::unique_ptr<Net> CreateGpuNet(
     const CreateGpu& create, Metacommands& meta, std::string& err,
     std::string& info, const std::function<void(const std::string&)>& log);
 
+// The Direct3D 12 device the GPU session runs on when a graphics hook
+// (ReShade) hands out a wrapper of the device: the device inside the wrapper,
+// or the wrapper itself once a session on the device inside was lost (some
+// hooks' device only works through their wrapper: DLSS 5 bridges).
+struct Device {
+  bool wrapper = false;  // sessions run on the wrapper
+  bool fixed = false;    // by the ini: UseDeviceWrapper=1, never switched
+  std::string error;     // what the device inside failed with, once switched
+};
+// The device was removed, hung or reset or the driver failed.
+bool LostDevice(const std::string& err);
+// A GPU session on device.wrapper's device. When one on the device inside
+// the wrapper is lost and a wrapper was handed out (wrapped), the same on
+// the wrapper, which the session runs on from then on. On failure returns
+// null with the reason in err: the device inside's when both were tried.
+using CreateOnDevice = std::function<std::unique_ptr<Net>(
+    bool wrapper, std::string& err, std::string& info)>;
+std::unique_ptr<Net> CreateDeviceNet(
+    const CreateOnDevice& create, Device& device,
+    const std::function<bool()>& wrapped, std::string& err, std::string& info,
+    const std::function<void(const std::string&)>& log);
+
 class NetKeeper {
  public:
   // Creates a session; on failure returns null with the reason in err.
@@ -70,32 +93,27 @@ class NetKeeper {
         log_(std::move(log)) {}
 
   // The session to use now (null: none could be created). Tries the wanted
-  // one when it is missing and its wait is over; GPU failure is latched.
+  // one when it is missing and its wait is over.
   Net* Ensure();
 
   // use(Net&, err) -> bool with a session. A session that stops running
-  // (Net::failed) falls back to CPU after a GPU failure, and use is
+  // (Net::failed: the GPU device was lost) is replaced at once and use is
   // called again, once. no_net: it failed for want of a working session.
   template <typename Use>
   bool Run(Use&& use, std::string& err, bool& no_net,
            const std::function<bool()>& allowed = {});
 
   // Worker only, after generation has returned: release session resources.
-  // A GPU failure and its diagnosis survive explicit unload/reload.
   void Unload() {
     net_.reset();
     on_gpu_ = false;
     info_ = "not loaded";
-    if (!gpu_disabled_) {
-      error_.clear();
-      attempts_ = 0;
-    }
+    error_.clear();
+    attempts_ = 0;
     retry_at_ = retry_wait_ = cpu_retry_at_ = 0;
   }
   // The session the settings ask for is loaded (not the CPU fallback).
   bool Wanted() const { return net_ && (on_gpu_ || !want_gpu_); }
-  bool GpuDisabled() const { return gpu_disabled_; }
-  bool Settled() const { return net_ && (Wanted() || gpu_disabled_); }
   bool loaded() const { return net_ != nullptr; }
   bool on_gpu() const { return net_ && on_gpu_; }
   // One-line description of the loaded session.
@@ -111,7 +129,6 @@ class NetKeeper {
     if (log_) log_(s);
   }
   bool want_gpu_;
-  bool gpu_disabled_ = false;
   Create create_;
   Clock now_;
   Logger log_;
@@ -137,17 +154,10 @@ bool NetKeeper::Run(Use&& use, std::string& err, bool& no_net,
     if (use(*n, err)) return true;
     if (!n->failed) return false;
     no_net = true;
-    if (on_gpu_) {
-      gpu_disabled_ = true;
-      error_ = err;
-      ++attempts_;
-      retry_at_ = 0;
-      Log("GPU network lost (" + err + "): GPU disabled until restart; trying CPU");
-    } else {
-      Log("CPU network lost (" + err + "): loading it again");
-      cpu_retry_at_ = 0;
-      if (!want_gpu_) retry_at_ = 0;
-    }
+    Log("network lost (" + err + "): loading it again");
+    // the wanted session is tried again at once; a lost CPU fallback
+    // leaves the wanted one's wait as it is
+    if (Wanted()) retry_at_ = 0;
     net_.reset();
   }
   return false;

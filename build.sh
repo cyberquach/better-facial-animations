@@ -7,7 +7,7 @@
 #   ./build.sh compat             also run the compatibility contracts in tests/compatibility.json
 #                                 (no Skyrim launch) and write their evidence to build/compatibility/
 #   ./build.sh test               also run the contracts, check every supported runtime (tests/runtimes_test.cc) and the
-#                                 Direct mesh placement, voice-start gating, GPU failure fallback for the
+#                                 Direct mesh placement, voice-start gating, losing and regaining the GPU
 #                                 session (tests/net_keeper_test.cc) and the CPU session
 #                                 (tests/ort_net_test.cc: the packaged networks load and run) and the
 #                                 line's emotion and call sites shared with another plugin, under $WINE
@@ -95,7 +95,7 @@ test)
     $CXX -Wall -static tests/passive_report_test.cc build/ort_net.o -o $T/passive_report_test.exe -Wl,--wrap=__imp_CreateDXGIFactory1 -ldxgi &&
     WINEDEBUG=-all ${WINE-wine64} $T/passive_report_test.exe &&
     $CXX -Wall -static src/net_keeper.cc tests/net_keeper_test.cc -o $T/net_keeper_test.exe &&
-    $CXX -Wall -static tests/ort_net_test.cc build/ort_net.o -o $T/ort_net_test.exe -Wl,--wrap=__imp_CreateDXGIFactory1 -ldxgi &&
+    $CXX -Wall -static tests/ort_net_test.cc build/ort_net.o -o $T/ort_net_test.exe -ldxgi &&
     WINEDEBUG=-all ${WINE-wine64} $T/runtimes_test.exe build/BetterFacialAnimations.dll $T &&
     WINEDEBUG=-all ${WINE-wine64} $T/net_keeper_test.exe &&
     WINEDEBUG=-all ${WINE-wine64} $T/ort_net_test.exe $P/BetterFacialAnimations "$P/BetterFacialAnimations/$(basename "$MODEL")" "$MODEL_FP32" &&

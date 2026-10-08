@@ -1,4 +1,4 @@
-// GPU failure latches until restart (src/net_keeper.h), with a fake
+// Losing the GPU session and getting it back (src/net_keeper.h), with a fake
 // GPU that fails the way DirectML does.
 #include "../src/net_keeper.h"
 
@@ -88,38 +88,67 @@ bool Line(a2f::NetKeeper& k, bool* no_net = nullptr) {
   return ok;
 }
 
-// Startup failure latches even if the driver or memory later recovers.
+// The GPU cannot load the model at the main menu for `error`; it can later.
 void LoadFails(const char* error, const char* name) {
   printf("-- load fails: %s\n", name);
   Machine m;
   m.gpu_error = error;
   auto k = Keeper(&m);
-  Expect(k.Ensure() && !k.on_gpu() && !k.Wanted() && k.Settled(),
-         "CPU fallback is settled without pretending GPU recovered");
-  Expect(k.GpuDisabled() && k.error() == error && k.attempts() == 1 && k.retry_at() == 0,
-         "failure retained and GPU disabled until restart");
-  Expect(Line(k) && m.cpu_runs == 1, "CPU runs the line");
-  m.gpu_error = nullptr;
-  for (double at : {2., 30., 120., 1e6}) {
-    m.now = at;
-    Expect(k.Ensure() && !k.on_gpu(), "GPU recovery does not reopen circuit");
+  Expect(k.Ensure() && !k.on_gpu() && !k.Wanted(), "CPU fallback is loaded");
+  Expect(k.error() == error && k.attempts() == 1 && k.retry_at() == 2,
+         "failure reported, retry in 2 s");
+  Expect(Line(k) && m.cpu_runs == 1, "lines run on the CPU meanwhile");
+  m.now = 1.9;
+  k.Ensure();
+  Expect(m.gpu_creates == 1, "no retry before its time");
+  // 2, 4, 8, 16, 30, 30 s apart
+  const double at[] = {2, 6, 14, 30, 60, 90};
+  for (int i = 0; i < 6; ++i) {
+    m.now = at[i];
+    k.Ensure();
   }
-  Expect(m.gpu_creates == 1 && m.cpu_creates == 1, "no GPU retry or CPU churn");
+  Expect(m.gpu_creates == 7 && k.attempts() == 7 && k.retry_at() == 120,
+         "retries back off to every 30 s and never stop");
+  Expect(m.cpu_creates == 1, "the CPU session is created once");
+  m.gpu_error = nullptr;
+  m.now = 120;
+  Expect(k.Ensure() && k.on_gpu() && k.Wanted(), "GPU session takes over");
+  Expect(k.error().empty() && k.attempts() == 0 && k.info() == "GPU",
+         "error cleared");
+  Expect(Line(k) && m.gpu_runs == 1 && m.cpu_runs == 1,
+         "lines run on the GPU again");
+  m.now = 1e6;
+  k.Ensure();
+  Expect(m.gpu_creates == 8 && k.on_gpu(), "loaded session is kept for good");
 }
 
+// The device is lost during a line for `error`.
 void RunFails(const char* error, const char* name) {
   printf("-- device lost mid-line: %s\n", name);
-  Machine m;
-  auto k = Keeper(&m);
-  Expect(k.Ensure() && k.on_gpu() && Line(k), "loaded on GPU early");
-  m.run_error = error;
-  Expect(Line(k) && !k.on_gpu() && m.gpu_creates == 1 && m.cpu_runs == 1,
-         "failed line retried on CPU without another GPU session");
-  Expect(k.GpuDisabled() && k.error() == error && k.attempts() == 1,
-         "runtime failure is retained");
-  m.now = 1e6;
-  Expect(Line(k) && m.gpu_creates == 1 && m.cpu_creates == 1,
-         "later lines stay on CPU");
+  {
+    Machine m;
+    auto k = Keeper(&m);
+    Expect(k.Ensure() && k.on_gpu() && Line(k), "loaded on the GPU");
+    m.run_error = error;
+    Expect(Line(k) && k.on_gpu() && m.gpu_creates == 2 && m.gpu_runs == 2 &&
+               m.cpu_creates == 0,
+           "new GPU session at once, the line is generated");
+    Expect(k.error().empty(), "no error left");
+  }
+  {
+    Machine m;
+    auto k = Keeper(&m);
+    k.Ensure();
+    m.run_error = error;
+    m.gpu_error = kRemoved;  // and it stays lost
+    Expect(Line(k) && !k.on_gpu() && m.cpu_runs == 1,
+           "GPU stays lost: the line is generated on the CPU");
+    Expect(k.error() == kRemoved && k.attempts() == 1, "failure reported");
+    m.gpu_error = nullptr;
+    m.now = 2;
+    Expect(Line(k) && k.on_gpu() && m.gpu_runs == 1 && k.error().empty(),
+           "back on the GPU at the retry");
+  }
 }
 }  // namespace
 
@@ -147,13 +176,11 @@ int main() {
     Expect(!Line(k, &no_net) && no_net, "the line fails for want of a network");
     m.now = 2;
     k.Ensure();
-    Expect(m.gpu_creates == 1 && m.cpu_creates == 1,
-           "failed CPU does not reopen GPU circuit or spin retries");
-    m.cpu_error = nullptr;
-    m.now = 30;
-    Expect(Line(k) && !k.on_gpu() && m.gpu_creates == 1 && m.cpu_creates == 2,
-           "CPU can recover while GPU stays disabled");
-
+    Expect(m.gpu_creates == 2 && m.cpu_creates == 1,
+           "GPU retried, the CPU not at every retry");
+    m.gpu_error = nullptr;
+    m.now = 6;
+    Expect(Line(k) && k.on_gpu(), "GPU recovers without the CPU");
   }
   printf("-- driver metacommands\n");
   {
@@ -266,6 +293,120 @@ int main() {
              "the keeper holds the GPU session without them");
     }
   }
+  printf("-- the device inside a graphics hook's wrapper, or the wrapper\n");
+  {
+    std::string device_error, wrapper_error;
+    bool wrapped = true;
+    int on_device = 0, on_wrapper = 0;
+    std::vector<std::string> said;
+    a2f::CreateOnDevice create = [&](bool wrapper, std::string& err,
+                                     std::string& info)
+        -> std::unique_ptr<a2f::Net> {
+      ++(wrapper ? on_wrapper : on_device);
+      const std::string& e = wrapper ? wrapper_error : device_error;
+      if (!e.empty()) {
+        err = e;
+        return nullptr;
+      }
+      info = wrapper ? "wrapper" : "device";
+      static Machine machine;
+      return std::make_unique<FakeNet>(&machine, true);
+    };
+    auto log = [&](const std::string& s) { said.push_back(s); };
+    auto make = [&](a2f::Device& d, std::string& err, std::string& info) {
+      return a2f::CreateDeviceNet(create, d, [&] { return wrapped; }, err,
+                                  info, log);
+    };
+    std::string err, info;
+    {
+      a2f::Device d;
+      Expect(make(d, err, info) && info == "device" && on_device == 1 &&
+                 on_wrapper == 0 && !d.wrapper && said.empty(),
+             "the device inside works: nothing tried on the wrapper");
+    }
+    {
+      on_device = on_wrapper = 0;
+      a2f::Device d;
+      device_error = kRemoved;
+      Expect(make(d, err, info) && info == "wrapper" && on_device == 1 &&
+                 on_wrapper == 1 && d.wrapper && d.error == kRemoved,
+             "lost on the device inside: loaded on the wrapper at once");
+      Expect(said.size() == 2 && Has(said[0], "887A0005") &&
+                 Has(said[1], "from now on"),
+             "logged the loss and the switch");
+      Expect(make(d, err, info) && on_device == 1 && on_wrapper == 2 &&
+                 said.size() == 2,
+             "the next session is on the wrapper without trying the device");
+      wrapper_error = kHung;
+      err.clear();
+      Expect(!make(d, err, info) && err == kHung && on_device == 1 && d.wrapper,
+             "a later loss on the wrapper is reported as itself; it stays");
+    }
+    {
+      on_device = on_wrapper = 0;
+      said.clear();
+      a2f::Device d;
+      device_error = kRemoved;
+      wrapper_error = kDriver;
+      Expect(!make(d, err, info) && err == kRemoved && on_device == 1 &&
+                 on_wrapper == 1 && !d.wrapper,
+             "lost both ways: reported with the device's reason, not switched");
+      Expect(said.size() == 2 && Has(said[1], "failed too") &&
+                 Has(said[1], "887A0020"),
+             "logged that the wrapper failed too");
+      Expect(!make(d, err, info) && on_device == 2 && on_wrapper == 2,
+             "the retry tries both again");
+    }
+    {
+      on_device = on_wrapper = 0;
+      a2f::Device d;
+      device_error = kOom;
+      wrapper_error.clear();
+      Expect(!make(d, err, info) && err == kOom && on_device == 1 &&
+                 on_wrapper == 0,
+             "a failure that is not a lost device does not try the wrapper");
+      device_error = kRemoved;
+      wrapped = false;
+      Expect(!make(d, err, info) && err == kRemoved && on_device == 2 &&
+                 on_wrapper == 0,
+             "nor does a lost device when no wrapper was handed out");
+      wrapped = true;
+    }
+    {
+      on_device = on_wrapper = 0;
+      a2f::Device d;
+      d.wrapper = d.fixed = true;  // UseDeviceWrapper=1
+      device_error.clear();
+      wrapper_error = kRemoved;
+      Expect(!make(d, err, info) && err == kRemoved && on_device == 0 &&
+                 on_wrapper == 1 && d.wrapper,
+             "the ini's wrapper is never switched away from");
+      wrapper_error.clear();
+      Expect(make(d, err, info) && info == "wrapper" && on_device == 0,
+             "and is used when it works");
+    }
+    {
+      // inside the keeper: no CPU fallback, no error left after the switch
+      on_device = on_wrapper = 0;
+      device_error = kRemoved;
+      wrapper_error.clear();
+      a2f::Device d;
+      double now = 0;
+      int cpu = 0;
+      a2f::NetKeeper k(
+          true,
+          [&](bool gpu, std::string& e,
+              std::string& i) -> std::unique_ptr<a2f::Net> {
+            if (gpu) return make(d, e, i);
+            ++cpu;
+            return nullptr;
+          },
+          [&] { return now; });
+      Expect(k.Ensure() && k.on_gpu() && k.error().empty() && cpu == 0 &&
+                 k.attempts() == 0 && k.info() == "wrapper",
+             "the keeper holds the GPU session on the wrapper");
+    }
+  }
   printf("-- a failure that is not the session's\n");
   {
     Machine m;
@@ -281,16 +422,6 @@ int main() {
                !no_net && err == "empty audio" && m.gpu_creates == 1 &&
                k.on_gpu(),
            "keeps the session and is the line's own");
-  }
-  printf("-- early residency\n");
-  {
-    Machine m;
-    auto k = Keeper(&m);
-    auto* early = k.Ensure();
-    m.now = 1e6;
-    Expect(early && k.Ensure() == early && Line(k) && m.gpu_creates == 1 &&
-               m.cpu_creates == 0 && !k.GpuDisabled(),
-           "healthy early GPU session stays resident");
   }
   printf("-- GPU=0\n");
   {
@@ -318,9 +449,8 @@ int main() {
     return false;
   };
   const std::string removed = kRemoved;
-  Expect(any(DiagnoseNet(true, kOom, 1, roomy), "restart the game") &&
-             !any(DiagnoseNet(true, kOom, 1, roomy), "next retry"),
-         "GPU failure advice agrees with the restart-only latch");
+  Expect(any(DiagnoseNet(true, kOom, 1, roomy), "restart the game"),
+         "out of memory: advised to free VRAM and restart");
   Expect(Has(first(DiagnoseNet(true, kOom, 1, roomy)), "no VRAM left"),
          "out of memory: no VRAM left");
   Expect(Has(first(DiagnoseNet(true, kRemoved, 1, full)),

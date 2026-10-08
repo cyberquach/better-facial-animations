@@ -264,8 +264,8 @@ int main() {
       }, [] { return 0.; });
   CHECK(WorkerStep(changed, false) == 0);
   CHECK(WorkerStep(changed, false) == INFINITE && changed.loaded());
-  // A failed GPU stays disabled across conversations and settings
-  // changes; a ready CPU fallback is settled and needs no idle polling.
+  // A failed GPU is retried with a doubling wait while the CPU fallback runs
+  // the lines, in both modes; the worker polls for the retry meanwhile.
   int gpu_creates = 0, cpu_creates = 0;
   double clock = 0;
   a2f::NetKeeper fallback(true,
@@ -279,23 +279,28 @@ int main() {
         return std::make_unique<FakeNet>();
       }, [&] { return clock; });
   flag("PotatoMode", false);
-  CHECK(WorkerStep(fallback, false) == INFINITE);
-  CHECK(fallback.GpuDisabled() && fallback.Settled() && !fallback.Wanted());
-  CHECK(gpu_creates == 1 && cpu_creates == 1 && stats.net_gpu_disabled);
+  CHECK(WorkerStep(fallback, false) == 1000);
+  CHECK(!fallback.Wanted() && fallback.loaded() && !fallback.on_gpu());
+  CHECK(gpu_creates == 1 && cpu_creates == 1 && !stats.net_gpu &&
+        stats.net_attempts == 1 && stats.net_retry_at == 2);
   for (int conversation = 0; conversation < 3; ++conversation) {
     flag("PotatoMode", true);
     Field<uint32_t>(mtm, kMtmSpeaker) = 0;
-    CHECK(WorkerStep(fallback, false) == INFINITE && fallback.loaded());
-    CHECK(fallback.GpuDisabled() && fallback.error() == "GPU startup failure");
-    CHECK(fallback.attempts() == 1 && stats.net_detail == fallback.error());
-    // A new admitted line reuses the CPU fallback without any creation.
+    // before the wait is over: no new attempt
+    CHECK(WorkerStep(fallback, false) == 1000 && fallback.loaded());
+    CHECK(gpu_creates == 1 + conversation &&
+          fallback.error() == "GPU startup failure" &&
+          stats.net_detail == fallback.error());
+    // A new admitted line runs on the CPU fallback and retries the GPU once
+    // the wait is over.
     Field<uint32_t>(mtm, kMtmSpeaker) = 42;
     clock += 100000;
     CHECK(fallback.Run([](a2f::Net&, std::string&) { return true; }, err,
                        no_net, [&] { return DialogueAllows(SnapshotTune(), 42); }));
-    CHECK(gpu_creates == 1 && cpu_creates == 1);
+    CHECK(gpu_creates == 2 + conversation && cpu_creates == 1 &&
+          fallback.attempts() == gpu_creates);
     flag("PotatoMode", false);
-    CHECK(WorkerStep(fallback, false) == INFINITE);
+    CHECK(WorkerStep(fallback, false) == 1000);
   }
   // Both real player entry paths must reach generation without a dialogue
   // partner. NPCs remain restricted and player/master settings still apply.
@@ -383,8 +388,7 @@ int main() {
   CHECK(native() == 3.5f && queue.empty());
   // CPU creation retries also run while Potato mode is idle.
   CHECK(WorkerStep(failed, false) == 1000);
-  // Cancellation after device loss suppresses immediate CPU creation, while
-  // retaining the GPU latch for the next admitted line.
+  // A lost GPU session is dropped and the GPU tried again at once.
   gpu_creates = cpu_creates = 0;
   a2f::NetKeeper lost(true,
       [&](bool gpu, std::string&, std::string&) -> std::unique_ptr<a2f::Net> {
@@ -398,9 +402,7 @@ int main() {
           admitted = false;
           return false;
         }, err, no_net, [&] { return admitted; }));
-  CHECK(lost.GpuDisabled() && gpu_creates == 1 && cpu_creates == 0);
-  lost.Unload();
-  CHECK(lost.error() == "GPU run failure" && lost.attempts() == 1);
-  CHECK(lost.Ensure() && !lost.on_gpu() && cpu_creates == 1 && gpu_creates == 1);
-  puts("potato mode, GPU failure latch and worker lifecycle contracts passed");
+  CHECK(!lost.loaded() && gpu_creates == 1 && cpu_creates == 0);
+  CHECK(lost.Ensure() && lost.on_gpu() && gpu_creates == 2 && cpu_creates == 0);
+  puts("potato mode, GPU fallback and worker lifecycle contracts passed");
 }

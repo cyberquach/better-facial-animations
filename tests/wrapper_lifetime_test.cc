@@ -28,55 +28,12 @@ class Object : public IUnknown {
 
 Object wrapper;
 int releases = 0;
-Object dml;
-// A real COM interface shape: releasing ORT must precede our queue/device
-// references, including when a Session is moved into either model wrapper.
-class Queue : public ID3D12CommandQueue {
- public:
-  ULONG refs = 1;
-  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void**) override { return E_NOINTERFACE; }
-  ULONG STDMETHODCALLTYPE AddRef() override { return ++refs; }
-  ULONG STDMETHODCALLTYPE Release() override {
-    CHECK(refs == 1 && releases == 2 && wrapper.refs == 1 && dml.refs == 1);
-    return --refs;
-  }
-  HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID, UINT*, void*) override { return E_NOTIMPL; }
-  HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID, UINT, const void*) override { return E_NOTIMPL; }
-  HRESULT STDMETHODCALLTYPE SetPrivateDataInterface(REFGUID, const IUnknown*) override { return E_NOTIMPL; }
-  HRESULT STDMETHODCALLTYPE SetName(const WCHAR*) override { return S_OK; }
-  HRESULT STDMETHODCALLTYPE GetDevice(REFIID, void**) override { return E_NOTIMPL; }
-  void STDMETHODCALLTYPE UpdateTileMappings(ID3D12Resource*, UINT,
-      const D3D12_TILED_RESOURCE_COORDINATE*, const D3D12_TILE_REGION_SIZE*,
-      ID3D12Heap*, UINT, const D3D12_TILE_RANGE_FLAGS*, const UINT*, const UINT*,
-      D3D12_TILE_MAPPING_FLAGS) override {}
-  void STDMETHODCALLTYPE CopyTileMappings(ID3D12Resource*,
-      const D3D12_TILED_RESOURCE_COORDINATE*, ID3D12Resource*,
-      const D3D12_TILED_RESOURCE_COORDINATE*, const D3D12_TILE_REGION_SIZE*,
-      D3D12_TILE_MAPPING_FLAGS) override {}
-  void STDMETHODCALLTYPE ExecuteCommandLists(UINT, ID3D12CommandList* const*) override {}
-  void STDMETHODCALLTYPE SetMarker(UINT, const void*, UINT) override {}
-  void STDMETHODCALLTYPE BeginEvent(UINT, const void*, UINT) override {}
-  void STDMETHODCALLTYPE EndEvent() override {}
-  HRESULT STDMETHODCALLTYPE Signal(ID3D12Fence*, UINT64) override { return E_NOTIMPL; }
-  HRESULT STDMETHODCALLTYPE Wait(ID3D12Fence*, UINT64) override { return E_NOTIMPL; }
-  HRESULT STDMETHODCALLTYPE GetTimestampFrequency(UINT64*) override { return E_NOTIMPL; }
-  HRESULT STDMETHODCALLTYPE GetClockCalibration(UINT64*, UINT64*) override { return E_NOTIMPL; }
-#ifdef WIDL_EXPLICIT_AGGREGATE_RETURNS
-  D3D12_COMMAND_QUEUE_DESC* STDMETHODCALLTYPE GetDesc(D3D12_COMMAND_QUEUE_DESC* out) override {
-    *out = {};
-    return out;
-  }
-#else
-  D3D12_COMMAND_QUEUE_DESC STDMETHODCALLTYPE GetDesc() override { return {}; }
-#endif
-} queue;
-
 void ORT_API_CALL ReleaseSession(OrtSession*) {
-  CHECK(wrapper.refs == 1 && dml.refs == 1 && queue.refs == 1);
+  CHECK(wrapper.refs == 1);
   ++releases;
 }
 void ORT_API_CALL ReleaseMemory(OrtMemoryInfo*) {
-  CHECK(wrapper.refs == 1 && dml.refs == 1 && queue.refs == 1);
+  CHECK(wrapper.refs == 1);
   ++releases;
 }
 
@@ -148,26 +105,24 @@ void TestTeardown() {
   // Both model versions and a partially constructed session must release
   // their ORT resources before the retained wrapper, including after moves.
   for (int version : {0, 2, 3}) {
-    wrapper.refs = dml.refs = queue.refs = 1;
+    wrapper.refs = 1;
     releases = 0;
     {
       Session s;
       s.wrappers.emplace_back(&wrapper);
-      s.dml_device.reset(&dml);
-      s.queue.reset(&queue);
       s.sess.reset(reinterpret_cast<OrtSession*>(1));
       s.mem.reset(reinterpret_cast<OrtMemoryInfo*>(1));
       if (version == 2) {
         OrtNet net(std::move(s.sess), std::move(s.mem), 1,
-                   std::move(s.device), std::move(s.dml_device), std::move(s.queue),
+                   std::move(s.device), std::move(s.dml_device),
                    std::move(s.wrappers));
       } else if (version == 3) {
         OrtNet3 net(std::move(s.sess), std::move(s.mem),
-                    std::move(s.device), std::move(s.dml_device), std::move(s.queue),
+                    std::move(s.device), std::move(s.dml_device),
                     std::move(s.wrappers));
       }
     }
-    CHECK(releases == 2 && wrapper.refs == 0 && dml.refs == 0 && queue.refs == 0);
+    CHECK(releases == 2 && wrapper.refs == 0);
   }
   api = nullptr;
 }

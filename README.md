@@ -5,7 +5,7 @@ An SKSE plugin for Skyrim SE and VR that generates facial animation from speech 
 ## Requirements and installation
 
 - Skyrim SE 1.6.1170, 1.6.1179 (GOG), 1.7.99 or 1.7.104, with matching SKSE and Address Library for SKSE Plugins; or Skyrim VR 1.4.15 with SKSEVR (no Address Library needed).
-- A DirectX 12 GPU for GPU inference: approximately 250 MB of VRAM with the default model, or 100 MB with `UseOldModel=1`. GPU initialization or inference failure disables further GPU attempts until restart; CPU fallback is available but slower. `ForceCPU=1` skips graphics initialization and probes.
+- A DirectX 12 GPU for GPU inference: approximately 250 MB of VRAM with the default model, or 100 MB with `UseOldModel=1`. If the model cannot be loaded on the GPU, the settings window says why; it is retried and lines run on the CPU meanwhile (slower). `ForceCPU=1` never loads it on the GPU. Under ReShade it runs on the device inside ReShade's wrapper and switches to the wrapper itself when that device is lost (DLSS 5 bridges); `UseDeviceWrapper=1` always takes the wrapper.
 - Optional: SKSE Menu Framework for in-game settings.
 
 Install the release archive through your mod manager, or extract its `SKSE` folder into the game's `Data` directory. Keep the bundled model and runtime files together, and launch the game through SKSE.
