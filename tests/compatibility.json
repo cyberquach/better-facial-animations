@@ -37,17 +37,18 @@
       ]
     },
     {
-      "id": "gpu-circuit-breaker",
+      "id": "gpu-fallback",
       "test": "net_keeper_test",
       "sources": [
         "src/net_keeper.cc",
         "tests/net_keeper_test.cc"
       ],
       "covers": [
-        "early session residency",
-        "GPU startup and inference failure latch",
-        "CPU fallback recovery",
-        "no timed GPU retries"
+        "GPU session retried with a doubling wait, CPU fallback meanwhile",
+        "lost session replaced at once",
+        "driver metacommands fallback",
+        "switch to the graphics hook's device wrapper when the device inside is lost",
+        "GPU failure diagnosis and advice"
       ]
     },
     {
