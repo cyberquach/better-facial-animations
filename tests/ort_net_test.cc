@@ -5,23 +5,11 @@
 #include "../src/ort_net.h"
 
 #include <windows.h>
-#include <dxgi.h>
 
 #include <cmath>
 #include <cstdio>
 #include <string>
 #include <vector>
-
-namespace {
-int graphics_calls = 0;
-HRESULT WINAPI NoGraphics(REFIID, void**) {
-  ++graphics_calls;
-  return E_FAIL;
-}
-}
-extern "C" {
-decltype(&CreateDXGIFactory1) __wrap___imp_CreateDXGIFactory1 = NoGraphics;
-}
 
 namespace {
 int failures = 0;
@@ -124,11 +112,15 @@ int main(int argc, char** argv) {
     Expect(mean < 0.003 * (hi - lo) && max < 0.08 * (hi - lo),
            "FP16 output matches FP32");
   }
-  Expect(graphics_calls == 0, "CPU inference makes no DXGI factory calls");
-  Expect(GetModuleHandleW(L"DirectML.dll") == nullptr,
-         "CPU inference does not load DirectML");
-  Expect(GetModuleHandleW(L"d3d12.dll") == nullptr,
-         "CPU inference does not load D3D12");
+  Expect(a2f::DeviceRedirected(),
+         "onnxruntime creates its Direct3D 12 device through the plugin");
+  // Must not crash without a GPU; under Wine it may know nothing.
+  a2f::GpuState g = a2f::QueryGpu();
+  printf("  adapter 0: \"%s\", %.0f MB dedicated, %.0f / %.0f MB in use%s\n",
+         g.adapter.c_str(), g.dedicated_mb, g.used_mb, g.budget_mb,
+         g.known ? "" : " (unknown)");
+  // The report for the log: must not crash either.
+  for (const auto& line : a2f::GpuReport(true)) printf("  %s\n", line.c_str());
   printf(failures ? "%d FAILED\n" : "all ok\n", failures);
   return failures != 0;
 }

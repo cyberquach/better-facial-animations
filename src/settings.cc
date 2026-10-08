@@ -204,10 +204,8 @@ void LoadIni() {
   config.cache_lines = std::max(8, static_cast<int>(GetPrivateProfileIntA(
                                        "General", "CacheLines", 300, kIni)));
   config.log_lines = GetPrivateProfileIntA("Debug", "LogLines", 400, kIni);
-  // Older packages shipped UseDeviceWrapper=0; do not carry that unsafe
-  // default into the explicit-device path. Unwrapping now requires opt-in.
   config.use_device_wrapper =
-      GetPrivateProfileIntA("Debug", "UnwrapDevice", 0, kIni) == 0;
+      GetPrivateProfileIntA("Debug", "UseDeviceWrapper", 0, kIni) != 0;
   // UseOldModel was Network=2 (3: v3.0) in earlier 3.0 builds, and ForceCPU
   // GPU=0
   tune.old_model = GetPrivateProfileIntA("General", "Network", 3, kIni) == 2;

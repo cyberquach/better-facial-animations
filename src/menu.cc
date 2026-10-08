@@ -97,23 +97,18 @@ void RenderProblems(const Stats& st, size_t queued, const Tune& tune,
   if (!st.net_error.empty()) {
     // the problem, its cause and the advice; the rest on the last of them
     for (const auto& line : st.net_error) Notice(kRed, line);
-    if (st.net_gpu_disabled)
-      snprintf(b, sizeof b, "\nGPU disabled until restart. %s",
-               net_loaded ? "Lines run on the CPU." : "Vanilla lip-sync plays.");
-    else
-      snprintf(b, sizeof b, "\nTried %d time(s); next try in %.0f s. %s",
-               st.net_attempts, std::max(0.0, st.net_retry_at - Now()),
-               net_loaded ? "Lines run on the CPU meanwhile."
-                          : "Vanilla lip-sync plays meanwhile.");
+    snprintf(b, sizeof b, "\nTried %d time(s); next try in %.0f s. %s",
+             st.net_attempts, std::max(0.0, st.net_retry_at - Now()),
+             net_loaded ? "Lines run on the CPU meanwhile."
+                        : "Vanilla lip-sync plays meanwhile.");
     Tip(&kNetTip, ("Runtime message: " + st.net_detail + b).c_str());
   } else if (ready && tune.enabled && !net_loaded) {
     Notice(kYellow, "Loading the model.");
   }
   if (net_loaded && !st.net_gpu && config.gpu) {
-    Notice(kYellow, "On the CPU until restart: long lines may start late.");
+    Notice(kYellow, "On the CPU until the GPU is back: long lines start late.");
   }
-  if (config.gpu && !st.net_gpu_disabled)
-    for (const auto& w : a2f::GpuWarnings(gpu)) Notice(kYellow, w);
+  for (const auto& w : a2f::GpuWarnings(gpu)) Notice(kYellow, w);
   const double speed = st.audio_sec / std::max(st.gen_sec, 1e-6);
   if (st.lines >= 5 && speed < 2 && (st.net_gpu || !config.gpu)) {
     snprintf(b, sizeof b, "Slow (%.1fx realtime): lines start late.", speed);
@@ -138,21 +133,18 @@ void RenderProblems(const Stats& st, size_t queued, const Tune& tune,
 void RenderMenu() {
   static a2f::GpuState& gpu = *new a2f::GpuState;
   static double gpu_at = -1e9;
-  size_t cached, queued;
-  const Stats st = SnapshotStats(cached, queued);
-  // CPU mode and a latched GPU failure must not probe graphics from the UI.
-  if (config.gpu && !st.net_gpu_disabled && Now() - gpu_at > 1) {
+  if (Now() - gpu_at > 1) {  // DXGI is too slow to ask every frame
     gpu = a2f::QueryGpu();
     gpu_at = Now();
   }
+  size_t cached, queued;
+  const Stats st = SnapshotStats(cached, queued);
   const Tune tune = SnapshotTune();
   char b[400];
   ig.SeparatorText("Status");
   ig.Text("%s | %s", kVersion,
           st.net_info.empty() ? "model not loaded" : st.net_info.c_str());
-  if (!config.gpu || st.net_gpu_disabled) {
-    ig.Text("GPU diagnostics paused in CPU mode");
-  } else if (gpu.known) {
+  if (gpu.known) {
     ig.Text("GPU: %s, %.0f / %.0f MB VRAM", gpu.adapter.c_str(), gpu.used_mb,
             gpu.budget_mb);
     Tip(&gpu, "The VRAM the game uses, of what Windows grants it.");

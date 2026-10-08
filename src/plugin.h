@@ -28,7 +28,7 @@ struct Config {  // fixed after load
   int network = 3;
   int batch = 2;
   int log_lines = 400;
-  bool use_device_wrapper = true;  // a2f::SetUseDeviceWrapper
+  bool use_device_wrapper = false;  // a2f::SetUseDeviceWrapper
   int cache_lines = 300;
   // Winning EFA head assets, detected at data loaded: male, female. Their
   // mouths were made for less speech: that face's Mouth scale is multiplied.
@@ -127,7 +127,6 @@ struct Stats {
   std::string net_detail;
   int net_attempts = 0;
   double net_retry_at = 0;
-  bool net_gpu_disabled = false;
   bool net_gpu = false;  // the loaded session is the GPU one
   // Why the plugin is not running (the A2FDirect bin).
   std::string startup_error;
