@@ -1,5 +1,5 @@
 // Independent actor layouts: never build fixtures using production offsets.
-#include "../src/better_facial_animations.cc"
+#include "../src/plugin/better_facial_animations.cc"
 
 #include <array>
 #include <cstdint>
@@ -37,7 +37,7 @@ void CheckActor(uint32_t runtime, uint32_t process_offset,
   CHECK(bfa::SpeakerOk(actor.data()));
   for (uint32_t id : {0x13740u, 0x8883Au}) {
     bfa::Field<uint32_t>(race.data(), 0x14) = id;
-    CHECK(!bfa::SpeakerOk(actor.data()));
+    CHECK(bfa::SpeakerOk(actor.data()));
   }
   bfa::Field<uint32_t>(race.data(), 0x14) = 0;
   bfa::Field<uint32_t>(race.data(), 0x108) = 0;

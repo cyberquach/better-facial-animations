@@ -1,7 +1,7 @@
 #include <windows.h>
 #include <dxgi.h>
 #include <cstdio>
-#include "../src/ort_net.h"
+#include "a2f/inference/ort_net.h"
 
 namespace {
 int factory_calls = 0;

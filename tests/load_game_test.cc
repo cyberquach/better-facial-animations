@@ -1,6 +1,6 @@
 // Exercise the real message handler and hooks without starting Skyrim.
 // Poison pointers deliberately make any access to the departing world fail.
-#include "../src/better_facial_animations.cc"
+#include "../src/plugin/better_facial_animations.cc"
 #include <cstdlib>
 
 namespace {
@@ -15,7 +15,7 @@ float* retired_keyframe = nullptr;
 bool inject_reset = false;
 }  // namespace
 
-// Deterministically schedule a load while RestoreExpressions waits for the
+// Deterministically schedule a load while RestoreFaceKeyframes waits for the
 // face lock. The retired keyframe must never be touched on cancellation.
 extern "C" void __real__ZN4skse8SpinLock4LockEv(skse::SpinLock*);
 extern "C" void __wrap__ZN4skse8SpinLock4LockEv(skse::SpinLock* self) {
@@ -137,7 +137,7 @@ int main() {
         kNoUpdate);
   CHECK(Expressions(poison, 0.016f, Tune{}, false, nullptr, 0) == kNoUpdate);
   CHECK(!FaceActorOf(poison).handle);
-  RestoreExpressions(poison, old_epoch);
+  RestoreFaceKeyframes(poison, old_epoch);
   Empty();
   // Idle BFA does not take any FaceGen lock (the pointer is inaccessible).
   CHECK(update(poison, 0.016f, 0));
@@ -186,7 +186,7 @@ int main() {
   faces[fg] = parked;
   Count();
   inject_reset = true;
-  RestoreExpressions(fg, world_epoch);
+  RestoreFaceKeyframes(fg, world_epoch);
   CHECK(!inject_reset);
   Empty();
   CHECK(Field<skse::SpinLock>(fg, skse::kFgLock).count == 0);

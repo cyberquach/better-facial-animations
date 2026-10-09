@@ -1,6 +1,6 @@
-// Losing the GPU session and getting it back (src/net_keeper.h), with a fake
+// Losing the GPU session and getting it back (include/a2f/inference/net_keeper.h), with a fake
 // GPU that fails the way DirectML does.
-#include "../src/net_keeper.h"
+#include "a2f/inference/net_keeper.h"
 
 #include <cstdio>
 #include <memory>

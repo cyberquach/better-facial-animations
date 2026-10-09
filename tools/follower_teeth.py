@@ -27,7 +27,7 @@ def main():
     manifest_path = ROOT / 'tests/follower_teeth.json'
     manifest = json.loads(manifest_path.read_text())
     report = {'status': 'blocked', 'results': [], 'source_sha256': {}}
-    code = [ROOT / 'src/direct.cc', ROOT / 'src/direct.h', ROOT / 'src/live_core.h',
+    code = [ROOT / 'src/animation/direct.cc', ROOT / 'include/a2f/animation/direct.h', ROOT / 'include/a2f/inference/live_core.h',
             ROOT / 'tests/follower_teeth_test.cc', Path(__file__), manifest_path]
     report['source_sha256'] = {str(p.relative_to(ROOT)): digest(p) for p in code}
     try:
@@ -45,8 +45,8 @@ def main():
         report['anatomy'] = anatomy
         exe = out / 'follower_teeth_test'
         command = shlex.split(os.environ.get('HOST_CXX', 'g++')) + [
-            '-std=c++17', '-O2', '-Wall', '-Wextra', '-I', str(ROOT / 'src'),
-            str(ROOT / 'src/direct.cc'), str(ROOT / 'tests/follower_teeth_test.cc'),
+            '-std=c++17', '-O2', '-Wall', '-Wextra', '-I', str(ROOT / 'include'),
+            str(ROOT / 'src/animation/direct.cc'), str(ROOT / 'tests/follower_teeth_test.cc'),
             '-o', str(exe)]
         report['compile_command'] = command
         with (out / 'compile.log').open('w') as log:

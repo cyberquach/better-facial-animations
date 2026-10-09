@@ -1,5 +1,5 @@
 """Write A2FDirect3.bin version 9: the faces the folded Audio2Face-3D v3.0 network (tools/a2f3_fold.py) animates, which
-the plugin maps onto every head in game (src/direct.cc): Claire for women and Mark for men, each as mark_export.py
+the plugin maps onto every head in game (src/animation/direct.cc): Claire for women and Mark for men, each as mark_export.py
 writes Mark for v2.3 (skin, jaw, tongue). Nothing in it is about Skyrim's heads.
 
 Run: venv/bin/python tools/mark_export3.py <out.bin> ['<latent glob with {identity}>']

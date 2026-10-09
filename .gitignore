@@ -1,6 +1,7 @@
 # only the mod is tracked
 /*
 !/src/
+!/include/
 !/tests/
 !/dist/
 !/build.sh
