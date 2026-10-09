@@ -2,6 +2,67 @@
   "schema": 1,
   "contracts": [
     {
+      "id": "model-switch",
+      "test": "model_switch_test",
+      "sources": [
+        "tests/model_switch_test.cc"
+      ],
+      "plugin_objects": true,
+      "covers": [
+        "live V3/Performance/Old selection and CPU preference",
+        "old session destruction before replacement and retained playback mappings",
+        "pending cancellation, rapid changes, disabled mode and per-model statistics",
+        "mapping load failure recovery and GPU CPU fallback",
+        "metacommand verdict reset for the new session"
+      ]
+    },
+    {
+      "id": "race-settings",
+      "test": "race_settings_test",
+      "sources": [
+        "tests/race_settings_test.cc"
+      ],
+      "plugin_objects": true,
+      "link": [
+        "-Wl,--wrap=_ZN4skse4AddrEy"
+      ],
+      "covers": [
+        "detected full and light plugin races, Argonians default on with old-INI migration",
+        "load-order-independent settings persistence and defaults",
+        "race admission and immediate speech, expression and morph handoff",
+        "re-enable and FaceGen safety across SE/AE/VR"
+      ]
+    },
+    {
+      "id": "independent-device",
+      "test": "independent_device_test",
+      "sources": [
+        "tests/independent_device_test.cc"
+      ],
+      "link": [
+        "-ldxgi"
+      ],
+      "covers": [
+        "strict factory flags, no global state changes or singleton fallback",
+        "missing API, rejected flags, driver refusal and device removal",
+        "factory reference lifetime and invalid success responses",
+        "DML1 and metacommand capability failures",
+        "missing DirectML.dll beside the model with DML1 present"
+      ]
+    },
+    {
+      "id": "independent-routing",
+      "test": "independent_routing_test",
+      "sources": [
+        "tests/independent_routing_test.cc"
+      ],
+      "plugin_objects": true,
+      "covers": [
+        "v2/v3/Performance independent GPU selection without legacy retries",
+        "CPU selection and legacy-default preservation"
+      ]
+    },
+    {
       "id": "potato-mode",
       "test": "potato_mode_test",
       "sources": [
@@ -33,14 +94,15 @@
       "covers": [
         "wrapper/native reference ownership",
         "nested and independent thread scopes",
-        "v2/v3 and partial session teardown"
+        "v2/v3 and partial session teardown",
+        "one-time D3D12CreateDevice import redirect on the shared-device path only"
       ]
     },
     {
       "id": "gpu-fallback",
       "test": "net_keeper_test",
       "sources": [
-        "src/net_keeper.cc",
+        "src/inference/net_keeper.cc",
         "tests/net_keeper_test.cc"
       ],
       "covers": [
@@ -65,6 +127,7 @@
         "SexLab",
         "OStim",
         "exclusive scene entry/exit",
+        "held speech samples survive full/partial phoneme suppression",
         "SE/AE/VR synthetic ABI"
       ]
     },
@@ -72,7 +135,7 @@
       "id": "dbrev-api",
       "test": "player_speech_test",
       "sources": [
-        "src/player_speech.cc",
+        "src/speech/player_speech.cc",
         "tests/player_speech_test.cc"
       ],
       "covers": [
@@ -85,7 +148,7 @@
       "id": "head-parts",
       "test": "head_parts_test",
       "sources": [
-        "src/direct.cc",
+        "src/animation/direct.cc",
         "tests/head_parts_test.cc"
       ],
       "covers": [
@@ -128,7 +191,7 @@
       "id": "direct-mapping",
       "test": "direct_test",
       "sources": [
-        "src/direct.cc",
+        "src/animation/direct.cc",
         "tests/direct_test.cc"
       ],
       "covers": [
@@ -136,6 +199,7 @@
         "tongue identification with shared or absent BigAah motion",
         "softened tongue cues, partial jaw follow, bounded overlaps and teeth preservation",
         "oral region gating and fallback",
+        "shared oral border stays attached during speech without moving teeth",
         "separate upper/lower teeth, head scale and coordinate spaces"
       ]
     },
@@ -206,14 +270,15 @@
         "legacy shared INI migration",
         "independent male/female sliders and persistence",
         "defaults and invalid values",
-        "sex-specific generation and cache keys with old model"
+        "sex-specific generation and cache keys with old model",
+        "each network's mapping file and network in ModelFor"
       ]
     },
     {
       "id": "native-speech-hook",
       "test": "native_speech_hook_test",
       "sources": [
-        "src/native_speech_hook.cc",
+        "src/speech/native_speech_hook.cc",
         "tests/native_speech_hook_test.cc"
       ],
       "covers": [
@@ -228,6 +293,13 @@
       ]
     },
     {
+      "id": "source-basenames",
+      "python": "tests/test_source_basenames.py",
+      "covers": [
+        "unique src/**/*.cc basenames and vpath coverage for tools/build.mk"
+      ]
+    },
+    {
       "id": "audio-fallback",
       "test": "audio_fallback_test",
       "sources": [
@@ -236,8 +308,8 @@
       "plugin_objects": true,
       "link": [
         "-Wl,--wrap=_ZN4skse4AddrEy",
-        "-Wl,--wrap=_ZN3bfa7HeadKeyB5cxx11EPhb",
-        "-Wl,--wrap=_ZN3bfa8FindHeadEPhRKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEbRSt10shared_ptrIKN6direct4HeadEE"
+        "-Wl,--wrap=_ZN3bfa7HeadKeyB5cxx11EPhbSt10shared_ptrIKN6direct5ModelEE",
+        "-Wl,--wrap=_ZN3bfa8FindHeadEPhRKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEbRSt10shared_ptrIKN6direct4HeadEES9_IKNSA_5ModelEE"
       ],
       "covers": [
         "decoded silence, codec noise, DC, quiet and delayed audio",
@@ -247,7 +319,8 @@
         "later audible TTS replacement at the same path is generated, including Fuz Ro Doh paths",
         "pending and failed audio preserve vanilla expressions and phonemes",
         "immediate morph handoff, late readiness, sound/lip completion and load cleanup (synthetic SE/AE/VR)",
-        "mapping before inference completes, retained mapping and pose transition, readiness through expression/morph flow"
+        "mapping before inference completes, retained mapping and pose transition, readiness through expression/morph flow",
+        "performance lines through Process: identity, 30 fps 73-channel output, retained mapping after a switch, mid-line switch cancellation"
       ]
     },
     {
@@ -265,6 +338,85 @@
         "1.6.353 uses AE ids with pre-1.6.629 actor layout",
         "GOG 1.6.659 and existing SE/AE/VR race filtering and voice state",
         "1.6.629 layout boundary"
+      ]
+    },
+    {
+      "id": "conversation-gaze",
+      "test": "gaze_test",
+      "sources": [
+        "tests/gaze_test.cc"
+      ],
+      "plugin_objects": true,
+      "link": [
+        "-Wl,--wrap=_ZN4skse4AddrEy"
+      ],
+      "covers": [
+        "v2/v3 silence-relative eye tracks and batch/window alignment",
+        "binocular averaging, bounded additive look controls and invalid input rejection",
+        "player-target, active-partner, scene and SE/AE/VR gating",
+        "late-start sync for both NPC playback profiles",
+        "temporary morph restoration, replaced keyframes and no accumulation",
+        "line-end, interrupted/failed speech, disabled and load handoff",
+        "GazeStrength 0 keeps the game's gaze, 2 doubles and clamps the offset"
+      ]
+    },
+    {
+      "id": "performance-model",
+      "test": "performance_model_test",
+      "sources": [
+        "tests/performance_model_test.cc"
+      ],
+      "plugin_objects": true,
+      "covers": [
+        "30Hz performance chunking, both identities, single-frame input",
+        "window content: normalized frontend frames, silence padding, held emotion ends, context slot placement, emotion peak/mean",
+        "pre-frontend and between-batch cancellation with no partial published output",
+        "inference failure and nonfinite output propagation",
+        "optional actual packaged ONNX parity and frontend-inclusive CPU timing"
+      ]
+    },
+    {
+      "id": "performance-frontend",
+      "test": "performance_frontend_test",
+      "sources": [
+        "src/inference/performance_features.cc",
+        "tests/performance_frontend_test.cc"
+      ],
+      "covers": [
+        "30 fps frame count, silence floor, phase-stable 1 kHz tone placement, cancellation"
+      ]
+    },
+    {
+      "id": "alfiq-fallback",
+      "test": "alfiq_compat_test",
+      "sources": [
+        "tests/alfiq_compat_test.cc"
+      ],
+      "plugin_objects": true,
+      "link": [
+        "-Wl,--wrap=_ZN4skse4AddrEy"
+      ],
+      "covers": [
+        "Creatures of Nirn - Khajiit Alfiq 2.3",
+        "all races owned by DWAlfiqKhajiit.esp default off with menu opt-in",
+        "speech and conversation admission",
+        "saved choices, load-order changes and reset to defaults",
+        "normal Khajiit positive control",
+        "SE/AE/VR synthetic ABI"
+      ]
+    },
+    {
+      "id": "calibration-clusters",
+      "test": "calibration_test",
+      "sources": [
+        "tests/calibration_test.cc"
+      ],
+      "covers": [
+        "isolated collapsed clusters with conflicting morphs excluded from calibration",
+        "coherent seam duplicates, small clusters and continuous dense surfaces retained",
+        "scale, translation, axis and vertex-order invariance",
+        "native fallback when a required calibration channel survives only on debris",
+        "mapped head unchanged by excluded debris; sub-threshold clusters are fitted"
       ]
     }
   ],
@@ -359,6 +511,28 @@
         "pinned Lily/Alma/DVA/Eve/Squirrel Girl base/SMP geometry",
         "both models and tongue modes",
         "stationary upper teeth, lower jaw motion, skin and lip independence"
+      ]
+    },
+    {
+      "id": "alfiq-23",
+      "file": "DWAlfiqKhajiit.esp",
+      "version": "2.3",
+      "records": [
+        {
+          "type": "RACE",
+          "id": "000800",
+          "editor_id": "0_KhajiitAlfiqRace"
+        },
+        {
+          "type": "RACE",
+          "id": "000845",
+          "editor_id": "0_KhajiitAlfiqNecroRace"
+        },
+        {
+          "type": "RACE",
+          "id": "00084E",
+          "editor_id": "0_KhajiitAlfiqRaceBoss"
+        }
       ]
     }
   ],

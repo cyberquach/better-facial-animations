@@ -7,7 +7,7 @@
 #include <cstdio>
 #include <vector>
 
-#include "../src/head_cache.h"
+#include "a2f/animation/head_cache.h"
 namespace {
 std::array<uint8_t, 0x1000> storage{};
 uint8_t* handler = storage.data();
@@ -39,6 +39,12 @@ void Log(const char*, ...) {}
 namespace bfa {
 direct::Model instance;
 direct::Model& model = instance;
+std::shared_ptr<const ModelState> SnapshotModel() {
+  return std::make_shared<const ModelState>(
+      ModelState{3, true, L"",
+                 std::shared_ptr<const direct::Model>(
+                     &model, [](const direct::Model*) {})});
+}
 double Now() { return 0; }
 std::string Lower(const char* s) {
   std::string out(s);
@@ -48,7 +54,7 @@ std::string Lower(const char* s) {
 }  // namespace bfa
 // Include the capture implementation so engine calls can be controlled while
 // exercising its real candidate-morph selection and vertex restoration.
-#include "../src/head_cache.cc"
+#include "../src/animation/head_cache.cc"
 
 int main() {
   using namespace bfa;
@@ -197,6 +203,9 @@ int main() {
   assert(seen == 1);
   Field<const char*>(geometry[1].data(), kObjName) = "OtherTeeth";
   const std::string key = HeadKey(node.data(), false);
+  auto different_model = std::make_shared<direct::Model>();
+  different_model->network = model.network == 2 ? 3 : 2;
+  assert(HeadKey(node.data(), false, different_model) != key);
   std::swap(children[0], children[1]);
   assert(HeadKey(node.data(), false) == key);
   dynamic_vertices[0] += 1;

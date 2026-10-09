@@ -9,8 +9,8 @@
 #include <cstdint>
 #include <cstdio>
 
-#include "../src/ids.h"
-#include "../src/skse.h"
+#include "a2f/runtime/ids.h"
+#include "a2f/runtime/skse.h"
 
 // skse.cc names its log after the plugin.
 extern "C" {

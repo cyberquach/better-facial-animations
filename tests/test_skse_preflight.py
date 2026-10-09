@@ -18,7 +18,7 @@ class PreflightTest(unittest.TestCase):
         cls.addClassCleanup(cls.temp.cleanup)
         cls.directory = Path(cls.temp.name)
         source = cls.directory / 'fixture.cc'
-        source.write_text('''#include "src/skse.h"
+        source.write_text('''#include "a2f/runtime/skse.h"
 #ifndef FIXTURE_FLAGS
 #define FIXTURE_FLAGS 4
 #endif
@@ -27,7 +27,7 @@ extern "C" __declspec(dllexport) skse::SKSEPluginVersionData SKSEPlugin_Version 
 ''')
         cls.dll = cls.directory / 'fixture.dll'
         subprocess.run(shlex.split(os.environ.get('CXX', 'x86_64-w64-mingw32-g++')) +
-                       ['-shared', '-I', str(ROOT), str(source), '-o', str(cls.dll)],
+                       ['-shared', '-I', str(ROOT / 'include'), str(source), '-o', str(cls.dll)],
                        check=True, capture_output=True, timeout=60)
 
     def check(self, path, runtime='1.6.1170'):
@@ -45,7 +45,7 @@ extern "C" __declspec(dllexport) skse::SKSEPluginVersionData SKSEPlugin_Version 
     def test_runtime_independence_is_not_a_false_mismatch(self):
         path = self.directory/'independent.dll'
         subprocess.run(shlex.split(os.environ.get('CXX', 'x86_64-w64-mingw32-g++')) +
-                       ['-shared', '-DFIXTURE_FLAGS=5', '-I', str(ROOT),
+                       ['-shared', '-DFIXTURE_FLAGS=5', '-I', str(ROOT / 'include'),
                         str(self.directory/'fixture.cc'), '-o', str(path)],
                        check=True, capture_output=True, timeout=60)
         self.assertEqual(self.check(path, '1.6.640')[0], 2)

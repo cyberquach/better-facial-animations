@@ -12,7 +12,7 @@ the native regression test:
 
 ```
 python3 tools/dbvo_compatibility.py --dll /path/to/DBVO.dll --report work/dbvo-local.json
-x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -static src/native_speech_hook.cc tests/native_speech_hook_test.cc -o /tmp/dbvo-hook.exe
+x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -static -Iinclude src/speech/native_speech_hook.cc tests/native_speech_hook_test.cc -o /tmp/dbvo-hook.exe
 WINEDEBUG=-all timeout 90 wine64 /tmp/dbvo-hook.exe
 ```
 

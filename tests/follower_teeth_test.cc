@@ -1,6 +1,6 @@
 // Pinned local FaceGen/TRI captures: separate teeth must use the jaw mapping.
 // No third-party geometry is compiled into this test or distributed with it.
-#include "direct.h"
+#include "a2f/animation/direct.h"
 
 #include <algorithm>
 #include <cmath>

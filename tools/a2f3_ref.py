@@ -85,7 +85,7 @@ FOLDED = os.path.join(ROOT, "models/v3/network_folded.onnx")
 LATENT = 512 + 512 + 19  # skin latent, tongue latent, jaw/eyes per frame of the folded network
 
 # Skyrim emotion type (1 Anger 2 Disgust 3 Fear 4 Sad 5 Happy 6 Surprise 7 Puzzled) -> the 10 network emotions
-# (amazement anger cheekiness disgust fear grief joy outofbreath pain sadness); same map as src/live_core.cc
+# (amazement anger cheekiness disgust fear grief joy outofbreath pain sadness); same map as src/inference/live_core.cc
 EMOTION_MAP = {1: {1: 1}, 2: {3: 1}, 3: {4: 1}, 4: {9: 1}, 5: {6: 1}, 6: {0: 1}, 7: {0: 0.3, 2: 0.3}}
 
 

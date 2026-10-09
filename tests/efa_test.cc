@@ -4,7 +4,7 @@
 #include <cassert>
 #include <fstream>
 
-#include "../src/better_facial_animations.cc"
+#include "../src/plugin/better_facial_animations.cc"
 
 namespace {
 std::vector<uint8_t> files[2];

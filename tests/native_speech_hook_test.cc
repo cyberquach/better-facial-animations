@@ -1,5 +1,5 @@
 // Execute the real entry detour and trampoline with the speech call ABI.
-#include "../src/native_speech_hook.h"
+#include "a2f/speech/native_speech_hook.h"
 
 #include <windows.h>
 

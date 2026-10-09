@@ -1,5 +1,5 @@
-// Voice-start gating and the lip clock (src/voice_sync.h).
-#include "../src/voice_sync.h"
+// Voice-start gating and the lip clock (include/a2f/speech/voice_sync.h).
+#include "a2f/speech/voice_sync.h"
 
 #include <cmath>
 #include <cstdio>
