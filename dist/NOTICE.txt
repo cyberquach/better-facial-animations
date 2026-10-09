@@ -9,4 +9,4 @@ See licenses/NVIDIA-Open-Model-License.txt and https://huggingface.co/nvidia/Aud
 
 DBReV_API.h: public integration header supplied with Dragonborn ReVoiced 1.4.4+.
 Its author permits use, modification and redistribution, including in closed-source projects.
-The original notice is retained in src/DBReV_API.h.
+The original notice is retained in include/a2f/speech/DBReV_API.h.

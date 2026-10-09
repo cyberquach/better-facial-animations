@@ -1,6 +1,6 @@
 Better Facial Animations @VERSION@ - real-time Audio2Face lip-sync for Skyrim
 
-Every voiced line spoken by an NPC with a FaceGen head (all playable races except Argonians, who keep vanilla lip-sync; creatures and animals are skipped)
+Every voiced line spoken by an NPC with a FaceGen head (enabled races; creatures and animals without FaceGen heads are skipped)
 is run through NVIDIA Audio2Face-3D v3.0 on your GPU (women speak with its Claire face, men with Mark; v2.3 Mark for
 everyone with UseOldModel=1 in the ini), which deforms the face mesh directly: skin, lips,
 brows and eyelids, with the lower teeth and gums on Audio2Face's jaw. The tongue follows half the jaw movement with reduced, overlap-limited tongue cues from the game's speech track. The game's own emotion
@@ -17,13 +17,23 @@ Requirements
   1.6.1179 (GOG), 1.7.99 or 1.7.104, matching SKSE, Address Library for SKSE Plugins.
   Or Skyrim VR 1.4.15 with SKSEVR (no Address Library needed; not yet looked at in a headset).
   Not the Epic Games Store version: SKSE does not support it.
-  A DirectX 12 GPU (~250 MB of VRAM, ~100 MB with UseOldModel=1). PotatoMode=1 processes only the active
+  V3/Old GPU inference needs DirectX 12 (~250 MB VRAM / ~100 MB respectively).
+  Settings -> Model offers mutually exclusive V3, Performance and Old model checkboxes.
+  Hover for tradeoffs. Model changes apply live; playing lines finish with their
+  original animation. Performance (55k Thin96) uses the GPU by default or CPU with ForceCPU=1:
+  smaller, but less emotive, 30 fps, no eye gaze feature.
+  It is experimental and Skyrim-trained; not yet verified on Steam Deck.
+  UsePerformanceModel=1 selects it; ForceCPU applies to all three models. PotatoMode=1 processes only the active
   conversation NPC and the player (DBReV or experimental DBVO 2 support). Other NPC speech stays vanilla.
   Both modes keep the model loaded from the main menu until exit. An already submitted GPU run must finish
   before cancellation. PotatoMode=0 (default) processes all speakers. If the model cannot
   be loaded on the GPU the settings window says why, it is retried and lines run on the CPU meanwhile (slow).
   Under ReShade the model runs on the device inside ReShade's wrapper, and switches to the wrapper itself
   when that device is lost (DLSS 5 bridges); UseDeviceWrapper=1 in the ini always takes the wrapper.
+  Experimental [General] IndependentGpuDevice=1 requires an independent D3D12 device and private compute queue.
+  Restart after changing it. It launches no EXE and falls back to CPU on failure, never to the shared GPU device.
+  It requires supporting Windows D3D12 runtime/driver; ReShade/RenoDX/frame-generation compatibility is unverified.
+  UseDeviceWrapper is ignored and metacommands remain enabled in this mode. Default 0 preserves the legacy path.
   Optional: SKSE Menu Framework, for the in-game settings page (Better Facial Animations -> Settings).
 
 Player dialogue (optional)
@@ -38,7 +48,13 @@ Player dialogue (optional)
 Settings
   Data/SKSE/Plugins/BetterFacialAnimations.ini, or in game through SKSE Menu Framework (saved automatically).
   Male and Female NPCs and the Player each have independent playback, strength and emotion sliders.
+  Each profile has ten separate model emotion caps (0..2, default 2), applied after strength and volume swell from the next line. Lower Max joy / happiness to soften smiles independently. Grief, out of breath and pain are not currently fed by Skyrim.
   Upper lip and Lower lip multiply Mouth strength; 1 uses permanent 0.8 upper / 1.2 lower calibration.
+  Eye gaze adds speech-driven eye motion when the speaking conversation NPC looks at you (SE/AE).
+  Toggle Enable eye gaze in Better Facial Animations -> Settings -> Strength; changes apply immediately.
+  It preserves the game's target and stops when the actor looks elsewhere. Enabled by default;
+  [LocalAnimationStrength] ConversationGaze=0 disables it, GazeStrength=0..2 adjusts it (default 1).
+  VR keeps its existing gaze. Tested offline on original eye meshes; in-game/custom-eye calibration is unverified.
   Older shared settings seed both NPC profiles; older lip values convert to preserve their effect.
 Log
   Documents/My Games/Skyrim Special Edition/SKSE/BetterFacialAnimations.log (Skyrim VR/SKSE/ on VR)
@@ -50,6 +66,7 @@ Contents of this folder
   DirectML.dll                                         Microsoft DirectML 1.15.4 (licenses/DirectML-LICENSE.txt)
   a2f3_fp16.onnx                                       Audio2Face-3D v3.0, FP16 (NOTICE.txt)
   A2FDirect3.bin                                       its faces (Claire, Mark): basis, landmarks and network projection
+  performance.onnx                                   Experimental Thin96 performance model
   network_fp16.onnx                                    Audio2Face-3D v2.3 Mark, FP16 (NOTICE.txt): UseOldModel=1
   A2FDirect.bin                                        its face (Mark)
 BetterFacialAnimations.dll statically links FFmpeg 8.0.1 (LGPL 2.1): wmav1/wmav2/pcm decoders, xwma/wav demuxers, swresample.
@@ -71,3 +88,9 @@ Non-default pitch, no-LIP audio, skips and rapid replacements need validation.
 1.6.1170 has in-game playback evidence. On 1.5.97 and 1.7.104, binary
 hook/ABI and live SKSE/plugin startup checks pass; player playback
 still needs in-game validation.
+
+Races owned by DWAlfiqKhajiit.esp (Creatures of Nirn - Khajiit Alfiq)
+default off in the Races menu, including corrupted and boss variants.
+They can be enabled individually; compatible face morphs are still required.
+Saved race choices are preserved. Ordinary Khajiit remain supported.
+Renamed or merged origin plugins need a separate compatibility check.

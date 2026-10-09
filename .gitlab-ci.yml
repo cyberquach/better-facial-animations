@@ -9,5 +9,5 @@ dbvo-contracts:
     - apt-get update -qq && apt-get install -y --no-install-recommends python3 g++-mingw-w64-x86-64 wine64
   script:
     - python3 -m unittest discover -s tests -p test_dbvo_compatibility.py -v
-    - x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -static src/native_speech_hook.cc tests/native_speech_hook_test.cc -o /tmp/dbvo-hook.exe
+    - x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -static -Iinclude src/speech/native_speech_hook.cc tests/native_speech_hook_test.cc -o /tmp/dbvo-hook.exe
     - WINEDEBUG=-all WINEPREFIX=/tmp/bfa-wine timeout 90 /usr/lib/wine/wine64 /tmp/dbvo-hook.exe

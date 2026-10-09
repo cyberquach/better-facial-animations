@@ -1,5 +1,5 @@
 // Production discovery, admission and handoff; only engine calls are mocked.
-#include "../src/better_facial_animations.cc"
+#include "../src/plugin/better_facial_animations.cc"
 #include <array>
 #include <cstdlib>
 
@@ -55,6 +55,7 @@ bfa::Tune LegacyTune() {
 int main() {
   using namespace bfa;
   for (uint32_t runtime : {skse::Version(1, 5, 97), skse::Version(1, 6, 1170),
+                           skse::Version(1, 7, 99), skse::Version(1, 7, 104),
                            skse::Version(1, 4, 15)}) {
     skse::SetRuntime(runtime);
     // Preserve the exact phoneme contribution removed from the engine,
@@ -65,14 +66,79 @@ int main() {
     auto& phon = Field<skse::KeyframeMultiple>(phon_face.data(), skse::kFgPhon3);
     phon.values = original;
     phon.count = direct::kNumPhonemes;
-    PlayFrame(phon_face.data(), .4f, authored);
+    PhonemeRestore preserved;
+    PlayFrame(phon_face.data(), .4f, authored, preserved);
     for (int i = 0; i < direct::kNumPhonemes; ++i) {
       CHECK(std::fabs(authored[i] - .03f * i * .4f) < 1e-6f);
       CHECK(std::fabs(original[i] + authored[i] - .03f * i) < 1e-6f);
     }
     phon.count = 0;
-    PlayFrame(phon_face.data(), 1, authored);
+    PlayFrame(phon_face.data(), 1, authored, preserved);
     for (float weight : authored) CHECK(weight == 0);
+
+    // Skyrim copies a source LIP sample to the final track only when it
+    // changes. Held samples must survive both full and partial suppression.
+    auto* held_fg = phon_face.data();
+    for (float mix : {.25f, .5f, 1.f}) {
+      faces[held_fg] = Face{};
+      phon.count = direct::kNumPhonemes;
+      std::fill_n(original, direct::kNumPhonemes, 0.f);
+      float previous_sample = -1;
+      for (float sample : {.8f, .8f, .8f, .4f, .4f, 0.f, 0.f, .6f, .6f}) {
+        RestoreFaceKeyframes(held_fg, world_epoch);
+        if (sample != previous_sample) original[0] = sample;
+        previous_sample = sample;
+        PlayFrame(held_fg, mix, authored, faces[held_fg].phonemes);
+        CHECK(std::fabs(authored[0] - sample * mix) < 1e-6f);
+        CHECK(std::fabs(original[0] - sample * (1 - mix)) < 1e-6f);
+      }
+      // Line end / disable: restore once even with no further PlayFrame.
+      RestoreFaceKeyframes(held_fg, world_epoch);
+      CHECK(std::fabs(original[0] - .6f) < 1e-6f);
+      original[0] = .2f;
+      RestoreFaceKeyframes(held_fg, world_epoch);
+      CHECK(original[0] == .2f);
+      faces.erase(held_fg);
+    }
+    // Another writer or replacement storage wins over a pending restore.
+    original[0] = .8f;
+    PlayFrame(held_fg, 1, authored, preserved);
+    original[0] = .3f;
+    CHECK(!preserved.Restore(phon));
+    CHECK(original[0] == .3f);
+    PlayFrame(held_fg, 1, authored, preserved);
+    float replacement[direct::kNumPhonemes] = {};
+    phon.values = replacement;
+    CHECK(!preserved.Restore(phon));
+    CHECK(replacement[0] == 0);
+    phon.values = original;
+    original[0] = .8f;
+    PlayFrame(held_fg, 1, authored, preserved);
+    phon.count = 0;
+    CHECK(!preserved.Restore(phon));
+    phon.count = direct::kNumPhonemes;
+    CHECK(!preserved.Restore(phon));
+    CHECK(original[0] == 0);
+    // Scene handoff in the morph hook restores the last native pose too.
+    faces[held_fg] = Face{};
+    original[0] = .7f;
+    PlayFrame(held_fg, 1, authored, faces[held_fg].phonemes);
+    CHECK(RestoreAndDropFace(held_fg));
+    CHECK(original[0] == .7f);
+    CHECK(faces.find(held_fg) == faces.end());
+
+    // An out-of-view face retains restoration state until it updates again.
+    faces[held_fg] = Face{};
+    original[0] = .9f;
+    PlayFrame(held_fg, 1, authored, faces[held_fg].phonemes);
+    static double sweep_clock = 0;
+    sweep_clock += kFaceLinger + kFaceStale + 1;
+    SweepFaces(nullptr, sweep_clock);
+    CHECK(faces.at(held_fg).parked);
+    RestoreFaceKeyframes(held_fg, world_epoch);
+    CHECK(original[0] == .9f);
+    faces.erase(held_fg);
+    Count();
 
     // The extra tongue weights participate in normal line replacement and
     // release fades, rather than holding the last speech shape forever.

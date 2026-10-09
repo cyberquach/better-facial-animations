@@ -1,5 +1,5 @@
 """Write A2FDirect.bin version 8: Mark, the face Audio2Face-3D v2.3 animates, which the plugin maps onto every head in
-game (src/direct.cc): his skin, jaw and tongue. Nothing in it is about Skyrim's heads: each head's mapping is built in
+game (src/animation/direct.cc): his skin, jaw and tongue. Nothing in it is about Skyrim's heads: each head's mapping is built in
 game.
 
 Run: venv/bin/python tools/mark_export.py <out.bin> '<raw output glob>'
@@ -39,7 +39,7 @@ def centroid(v, d):
 
 
 def read_rest():
-    """The network's output for silence, with Mark's implicit emotion (src/live_core.cc kImplicit) and no explicit one."""
+    """The network's output for silence, with Mark's implicit emotion (src/inference/live_core.cc kImplicit) and no explicit one."""
     import onnxruntime
     src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'src', 'live_core.cc')).read()
     body = re.search(r'kImplicit\[kNumImplicit\] = \{(.*?)\}', src, re.S).group(1)

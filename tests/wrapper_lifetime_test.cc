@@ -1,5 +1,5 @@
 // Exercise production ownership without a GPU or third-party graphics DLL.
-#include "../src/ort_net.cc"
+#include "../src/inference/ort_net.cc"
 
 #include <cstdlib>
 #include <thread>
@@ -96,6 +96,41 @@ void TestScopes() {
   CHECK(!wrappers_kept);
 }
 
+int redirect_logs = 0;
+void Log(const std::string& line) {
+  if (line.find("D3D12CreateDevice") != std::string::npos) ++redirect_logs;
+}
+OrtStatus* ORT_API_CALL NoOptions(OrtSessionOptions**) noexcept {
+  return reinterpret_cast<OrtStatus*>(1);
+}
+const char* ORT_API_CALL Message(const OrtStatus*) noexcept { return "mock"; }
+void ORT_API_CALL DropStatus(OrtStatus*) noexcept {}
+
+// The shared-device path patches onnxruntime.dll's D3D12CreateDevice import
+// once per process; the independent device never touches it. This module
+// has no delay import to patch, which the log reports.
+void TestRedirect() {
+  using namespace a2f;
+  OrtApi mock{};
+  mock.CreateSessionOptions = NoOptions;
+  mock.GetErrorMessage = Message;
+  mock.ReleaseStatus = DropStatus;
+  api = &mock;
+  ort_module = GetModuleHandleW(nullptr);
+  SetOrtLog(Log);
+  std::string err;
+  Session s;
+  CHECK(!CreateSession(L"", true, true, true, L"", {}, 1, s, err));
+  CHECK(redirect_logs == 0 && !DeviceRedirected());
+  CHECK(!CreateSession(L"", true, true, false, L"", {}, 1, s, err));
+  CHECK(redirect_logs == 1 && !DeviceRedirected());
+  CHECK(!CreateSession(L"", true, true, false, L"", {}, 1, s, err));
+  CHECK(redirect_logs == 1);
+  SetOrtLog(nullptr);
+  ort_module = nullptr;
+  api = nullptr;
+}
+
 void TestTeardown() {
   using namespace a2f;
   OrtApi mock{};
@@ -132,5 +167,7 @@ int main() {
   TestScopes();
   TestSelection();
   TestTeardown();
-  puts("wrapper selection, nested/thread scopes and model teardown passed");
+  TestRedirect();
+  puts("wrapper selection, nested/thread scopes, model teardown and "
+       "one-time import redirect passed");
 }

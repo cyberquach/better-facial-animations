@@ -1,7 +1,7 @@
 // Production lip weights and deformation, with controlled skin and followers.
 #include <cstdlib>
 
-#include "../src/direct.cc"
+#include "../src/animation/direct.cc"
 
 #define CHECK(x)                                      \
   do {                                                \

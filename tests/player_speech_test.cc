@@ -1,13 +1,13 @@
-// The DBReV adapter (src/player_speech.cc): message validation, the owned
+// The DBReV adapter (src/speech/player_speech.cc): message validation, the owned
 // copy, replacement, cancellation and the reset on a load.
-#include "../src/player_speech.h"
+#include "a2f/speech/player_speech.h"
 
 #include <cstdio>
 #include <cstring>
 #include <vector>
 
-#include "../src/DBReV_API.h"
-#include "../src/skse.h"
+#include "a2f/speech/DBReV_API.h"
+#include "a2f/runtime/skse.h"
 
 namespace {
 int failures = 0;

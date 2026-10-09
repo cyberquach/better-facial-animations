@@ -2,7 +2,7 @@
 // FP16 network, and agrees with the FP32 network.
 // usage: ort_net_test <plugin dir> <model> [FP32 reference model [3]]
 // 3: the models are the folded v3.0 network (else v2.3).
-#include "../src/ort_net.h"
+#include "a2f/inference/ort_net.h"
 
 #include <windows.h>
 
@@ -112,8 +112,8 @@ int main(int argc, char** argv) {
     Expect(mean < 0.003 * (hi - lo) && max < 0.08 * (hi - lo),
            "FP16 output matches FP32");
   }
-  Expect(a2f::DeviceRedirected(),
-         "onnxruntime creates its Direct3D 12 device through the plugin");
+  // CPU sessions must not patch ORT imports or initialize D3D12.
+  Expect(!a2f::DeviceRedirected(), "CPU inference does not redirect D3D12");
   // Must not crash without a GPU; under Wine it may know nothing.
   a2f::GpuState g = a2f::QueryGpu();
   printf("  adapter 0: \"%s\", %.0f MB dedicated, %.0f / %.0f MB in use%s\n",

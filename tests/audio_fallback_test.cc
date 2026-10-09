@@ -11,7 +11,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "../src/better_facial_animations.cc"
+#include "../src/plugin/better_facial_animations.cc"
 
 namespace {
 #define CHECK(x) Check((x), #x, __LINE__)
@@ -21,7 +21,7 @@ void Check(bool ok, const char* expression, int line) {
   std::exit(1);
 }
 
-std::array<uint8_t, 0x1000> actor_data{}, base{}, face_data{};
+std::array<uint8_t, 0x1000> actor_data{}, base{}, race{}, face_data{};
 std::array<uint8_t, 0x1000> manager{}, node{};
 uint8_t* actor = actor_data.data();
 uint8_t* fg = face_data.data();
@@ -85,6 +85,31 @@ std::vector<uint8_t> Wav(bool audible) {
 int runs = 0;
 int map_calls = 0;
 bool net_broken = false;  // the network fails every line
+const direct::Model* mapped_with = nullptr;  // the last HeadKey's mapping
+int perf_runs = 0;
+int64_t perf_identity = -1;
+bool perf_switch = false;  // the user selects another model mid-line
+void SelectPerformance(bool on) {
+  bfa::ScopedLock guard(bfa::settings_lock);
+  for (const bfa::Param& p : bfa::kParams)
+    if (!strcmp(p.key, "UsePerformanceModel")) *p.flag = on;
+}
+struct PerformanceNet : a2f::Net {
+  int Version() const override { return a2f::kNetPerformance; }
+  int Batch() const override { return 1; }
+  bool Run(const float*, const float*, int, float*, std::string&) override {
+    return false;
+  }
+  bool RunPerformance(const float*, int64_t id, const float*, float* motion,
+                      std::string&) override {
+    ++perf_runs;
+    perf_identity = id;
+    if (perf_switch) SelectPerformance(false);
+    std::fill_n(motion,
+                a2f::kPerformanceWindowFrames * a2f::kPerformanceChannels, 0.f);
+    return true;
+  }
+};
 struct Net : a2f::Net {
   int Batch() const override { return 2; }
   bool Run(const float*, const float*, int b, float* out,
@@ -120,17 +145,19 @@ extern "C" uint64_t __wrap__ZN4skse4AddrEy(uint64_t id) {
     return reinterpret_cast<uint64_t>(&Resource);
   return 0;
 }
-extern "C" std::string __wrap__ZN3bfa7HeadKeyB5cxx11EPhb(uint8_t*, bool) {
+extern "C" std::string
+__wrap__ZN3bfa7HeadKeyB5cxx11EPhbSt10shared_ptrIKN6direct5ModelEE(
+    uint8_t*, bool, std::shared_ptr<const direct::Model> mapping) {
+  mapped_with = mapping.get();
   return "test head";
 }
-extern "C" bfa::State MapHead(
-    uint8_t*, const std::string&, bool,
-    std::shared_ptr<const direct::Head>&)
-    asm("__wrap__ZN3bfa8FindHeadEPhRKNSt7__cxx1112basic_stringIcSt11char_traits"
-        "IcESaIcEEEbRSt10shared_ptrIKN6direct4HeadEE");
-extern "C" bfa::State MapHead(
-    uint8_t*, const std::string&, bool,
-    std::shared_ptr<const direct::Head>& head) {
+extern "C" bfa::State
+MapHead(uint8_t*, const std::string&, bool, std::shared_ptr<const direct::Head>&, std::shared_ptr<const direct::Model>) asm(
+    "__wrap__ZN3bfa8FindHeadEPhRKNSt7__cxx1112basic_stringIcSt11char_traits"
+    "IcESaIcEEEbRSt10shared_ptrIKN6direct4HeadEES9_IKNSA_5ModelEE");
+extern "C" bfa::State MapHead(uint8_t*, const std::string&, bool,
+                              std::shared_ptr<const direct::Head>& head,
+                              std::shared_ptr<const direct::Model>) {
   ++map_calls;
   head = std::make_shared<direct::Head>();
   return bfa::State::kReady;
@@ -251,7 +278,7 @@ void TestHandoff(const bfa::Tune& t, a2f::NetKeeper& keeper,
   Drain(keeper);
   CHECK(FailedSpeech(fg) && playing.at(fg).entry->state == State::kFailed);
   SeedOwnedFace(expr, phon);
-  RestoreExpressions(fg, world_epoch);
+  RestoreFaceKeyframes(fg, world_epoch);
   Apply(fg, t, false, actor, 42, 9, 1);
   CHECK(playing.count(fg));  // vanilla until its sound ends
   CHECK(Expressions(fg, .1f, t, false, actor, 42) & kFaceChanged);
@@ -316,6 +343,96 @@ void TestPendingOwnership(const bfa::Tune& t, a2f::NetKeeper& keeper,
   Count();
 }
 
+// The sound is over: a played line also runs its forced-reset tail.
+void EndLine(const bfa::Tune& t, uint32_t sound) {
+  using namespace bfa;
+  playing.at(fg).voice.requested_at = Now() - 2;
+  for (int i = 0; i <= kDirectTail && !playing.empty(); ++i)
+    Apply(fg, t, false, actor, 42, sound, 0);
+  CHECK(playing.empty());
+}
+
+// The performance network through Process: the identity is the speaker's
+// sex, the line 30 fps and as wide as the v3 heads. After the settings
+// switch models a playing line keeps the mapping it was made for; a line in
+// the network when they switch is cancelled, neither failed nor cached.
+void TestPerformance(a2f::NetKeeper& keeper, const bfa::Tune& t) {
+  using namespace bfa;
+  a2f::NetKeeper perf_keeper(
+      false,
+      [](bool, std::string&, std::string&) {
+        return std::unique_ptr<a2f::Net>(new PerformanceNet);
+      },
+      [] { return Now(); });
+  for (const char* name : {"v3", "perf", "cancelled"})
+    files[std::string("Sound/Voice/Skyrim.esm/") + name + ".wav"] = Wav(true);
+  cache.clear();
+  queue.clear();
+  playing.clear();
+  faces.clear();
+  Count();
+  BeginSpeech(actor, "Sound/Voice/Skyrim.esm/v3", 20, 3, 0, 0, t, world_epoch);
+  Drain(keeper);
+  CHECK(playing.at(fg).entry->state == State::kReady);
+  Apply(fg, t, false, actor, 42, 20, 1);
+  Expressions(fg, .016f, t, false, actor, 42);
+  mapped_with = nullptr;
+  AddDirect(node.data(), false);
+  CHECK(mapped_with == &model);
+  // The worker switched to the performance model with its own mapping.
+  auto perf_mapping = std::make_shared<direct::Model>();
+  perf_mapping->network = a2f::kNetV3;
+  perf_mapping->faces.resize(2);
+  auto perf_state = std::make_shared<ModelState>();
+  perf_state->network = a2f::kNetPerformance;
+  perf_state->gpu = false;
+  perf_state->mapping = perf_mapping;
+  std::atomic_store(&active_model,
+                    std::shared_ptr<const ModelState>(perf_state));
+  SelectPerformance(true);
+  const Tune pt = SnapshotTune();
+  CHECK(pt.SelectedModel() == a2f::kNetPerformance);
+  mapped_with = nullptr;
+  AddDirect(node.data(), false);
+  CHECK(mapped_with == &model);  // the playing line keeps its mapping
+  EndLine(pt, 20);
+  const int before = runs, perf_before = perf_runs;
+  BeginSpeech(actor, "Sound/Voice/Skyrim.esm/perf", 21, 3, 0, 0, pt,
+              world_epoch);
+  CHECK(queue.size() == 1 && queue.front().entry->model_state == perf_state);
+  Drain(perf_keeper);
+  CHECK(runs == before && perf_runs == perf_before + 1 && perf_identity == 1);
+  const auto entry = playing.at(fg).entry;
+  CHECK(entry->state == State::kReady && entry->line);
+  CHECK(entry->line->fps == a2f::kPerformanceFps &&
+        entry->line->direct_dim == a2f::kPerformanceChannels &&
+        entry->line->frames == 6 && entry->line->eyes.empty());
+  Apply(fg, pt, false, actor, 42, 21, 1);
+  Expressions(fg, .016f, pt, false, actor, 42);
+  mapped_with = nullptr;
+  AddDirect(node.data(), false);
+  CHECK(mapped_with == perf_mapping.get());
+  EndLine(pt, 21);
+  const auto failures = stats.failed, lines = stats.lines;
+  perf_switch = true;
+  BeginSpeech(actor, "Sound/Voice/Skyrim.esm/cancelled", 22, 3, 0, 0, pt,
+              world_epoch);
+  const auto cancelled = queue.front().entry;
+  Drain(perf_keeper);
+  perf_switch = false;
+  CHECK(perf_runs == perf_before + 2);
+  CHECK(cancelled->state == State::kFailed && !cancelled->line);
+  CHECK(stats.failed == failures && stats.lines == lines);
+  CHECK(std::none_of(cache.begin(), cache.end(), [&](const auto& e) {
+    return e.second == cancelled;
+  }));
+  CHECK(SnapshotTune().SelectedModel() == a2f::kNetV3);
+  std::atomic_store(&active_model, std::shared_ptr<const ModelState>());
+  playing.clear();
+  faces.clear();
+  Count();
+}
+
 void TestPlayback(uint32_t runtime, a2f::NetKeeper& keeper) {
   using namespace bfa;
   skse::SetRuntime(runtime);
@@ -328,6 +445,11 @@ void TestPlayback(uint32_t runtime, a2f::NetKeeper& keeper) {
   Field<uint8_t*>(actor, kRefrBase) = base.data();
   actor[kFormType] = kFtActor;
   base[kFormType] = kFtNpc;
+  // Conversation admission requires a real supported FaceGen race.
+  Field<uint8_t*>(actor, kActorRace.Get()) = race.data();
+  Field<uint32_t>(race.data(), kFormId) = 0x13746;  // Nord
+  Field<uint32_t>(race.data(), kRaceFlags) = 2;
+  CHECK(SpeakerOk(actor));
   Field<uint32_t>(actor, kFormId) = 0x123;
   Field<LONG>(actor, kRefrRefCount) = 1;
   Field<uint32_t>(mtm, kMtmSpeaker) = 42;
@@ -361,6 +483,7 @@ void TestPlayback(uint32_t runtime, a2f::NetKeeper& keeper) {
               world_epoch);
   CHECK(!FailedSpeech(fg) && queue.size() == 2);
   TestPendingMapping(t, keeper, phon);
+  TestPerformance(keeper, t);
   // A matched lip resource keeps vanilla ownership, then its removal ends it.
   BeginSpeech(actor, stem, 12, 2, 0, 0, t, world_epoch);
   std::array<uint8_t, 0x20> lip_resource{};
@@ -393,6 +516,6 @@ int main() {
   }
   puts("Audio fallback contracts passed: silence, missing audio, TTS retry, "
        "handoff, failed generation, ownership fade while generating, mapping "
-       "during inference, transitions, late readiness, completion and load "
-       "cleanup (SE/AE/VR)");
+       "during inference, transitions, late readiness, completion, load "
+       "cleanup and performance lines (SE/AE/VR)");
 }

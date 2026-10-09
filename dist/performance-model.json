@@ -1,0 +1,12 @@
+{
+  "architecture": "Thin96",
+  "parameters": 55385,
+  "training_epochs": 20,
+  "source_commit": "463a3953e26882268d3878007bad5deeb0768eaa",
+  "onnx_sha256": "6ca7c152ad8dad2250f5a3eddde54e0111d5715d122bd8b93b9705af8252d451",
+  "normalization_sha256": "6d68d40ca42da0d4ca33d1de67b6e42ad84420637ba1ecc840d322d70f712b9a",
+  "frontend": "student_model.mel_features; 16kHz mono, 30Hz, 80 log-mel channels; context17",
+  "output": "48 skin + 10 tongue + 15 jaw; normalization in performance_stats.h; no gaze",
+  "coverage": "308255 Skyrim/DLC/installed-mod canonical recordings, both identities; neutral or one hash-assigned emotion0.5; formerly held-out data included",
+  "limitations": "Less emotive; arbitrary dialogue/emotion settings and Steam Deck not validated; numerical targets projected at30Hz"
+}

@@ -1,5 +1,5 @@
-// Call-site hooks shared with another plugin (src/call_sites.h).
-#include "../src/call_sites.h"
+// Call-site hooks shared with another plugin (include/a2f/runtime/call_sites.h).
+#include "a2f/runtime/call_sites.h"
 
 #include <cstdio>
 #include <cstring>

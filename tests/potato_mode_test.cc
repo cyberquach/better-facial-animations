@@ -1,7 +1,7 @@
 #include <array>
 #include <cstdlib>
 
-#include "../src/better_facial_animations.cc"
+#include "../src/plugin/better_facial_animations.cc"
 #define CHECK(x)                                      \
   do {                                                \
     if (!(x)) {                                       \
