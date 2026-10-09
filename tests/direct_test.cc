@@ -3,7 +3,7 @@
 // and the mouth part on Mark's jaw (a made-up Mark and head): the upper teeth
 // stay, the lower teeth move with the jaw's points as one piece.
 // ./build.sh test builds and runs it.
-#include "../src/direct.h"
+#include "a2f/animation/direct.h"
 
 #include <algorithm>
 #include <cmath>
@@ -51,6 +51,113 @@ struct MouthFixture {
 void Check(bool ok, const char* label) {
   printf("%s %s\n", ok ? "ok" : "FAIL", label);
   if (!ok) ++failures;
+}
+
+// An oral border duplicates skin positions and native jaw motion, as on
+// Khajiit. Nearby teeth alone must not become skin followers.
+void SharedMouthBorder(const Mark& mk, ShapeIn skin, ShapeIn mouth) {
+  const uint32_t first_skin = skin.nv, first_mouth = mouth.nv;
+  for (uint32_t i = 0; i < 8; ++i) {
+    const float x = (i % 4) * 0.5f - 0.75f;
+    const float z = i < 4 ? -1.8f : -2.2f;
+    skin.verts.insert(skin.verts.end(), {x, 9.f, z});
+    mouth.verts.insert(mouth.verts.end(), {x + 0.001f, 9.f, z});
+  }
+  skin.nv += 8;
+  mouth.nv += 8;
+  for (auto* shape : {&skin, &mouth}) {
+    for (auto& morph : shape->morphs)
+      if (!morph.empty()) morph.resize(shape->nv * 3);
+    for (uint32_t v = shape->nv - 8; v < shape->nv; ++v)
+      shape->morphs[kBigAah][v * 3 + 2] = v < shape->nv - 4 ? 0 : -0.4f;
+  }
+  std::string why;
+  for (float factor : {0.5f, 1.f, 2.f}) {
+    for (bool skeleton_mouth : {false, true}) {
+      ShapeIn s = skin, m = mouth;
+      for (auto* shape : {&s, &m}) {
+        for (float& v : shape->verts) v *= factor;
+        for (auto& morph : shape->morphs)
+          for (float& v : morph) v *= factor;
+      }
+      if (skeleton_mouth)
+        for (uint32_t v = 0; v < m.nv; ++v) {
+          m.verts[v * 3 + 1] -= 1.55f;
+          m.verts[v * 3 + 2] += 120.34f;
+        }
+      Head h;
+      bool ok = BuildHead(mk, {s, m}, h, why);
+      Check(ok && h.shapes[1].seam.size() == 8,
+            "shared oral border recognized across scale and coordinate frames");
+      if (!ok || h.shapes[1].seam.size() != 8) continue;
+      // Independent speech channels intentionally pull skin and teeth apart.
+      h.row.assign(h.nv, 0);
+      h.basis = {0.3f, 0.2f, -0.8f};
+      h.shapes[1].expr[10].assign(m.nv * 3, 0.1f);
+      Head detached = h;
+      detached.shapes[1].seam.clear();
+      std::vector<float> c(h.k + kNumMouthCoef, 0);
+      c[0] = 1;
+      for (int i = 0; i < kNumJawPoints; ++i)
+        c[h.k + a2f::kNumTongue + i * 3 + 1] = -0.25f;
+      for (auto mode : {TongueMode::kAuthored, TongueMode::kModel}) {
+        for (float lip : {0.f, 1.f, 2.f}) {
+          float scales[kNumRegions] = {1, 1, 1, 1, 2 - lip, 1};
+          std::vector<std::vector<float>> actual, original;
+          Evaluate(h, c.data(), scales, kNoExpressions, nullptr, mode, actual,
+                   lip, 2 - lip);
+          Evaluate(detached, c.data(), scales, kNoExpressions, nullptr, mode,
+                   original, lip, 2 - lip);
+          bool closed = true;
+          for (uint32_t i = 0; i < 8; ++i)
+            for (int j = 0; j < 3; ++j)
+              closed &= actual[1][(first_mouth + i) * 3 + j] ==
+                        actual[0][(first_skin + i) * 3 + j];
+          Check(closed, "speech preserves the authored oral seam offset");
+          Check(actual[0] == original[0] &&
+                    std::equal(actual[1].begin(),
+                               actual[1].begin() + first_mouth * 3,
+                               original[1].begin()),
+                "seam correction preserves skin and rigid interior teeth");
+        }
+      }
+      float expr[kNumExpressions] = {};
+      expr[10] = 1;
+      std::vector<std::vector<float>> actual, original;
+      Evaluate(h, nullptr, kScales, expr, nullptr, TongueMode::kAuthored, actual);
+      Evaluate(detached, nullptr, kScales, expr, nullptr, TongueMode::kAuthored,
+               original);
+      Check(actual == original, "expression-only playback is unchanged");
+      const auto expression = actual;
+      std::vector<std::vector<float>> speech;
+      Evaluate(h, c.data(), kScales, kNoExpressions, nullptr,
+               TongueMode::kAuthored, speech);
+      Evaluate(h, c.data(), kScales, expr, nullptr, TongueMode::kAuthored, actual);
+      bool overlay = true;
+      for (size_t si = 0; si < actual.size(); ++si)
+        for (size_t i = 0; i < actual[si].size(); ++i)
+          overlay &= std::fabs(actual[si][i] - speech[si][i] -
+                               expression[si][i]) < 1e-5f;
+      Check(overlay, "speech seam correction preserves authored expressions");
+      std::fill(c.begin(), c.end(), 0);
+      Evaluate(h, c.data(), kScales, kNoExpressions, nullptr,
+               TongueMode::kAuthored, actual);
+      Check(std::all_of(actual[1].begin(), actual[1].end(),
+                        [](float v) { return std::fabs(v) < 1e-5f; }),
+            "zero speech leaves the mouth at rest");
+    }
+  }
+  for (int control = 0; control < 3; ++control) {
+    ShapeIn m = mouth;
+    for (uint32_t v = first_mouth; v < m.nv; ++v) {
+      if (control == 0 || (control == 2 && v == first_mouth))
+        m.verts[v * 3 + 1] += 0.1f;
+      if (control == 1) m.morphs[kBigAah][v * 3 + 2] += 1;
+    }
+    Head h;
+    Check(BuildHead(mk, {skin, m}, h, why) && h.shapes[1].seam.empty(),
+          "nearby teeth, conflicting morphs and sparse contacts are not seams");
+  }
 }
 
 // Mark himself, with upper/lower teeth, optional tongue and two pinned rings.
@@ -208,6 +315,7 @@ bool BuildFixture(TongueMotion mode, MouthFixture& fixture) {
   }
   // Separate oral parts and head-scale checks use the tongue-free fixture.
   if (ok && mode == TongueMotion::kNone) {
+    SharedMouthBorder(mk, skin, mouth);
     std::vector<float> pose;
     std::vector<std::vector<float>> d;
     Coefficients(h, &line, 0, pose);

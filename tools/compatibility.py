@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Offline BFA compatibility contracts. No game launch, install or downloads."""
 import argparse
+import concurrent.futures
 import hashlib
 import json
 import os
@@ -132,10 +133,10 @@ def run_command(command, log, timeout):
             return 124
 
 
-def run_case(case, result, fixtures, build_ok, version, out):
-    """Fills result for one registry case: an asset check, a Python test or a
-    compiled contract test (its sources plus, for one that includes the
-    plugin's main source, the objects and libraries build.sh links)."""
+def prepare_case(case, result, fixtures, build_ok, version, out):
+    """Settles an asset check, or compiles a contract test and fills
+    result['run_command'] for run_case. Safe to call concurrently: each case
+    only writes its own files under out."""
     if 'records' in case:
         if case['id'] not in fixtures:
             result['reason'] = 'missing local fixture'
@@ -154,12 +155,6 @@ def run_case(case, result, fixtures, build_ok, version, out):
                 path = fixture if isinstance(fixture, str) else fixture['path']
                 result['run_command'] += ['--fixtures', path]
             result['run_command'] += ['--output', str(out / case['id'])]
-        rc = run_command(result['run_command'], out / (case['id'] + '.log'),
-                         600 if case.get('fixture_directory') else 90)
-        status = 'pass' if rc == 0 else 'fail'
-        if rc == 2 and case.get('fixture_directory'):
-            status = 'blocked'
-        result.update(status=status, returncode=rc)
         return
     if not build_ok:
         result['reason'] = 'production build failed'
@@ -168,7 +163,7 @@ def run_case(case, result, fixtures, build_ok, version, out):
     cmd = shlex.split(os.environ.get('CXX', 'x86_64-w64-mingw32-g++'))
     cmd += ['-std=c++17', '-O2', '-Wall', '-static', '-DBFA_VERSION="' + version + '"']
     ort = os.environ.get('ORT', 'deps/dml/microsoft.ml.onnxruntime.directml')
-    cmd += ['-isystem', ort + '/build/native/include']
+    cmd += ['-I', str(ROOT / 'include'), '-isystem', ort + '/build/native/include']
     cmd += case['sources']
     if case.get('plugin_objects'):
         objects = [ROOT / o for o in build_variable('PLUGIN_OBJS')]
@@ -186,8 +181,19 @@ def run_case(case, result, fixtures, build_ok, version, out):
         return
     result['test_sha256'] = hashlib.sha256(exe.read_bytes()).hexdigest()
     result['run_command'] = shlex.split(os.environ.get('WINE', 'wine64')) + [str(exe)]
-    rc = run_command(result['run_command'], out / (case['id'] + '.log'), 90)
-    result.update(status='pass' if rc == 0 else 'fail', returncode=rc)
+
+
+def run_case(case, result, out):
+    """Runs a prepared case. Tests share the working directory (fixtures
+    under dist, Data/SKSE/Plugins), so cases run one at a time."""
+    if 'run_command' not in result:
+        return
+    timeout = 600 if case.get('fixture_directory') else 90
+    rc = run_command(result['run_command'], out / (case['id'] + '.log'), timeout)
+    status = 'pass' if rc == 0 else 'fail'
+    if rc == 2 and case.get('fixture_directory'):
+        status = 'blocked'
+    result.update(status=status, returncode=rc)
 
 
 def main():
@@ -201,7 +207,11 @@ def main():
                         help='fresh production build before tests')
     parser.add_argument('--list', action='store_true')
     parser.add_argument('--output', type=Path, help='new evidence directory (must not exist)')
+    parser.add_argument('--jobs', type=int, default=int(os.environ.get('JOBS', 0)) or os.cpu_count(),
+                        help='parallel test compilations (default: $JOBS or the CPU count)')
     args = parser.parse_args()
+    if args.jobs < 1:
+        parser.error('--jobs must be positive')
     registry = json.loads((ROOT / 'tests/compatibility.json').read_text())
     if args.list:
         print(json.dumps(registry, indent=2))
@@ -218,7 +228,9 @@ def main():
     # Source hashes include dirty edits: HEAD alone is insufficient provenance.
     inputs = [ROOT / 'build.sh', ROOT / 'tools/build.mk', ROOT / 'VERSION',
               ROOT / 'tests/compatibility.json', Path(__file__)]
-    inputs += sorted((ROOT / 'src').glob('*')) + sorted((ROOT / 'tests').glob('*.cc'))
+    inputs += sorted((ROOT / 'src').rglob('*.cc'))
+    inputs += sorted((ROOT / 'include').rglob('*.h'))
+    inputs += sorted((ROOT / 'tests').glob('*.cc'))
     inputs += sorted((ROOT / 'tests').glob('*.py'))
     inputs += [ROOT / c['python'] for c in selected if c.get('python')]
     inputs += [ROOT / 'tests/follower_teeth.json']
@@ -239,12 +251,20 @@ def main():
         build_ok = run_command(['sh', 'build.sh'], out / 'build.log', 900) == 0
         report['build_status'] = 'pass' if build_ok else 'fail'
     fixtures = json.loads(args.fixtures.read_text()) if args.fixtures else {}
-    for case in selected:
-        result = {'id': case['id'], 'status': 'blocked'}
-        report['results'].append(result)
+    report['results'] = [{'id': case['id'], 'status': 'blocked'} for case in selected]
+
+    def prepare(case, result):
         try:
-            run_case(case, result, fixtures, build_ok, report['version'], out)
+            prepare_case(case, result, fixtures, build_ok, report['version'], out)
         except (OSError, ValueError, struct.error, zlib.error) as exc:
+            result.update(status='fail', reason=str(exc))
+
+    with concurrent.futures.ThreadPoolExecutor(args.jobs) as pool:
+        list(pool.map(prepare, selected, report['results']))
+    for case, result in zip(selected, report['results']):
+        try:
+            run_case(case, result, out)
+        except OSError as exc:
             result.update(status='fail', reason=str(exc))
         print(case['id'] + ': ' + result['status'], flush=True)
     statuses = {r['status'] for r in report['results']}

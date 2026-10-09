@@ -1,0 +1,199 @@
+// What the plugin's files share: the settings (settings.cc) and the state
+// of better_facial_animations.cc that the head cache and the settings page
+// use.
+#ifndef INCLUDE_A2F_PLUGIN_PLUGIN_H_
+#define INCLUDE_A2F_PLUGIN_PLUGIN_H_
+
+#include <windows.h>
+
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "a2f/animation/direct.h"
+
+namespace bfa {
+
+extern const char kVersion[];  // from the VERSION file
+
+enum class State { kPending, kReady, kFailed };
+
+// ---------------- settings ----------------
+// A network's files and footprint (a2f::kNetV2, kNetV3, kNetPerformance).
+struct ModelInfo {
+  int network;
+  const wchar_t* model_file;
+  const wchar_t* mapping_file;
+  int mapping_network;  // direct::Model::network of mapping_file
+  double vram_mb;
+};
+const ModelInfo& ModelFor(int network);
+
+struct Config {  // fixed after load
+  bool gpu = true;
+  int network = a2f::kNetV3;  // the model at startup, see ModelFor
+  int batch = 2;
+  int log_lines = 400;
+  bool use_device_wrapper = false;  // a2f::SetUseDeviceWrapper
+  bool independent_device = false;  // startup-only IndependentGpuDevice
+  int cache_lines = 300;
+  // Winning EFA head assets, detected at data loaded: male, female. Their
+  // mouths were made for less speech: that face's Mouth scale is multiplied.
+  bool expressive_faces[2] = {};
+  std::wstring model, direct;  // the network's files, by network
+};
+constexpr float kExpressiveMouthScale = 0.85f;
+struct FaceTune {
+  // how much louder speech adds to a line's emotion
+  float voice_swell = 0.25f;
+  // s for the game's expressions to fade out when a line starts (the face
+  // becomes the model's alone) and back in after it
+  float face_in = 0.5f;
+  float face_out = 1;
+  float time_offset = 0;
+  float blend_in = 0.15f;
+  float direct_scale[direct::kNumRegions] = {1, 1, 1, 1, 1, 1};
+  // how strongly a line's emotion drives the network
+  float voice_emotion = 1;
+  a2f::EmotionCaps max_emotion = a2f::kDefaultEmotionCaps;
+  float upper_lip = 1;
+  float lower_lip = 1;
+};
+struct Tune {  // menu; defaults as dist/BetterFacialAnimations.ini
+  bool enabled = true;
+  bool player = true;
+  bool prefetch = true;
+  bool potato_mode = false;
+  bool disable_tongue = false;
+  bool conversation_gaze = true;
+  float gaze_strength = 1;
+  // One model is selected; the three checkboxes show which. Only old_model
+  // and performance_model are stored, v3_model is derived. The worker
+  // applies the selection and force_cpu live (SwitchModel).
+  bool old_model = false;
+  bool performance_model = false;
+  bool v3_model = true;
+  int SelectedModel() const {
+    return performance_model ? a2f::kNetPerformance
+           : old_model       ? a2f::kNetV2
+                             : a2f::kNetV3;
+  }
+  void SelectModel(int network) {
+    performance_model = network == a2f::kNetPerformance;
+    old_model = network == a2f::kNetV2;
+    v3_model = !performance_model && !old_model;
+  }
+  bool force_cpu = false;
+  bool logging = true;
+  FaceTune male, female, player_face;
+  const FaceTune& ForActor(bool is_female, bool is_player) const {
+    return is_player ? player_face : ForSex(is_female);
+  }
+  const FaceTune& ForSex(bool is_female) const {
+    return is_female ? female : male;
+  }
+};
+extern Config& config;
+Tune SnapshotTune();  // coherent copy for playback and workers
+extern SRWLOCK
+    settings_lock;  // guards all Param pointers; readers use SnapshotTune()
+
+// Param pointers may only be accessed with settings_lock held.
+// Every ini key / menu item: a slider (value, lo..hi) or, with flag set, a
+// checkbox, in a menu group (kModel is in the ini's General section). Table
+// order = menu order.
+enum class Sec { kGeneral, kModel, kPlayback, kDirect, kEmotion, kDebug };
+struct Param {
+  const char* key;
+  float* value;
+  float lo, hi;
+  const char* label;
+  const char* tip;
+  Sec sec;
+  bool* flag;
+  int profile = -1;  // -1: shared, 0: male NPC, 1: female NPC, 2: player
+  bool stored = true;  // in the ini
+};
+extern const std::vector<Param> kParams;
+extern const size_t kNumParams;
+
+// After a model checkbox was toggled: that model is the one selected, so
+// the three boxes never show none or several. Caller holds settings_lock.
+void SelectModelCheckbox(const Param& p);
+// Puts the selection back to network, e.g. after a switch failed.
+void SetSelectedModel(int network);
+
+struct RaceSetting {
+  uint32_t id;
+  std::string key, label;
+  bool enabled;
+  bool default_enabled;
+};
+void LoadRaceSettings();  // at data loaded, before the menu and worker
+std::vector<RaceSetting> SnapshotRaces();
+bool RaceEnabled(uint32_t id);
+void SetRaceEnabled(uint32_t id, bool enabled);
+
+void LoadIni();  // at load
+void SaveIni();
+void ScheduleSaveIni();  // debounce and persist on a dedicated writer thread
+void WakeWorker();  // after menu settings change, with settings_lock released
+void ResetTune();  // menu defaults
+// Turns the log on / off as tune.logging says; a new log starts with the
+// version.
+void ApplyLogging();
+// Whether one more log line of a kind may be written: logging is on and
+// fewer than LogLines of the kind (counted in written) were.
+bool LogMore(std::atomic<int>& written);
+
+// ---------------- state ----------------
+// The network is loaded. Only unrestricted mode keeps generating while
+// disabled.
+extern std::atomic<bool> net_loaded;
+// The A2FDirect bin is loaded and the morph hook in place.
+extern std::atomic<bool> ready;
+extern direct::Model& model;  // startup mapping; immutable once ready
+// Immutable selection shared by queued work, playing lines and head fitting.
+struct ModelState {
+  int network = a2f::kNetV3;
+  bool gpu = true;
+  std::wstring file;
+  std::shared_ptr<const direct::Model> mapping;
+};
+std::shared_ptr<const ModelState> SnapshotModel();
+
+double Now();  // s
+std::string Lower(const char* s);
+
+struct Stats {
+  uint32_t lines = 0, failed = 0, late = 0;
+  double audio_sec = 0, gen_sec = 0, last_ms = 0;
+  std::string net_info, last_error;
+  // The wanted session failed: the diagnosis (problem, cause, advice), the
+  // runtime's own message, the attempts so far and when (Now()) the next one
+  // is.
+  std::vector<std::string> net_error;
+  std::string net_detail;
+  int net_attempts = 0;
+  double net_retry_at = 0;
+  // The worker's model and device preference, and a switch in progress or
+  // the reason the last one failed.
+  int network = a2f::kNetV3;
+  bool want_gpu = true;
+  bool switching_model = false;
+  std::string model_error;
+  bool net_gpu = false;  // the loaded session is the GPU one
+  // Why the plugin is not running (the A2FDirect bin).
+  std::string startup_error;
+};
+// The statistics now, and the lines cached and waiting to be generated.
+Stats SnapshotStats(size_t& cached, size_t& queued);
+// Forgets the generated lines (not those still being generated).
+void ClearLines();
+
+}  // namespace bfa
+
+#endif  // INCLUDE_A2F_PLUGIN_PLUGIN_H_

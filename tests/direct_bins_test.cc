@@ -7,7 +7,7 @@
 #include <cstdio>
 #include <string>
 
-#include "../src/direct.h"
+#include "a2f/animation/direct.h"
 
 namespace {
 int failures = 0;
@@ -72,6 +72,11 @@ int main(int argc, char** argv) {
     // lines of both sexes are as wide: a face's pose blends across them
     Expect(m3.faces[0].k == m3.faces[1].k, "both faces have as many "
                                           "coefficients");
+    // The performance network emits a fixed width onto these same faces;
+    // Coefficients drops a line whose width differs from the head's.
+    Expect(m3.faces[0].k + a2f::kNumTongue + a2f::kNumJaw ==
+               static_cast<uint32_t>(a2f::kPerformanceChannels),
+           "performance lines are as wide as a v3 head expects");
     // Claire is the smaller face
     float hi[2] = {-INFINITY, -INFINITY}, lo[2] = {INFINITY, INFINITY};
     for (int f = 0; f < 2; ++f)

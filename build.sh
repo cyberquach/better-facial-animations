@@ -48,9 +48,9 @@ JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)}
 case "$JOBS" in ""|*[!0-9]*|0*) echo "JOBS must be a positive integer" >&2; exit 1 ;; esac
 
 mkdir -p build
-CXX="x86_64-w64-mingw32-g++ -std=c++17 -O2"
+CXX="x86_64-w64-mingw32-g++ -std=c++17 -O2 -Iinclude"
 # a test that includes the plugin's main source links its other objects (also read by tools/compatibility.py)
-PLUGIN_OBJS="build/native_speech_hook.o build/player_speech.o build/settings.o build/pose.o build/net_keeper.o build/head_cache.o build/menu.o build/skse.o build/direct.o build/live_core.o build/ort_net.o"
+PLUGIN_OBJS="build/native_speech_hook.o build/player_speech.o build/settings.o build/gaze.o build/pose.o build/net_keeper.o build/head_cache.o build/menu.o build/skse.o build/direct.o build/live_core.o build/performance_features.o build/ort_net.o"
 PLUGIN_LIBS="-L$FFMPEG/lib -lavformat -lavcodec -lswresample -lavutil -lbcrypt -lshell32 -lole32 -luuid -ldxgi"
 make -f tools/build.mk -B -j "$JOBS" CXX="$CXX" BFA_VERSION="$V" \
     FFMPEG="$FFMPEG" ORT="$ORT" build/better_facial_animations.o $PLUGIN_OBJS &&
@@ -63,6 +63,7 @@ cp build/BetterFacialAnimations.dll dist/BetterFacialAnimations.ini $P/
 cp $ORT/runtimes/win-x64/native/onnxruntime.dll $ORT/runtimes/win-x64/native/onnxruntime_providers_shared.dll \
    $DML/bin/x64-win/DirectML.dll $MODEL dist/A2FDirect.bin dist/A2FDirect3.bin dist/NOTICE.txt $P/BetterFacialAnimations/ || exit 1
 cp $MODEL3 $P/BetterFacialAnimations/a2f3_fp16.onnx || exit 1
+cp dist/performance.onnx dist/performance-model.json $P/BetterFacialAnimations/ || exit 1
 sed "s/@VERSION@/$V/" dist/README.txt > $P/BetterFacialAnimations/README.txt
 cp LICENSE $L/BetterFacialAnimations-GPL-3.0.txt
 cp $FFMPEG/COPYING.LGPLv2.1 $L/FFmpeg-LGPL-2.1.txt
@@ -85,21 +86,26 @@ release)
     ls -la $R ;;
 test)
     T=build/test; mkdir -p $T/Data && ln -sfn "$(realpath "$ADDRLIB")/SKSE" $T/Data/SKSE &&
-    python3 tools/compatibility.py --tier contracts &&
-    $CXX -Wall -static src/skse.cc tests/runtimes_test.cc -o $T/runtimes_test.exe -lshell32 -lole32 -luuid &&
-    $CXX -Wall -static tests/emotion_test.cc build/live_core.o -o $T/emotion_test.exe \
-        -L$FFMPEG/lib -lavformat -lavcodec -lswresample -lavutil -lbcrypt -lole32 &&
+    python3 tools/compatibility.py --tier contracts || exit 1
+    # The test programs compile at once; they run one at a time.
+    pids=""
+    $CXX -Wall -static src/runtime/skse.cc tests/runtimes_test.cc -o $T/runtimes_test.exe -lshell32 -lole32 -luuid & pids="$pids $!"
+    $CXX -Wall -static tests/emotion_test.cc build/live_core.o build/performance_features.o -o $T/emotion_test.exe \
+        -L$FFMPEG/lib -lavformat -lavcodec -lswresample -lavutil -lbcrypt -lole32 & pids="$pids $!"
+    $CXX -Wall -static tests/reference_test.cc -o $T/reference_test.exe & pids="$pids $!"
+    $CXX -Wall -static tests/passive_report_test.cc build/ort_net.o -o $T/passive_report_test.exe -Wl,--wrap=__imp_CreateDXGIFactory1 -ldxgi & pids="$pids $!"
+    $CXX -Wall -static src/inference/net_keeper.cc tests/net_keeper_test.cc -o $T/net_keeper_test.exe & pids="$pids $!"
+    $CXX -Wall -static tests/ort_net_test.cc build/ort_net.o -o $T/ort_net_test.exe -ldxgi & pids="$pids $!"
+    $CXX -Wall -static src/animation/direct.cc tests/direct_bins_test.cc -o $T/direct_bins_test.exe & pids="$pids $!"
+    status=0
+    for pid in $pids; do wait "$pid" || status=1; done
+    [ "$status" = 0 ] &&
     WINEDEBUG=-all ${WINE-wine64} $T/emotion_test.exe &&
-    $CXX -Wall -static tests/reference_test.cc -o $T/reference_test.exe &&
     WINEDEBUG=-all ${WINE-wine64} $T/reference_test.exe &&
-    $CXX -Wall -static tests/passive_report_test.cc build/ort_net.o -o $T/passive_report_test.exe -Wl,--wrap=__imp_CreateDXGIFactory1 -ldxgi &&
     WINEDEBUG=-all ${WINE-wine64} $T/passive_report_test.exe &&
-    $CXX -Wall -static src/net_keeper.cc tests/net_keeper_test.cc -o $T/net_keeper_test.exe &&
-    $CXX -Wall -static tests/ort_net_test.cc build/ort_net.o -o $T/ort_net_test.exe -ldxgi &&
     WINEDEBUG=-all ${WINE-wine64} $T/runtimes_test.exe build/BetterFacialAnimations.dll $T &&
     WINEDEBUG=-all ${WINE-wine64} $T/net_keeper_test.exe &&
     WINEDEBUG=-all ${WINE-wine64} $T/ort_net_test.exe $P/BetterFacialAnimations "$P/BetterFacialAnimations/$(basename "$MODEL")" "$MODEL_FP32" &&
     WINEDEBUG=-all ${WINE-wine64} $T/ort_net_test.exe $P/BetterFacialAnimations $P/BetterFacialAnimations/a2f3_fp16.onnx "$MODEL3_FP32" 3 &&
-    $CXX -Wall -static src/direct.cc tests/direct_bins_test.cc -o $T/direct_bins_test.exe &&
     WINEDEBUG=-all ${WINE-wine64} $T/direct_bins_test.exe dist/A2FDirect.bin dist/A2FDirect3.bin ;;
 esac
