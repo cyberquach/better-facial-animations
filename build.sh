@@ -50,7 +50,7 @@ case "$JOBS" in ""|*[!0-9]*|0*) echo "JOBS must be a positive integer" >&2; exit
 mkdir -p build
 CXX="x86_64-w64-mingw32-g++ -std=c++17 -O2 -Iinclude"
 # a test that includes the plugin's main source links its other objects (also read by tools/compatibility.py)
-PLUGIN_OBJS="build/native_speech_hook.o build/player_speech.o build/settings.o build/gaze.o build/pose.o build/net_keeper.o build/head_cache.o build/menu.o build/skse.o build/direct.o build/live_core.o build/performance_features.o build/ort_net.o"
+PLUGIN_OBJS="build/native_speech_hook.o build/player_speech.o build/provider.o build/settings.o build/gaze.o build/pose.o build/net_keeper.o build/head_cache.o build/menu.o build/skse.o build/direct.o build/live_core.o build/performance_features.o build/ort_net.o"
 PLUGIN_LIBS="-L$FFMPEG/lib -lavformat -lavcodec -lswresample -lavutil -lbcrypt -lshell32 -lole32 -luuid -ldxgi"
 make -f tools/build.mk -B -j "$JOBS" CXX="$CXX" BFA_VERSION="$V" \
     FFMPEG="$FFMPEG" ORT="$ORT" build/better_facial_animations.o $PLUGIN_OBJS &&
@@ -63,6 +63,7 @@ cp build/BetterFacialAnimations.dll dist/BetterFacialAnimations.ini $P/
 cp $ORT/runtimes/win-x64/native/onnxruntime.dll $ORT/runtimes/win-x64/native/onnxruntime_providers_shared.dll \
    $DML/bin/x64-win/DirectML.dll $MODEL dist/A2FDirect.bin dist/A2FDirect3.bin dist/NOTICE.txt $P/BetterFacialAnimations/ || exit 1
 cp $MODEL3 $P/BetterFacialAnimations/a2f3_fp16.onnx || exit 1
+cp include/a2f/speech/BFA_API.h $P/BetterFacialAnimations/ || exit 1
 cp dist/performance.onnx dist/performance-model.json $P/BetterFacialAnimations/ || exit 1
 sed "s/@VERSION@/$V/" dist/README.txt > $P/BetterFacialAnimations/README.txt
 cp LICENSE $L/BetterFacialAnimations-GPL-3.0.txt

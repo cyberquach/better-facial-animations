@@ -875,6 +875,15 @@ void SetOrtLog(void (*log)(const std::string&)) { ort_log = log; }
 
 bool DeviceRedirected() { return device_redirected; }
 
+bool IndependentDeviceSupported(std::string& err) {
+  err.clear();
+  const bool supported = bool(OpenIndependentDevice(err));
+  // The probe does not choose a fallback; its caller selects the policy.
+  const auto policy = err.find("; CPU fallback;");
+  if (policy != std::string::npos) err.resize(policy);
+  return supported;
+}
+
 void SetUseDeviceWrapper(bool use) { use_wrapper = use; }
 bool DeviceWrapped() { return device_wrapped; }
 

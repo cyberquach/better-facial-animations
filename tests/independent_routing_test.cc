@@ -11,6 +11,13 @@ class Cpu : public Net {
   bool Run(const float*, const float*, int, float*, std::string&) override { return true; }
 };
 bool allow_cpu = false;
+int probes = 0;
+bool supported = false;
+bool ProbeSupport(std::string& err) {
+  ++probes;
+  err = supported ? "" : "unsupported runtime/driver";
+  return supported;
+}
 std::unique_ptr<Net> Probe2(const std::wstring&, const std::wstring&,
                            const OrtOptions& o, std::string& err, std::string&) {
   ++creates; seen = o; version_seen = 2;
@@ -31,16 +38,36 @@ std::unique_ptr<Net> ProbePerformance(const std::wstring& dir,
   return result;
 }
 }
+#define IndependentDeviceSupported ProbeSupport
 #define CreatePerformanceNet ProbePerformance
 #define CreateOrtNet Probe2
 #define CreateOrtNet3 Probe3
 #include "../src/plugin/better_facial_animations.cc"
+#undef IndependentDeviceSupported
 #undef CreatePerformanceNet
 #undef CreateOrtNet
 #undef CreateOrtNet3
 int main() {
   using namespace bfa;
   CHECK(!config.independent_device);
+  for (int mode : {0, 1, 2, 3}) {
+    for (bool support : {false, true}) {
+      config.gpu_device = mode;
+      config.independent_device = mode == 0 || mode == 3;
+      config.use_device_wrapper = mode == 1;
+      device_checked = false;
+      a2f::supported = support;
+      const int before = a2f::probes;
+      SelectGpuDevice();
+      CHECK(independent_device == (mode == 3 || (mode == 0 && support)));
+      CHECK(device.wrapper == (mode == 1));
+      CHECK(device.fixed == (mode == 1 || mode == 2));
+      SelectGpuDevice();
+      CHECK(a2f::probes == before + (mode == 0));
+    }
+  }
+  config.gpu_device = 3;
+  device_checked = false;
   // Use a temporary game-like directory rather than changing the repository.
   wchar_t temp[MAX_PATH], root[MAX_PATH], old[32768];
   CHECK(GetCurrentDirectoryW(32768, old));

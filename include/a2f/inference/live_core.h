@@ -168,10 +168,15 @@ enum EmotionChannel {
 };
 using EmotionCaps = std::array<float, kNumMod>;
 constexpr EmotionCaps kDefaultEmotionCaps = {2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
+// type kExplicitEmotion: channels are the game's levels (0..1 each) instead
+// of the Skyrim emotion's mapping, for lines whose emotion a provider gives
+// per channel (BFA_API.h).
+constexpr int kExplicitEmotion = -1;
 struct Emotion {
   int type = 0, value = 0;
   float gain = 1, swell = 0;
   EmotionCaps maximum = kDefaultEmotionCaps;
+  EmotionCaps channels = {};
 };
 
 // Per frame, with d = y - rest (rest: kNumOut), the k skin coefficients

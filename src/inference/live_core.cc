@@ -285,10 +285,17 @@ std::vector<double> Loudness(const float* pcm, size_t n, int frames) {
 void EmotionTrack(const float* pcm, size_t n, int frames,
                   const Emotion& emotion, std::vector<float>& track) {
   double game[kNumMod] = {};
-  if (emotion.type >= 1 && emotion.type <= 7)
+  if (emotion.type == kExplicitEmotion) {
+    for (int c = 0; c < kNumMod; ++c)
+      game[c] = std::isfinite(emotion.channels[c])
+                    ? std::clamp(static_cast<double>(emotion.channels[c]),
+                                 0.0, kMaxEmotion)
+                    : 0.0;
+  } else if (emotion.type >= 1 && emotion.type <= 7) {
     for (int c = 0; c < kNumMod; ++c)
       game[c] =
           kMap[emotion.type][c] * std::clamp(emotion.value / 100.0, 0.0, 1.0);
+  }
   std::vector<double> loud;
   if (emotion.swell > 0 && emotion.gain > 0) loud = Loudness(pcm, n, frames);
   double maximum[kNumMod];
