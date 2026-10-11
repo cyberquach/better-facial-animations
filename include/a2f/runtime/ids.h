@@ -58,6 +58,9 @@ constexpr skse::Rel kIdCreateHandle{12193, 12326, 0x1428A0};
 // PlayerCharacter* singleton (CommonLibSSE-NG PlayerCharacter::GetSingleton).
 // None on VR: DBReV supports SE/AE, and VR's player is not verified.
 constexpr skse::Rel kIdPlayer{517014, 403521, 0};
+// TESForm::LookupByID(FormID) (CommonLibSSE-NG TESForm.h). None on VR: the
+// provider interface (BFA_API.h) resolves actors by form id on SE/AE only.
+constexpr skse::Rel kIdLookupFormById{14461, 14617, 0};
 // AIProcess::GetHeadtrackTarget: hidden result pointer after this, returns
 // that pointer. Unavailable on VR: its target-selection ABI is unverified.
 constexpr skse::Rel kIdHeadtrackTarget{38483, 39484, 0};
@@ -72,6 +75,7 @@ constexpr skse::Rel kIds[] = {
     kIdLookupReference, kIdCreateHandle,
 };
 // And those some runtime lacks.
-constexpr skse::Rel kOptionalIds[] = {kIdPlayer, kIdHeadtrackTarget};
+constexpr skse::Rel kOptionalIds[] = {kIdPlayer, kIdHeadtrackTarget,
+                                      kIdLookupFormById};
 
 #endif  // INCLUDE_A2F_RUNTIME_IDS_H_

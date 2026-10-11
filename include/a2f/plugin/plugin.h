@@ -37,8 +37,9 @@ struct Config {  // fixed after load
   int network = a2f::kNetV3;  // the model at startup, see ModelFor
   int batch = 2;
   int log_lines = 400;
+  int gpu_device = 0;  // 0 auto, 1 wrapper, 2 no wrapper, 3 independent
   bool use_device_wrapper = false;  // a2f::SetUseDeviceWrapper
-  bool independent_device = false;  // startup-only IndependentGpuDevice
+  bool independent_device = false;  // preferred path; auto is resolved by the worker
   int cache_lines = 300;
   // Winning EFA head assets, detected at data loaded: male, female. Their
   // mouths were made for less speech: that face's Mouth scale is multiplied.

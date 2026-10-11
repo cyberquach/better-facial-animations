@@ -145,6 +145,27 @@
       ]
     },
     {
+      "id": "provider-api",
+      "test": "provider_api_test",
+      "sources": [
+        "tests/provider_api_test.cc"
+      ],
+      "plugin_objects": true,
+      "link": [
+        "-Wl,--wrap=_ZN4skse4AddrEy",
+        "-Wl,--wrap=_ZN3bfa3NowEv"
+      ],
+      "covers": [
+        "plain C discovery and exact version gate",
+        "WAV intake and deferred engine admission; no Started before animation",
+        "pause/resume/seek clocks and invalid arguments/state/handles",
+        "terminal events, late callbacks cannot revive finished handles",
+        "EndUtterance releases queued audio, cached output and pending tasks; cancels running work; preserves other replies",
+        "per-line emotion copied at Prepare, explicit neutral, invalid emotion",
+        "open handle capacity, world reset and deterministic idle expiry"
+      ]
+    },
+    {
       "id": "head-parts",
       "test": "head_parts_test",
       "sources": [

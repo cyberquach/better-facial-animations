@@ -101,6 +101,7 @@ int main() {
   config.gpu = true;
   config.model = L"a2f3_fp16.onnx";
   config.independent_device = true;
+  config.gpu_device = 3;
   std::string error;
   CHECK(model.Load(PluginDir() + L"\\A2FDirect3.bin", error));
   std::atomic_store(&active_model, SnapshotModel());

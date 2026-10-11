@@ -26,7 +26,7 @@ int main() {
     CHECK(WritePrivateProfileStringA(section, key, value, ini));
   };
   LoadIni();
-  CHECK(!config.independent_device);
+  CHECK(config.independent_device && config.gpu_device == 0);
   write("General", "IndependentGpuDevice", "1");
   LoadIni();
   CHECK(config.independent_device);
@@ -35,7 +35,21 @@ int main() {
   CHECK(config.independent_device);
   write("General", "IndependentGpuDevice", "0");
   LoadIni();
-  CHECK(!config.independent_device);
+  CHECK(config.independent_device && config.gpu_device == 0);
+  write("Debug", "UseDeviceWrapper", "1");
+  LoadIni();
+  CHECK(config.gpu_device == 1 && config.use_device_wrapper);
+  for (const char* mode : {"0", "1", "2", "3", "99"}) {
+    write("General", "GpuDevice", mode);
+    LoadIni();
+    const int expected = atoi(mode) == 99 ? 0 : atoi(mode);
+    CHECK(config.gpu_device == expected);
+    CHECK(config.independent_device == (expected == 0 || expected == 3));
+    CHECK(config.use_device_wrapper == (expected == 1));
+    SaveIni();
+    LoadIni();
+    CHECK(config.gpu_device == expected);
+  }
   CHECK(DeleteFileA(ini));  // keep the migration fixture independent of SaveIni above
   LoadIni();
   CHECK(SnapshotTune().male.upper_lip == 1 &&
@@ -265,7 +279,8 @@ int main() {
       SaveIni();
       LoadIni();
       CHECK(config.network == selected);
-      CHECK(config.independent_device == (independent[0] == '1'));
+      CHECK(config.independent_device);
+      CHECK(config.gpu_device == (independent[0] == '1' ? 3 : 0));
       CHECK(config.gpu == !SnapshotTune().force_cpu);
       CHECK(config.direct ==
             (selected == 2 ? L"A2FDirect.bin" : L"A2FDirect3.bin"));
