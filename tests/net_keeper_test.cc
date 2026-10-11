@@ -375,6 +375,11 @@ int main() {
     {
       on_device = on_wrapper = 0;
       a2f::Device d;
+      d.fixed = true;
+      d.wrapper = false;
+      Expect(!make(d, err, info) && on_device == 1 && on_wrapper == 0,
+             "forced no-wrapper never retries the wrapper on device loss");
+      on_device = on_wrapper = 0;
       d.wrapper = d.fixed = true;  // UseDeviceWrapper=1
       device_error.clear();
       wrapper_error = kRemoved;

@@ -28,12 +28,13 @@ Requirements
   Both modes keep the model loaded from the main menu until exit. An already submitted GPU run must finish
   before cancellation. PotatoMode=0 (default) processes all speakers. If the model cannot
   be loaded on the GPU the settings window says why, it is retried and lines run on the CPU meanwhile (slow).
-  Under ReShade the model runs on the device inside ReShade's wrapper, and switches to the wrapper itself
-  when that device is lost (DLSS 5 bridges); UseDeviceWrapper=1 in the ini always takes the wrapper.
-  Experimental [General] IndependentGpuDevice=1 requires an independent D3D12 device and private compute queue.
-  Restart after changing it. It launches no EXE and falls back to CPU on failure, never to the shared GPU device.
-  It requires supporting Windows D3D12 runtime/driver; ReShade/RenoDX/frame-generation compatibility is unverified.
-  UseDeviceWrapper is ignored and metacommands remain enabled in this mode. Default 0 preserves the legacy path.
+  [General] GpuDevice=0 (Auto) prefers an independent D3D12 device and private compute queue
+  when the installed runtime and driver pass a capability probe, without relying on DLL dates.
+  Otherwise it uses the device inside ReShade's wrapper, switching to the wrapper on device loss.
+  Overrides: 1 = force wrapper, 2 = force no wrapper, 3 = force independent GPU. Restart after changing.
+  Selected independent mode keeps metacommands enabled and uses CPU fallback on failure.
+  Old IndependentGpuDevice=1 / Debug UseDeviceWrapper=1 apply when GpuDevice is absent;
+  old zeros now select Auto. ForceCPU takes precedence. No helper EXE is launched.
   Optional: SKSE Menu Framework, for the in-game settings page (Better Facial Animations -> Settings).
 
 Player dialogue (optional)
@@ -44,6 +45,13 @@ Player dialogue (optional)
   With Cinematic Conversation Camera, use [Performance] bSynthLipSync=0 in SKSE/Plugins/SD_user.ini
   to disable its synthesized fallback lips. Turning off BFA's player feature leaves DBReV's own lip sync.
   The same supported-head/race requirements apply. DBReV is optional, and its DLL is not patched.
+
+Speech providers (mod authors)
+  AI dialogue and TTS mods can animate their own lines through the C interface in
+  Data/SKSE/Plugins/BetterFacialAnimations/BFA_API.h (WAV bytes and actor ID,
+  playback controls, result codes, per-line emotion and lifecycle events). SE/AE only.
+  EndUtterance discards the reply's queued/cached animations and cancels inference.
+  Unreleased ABI changed in place; rebuild callers with this header. Version remains 1.
 
 Settings
   Data/SKSE/Plugins/BetterFacialAnimations.ini, or in game through SKSE Menu Framework (saved automatically).

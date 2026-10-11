@@ -68,6 +68,9 @@ bool DeviceRedirected();
 void SetUseDeviceWrapper(bool use);
 // True once D3D12CreateDevice handed out a wrapper of the device.
 bool DeviceWrapped();
+// Try strict device creation against the installed runtime and driver.
+// The temporary device is released; never touches the shared device.
+bool IndependentDeviceSupported(std::string& err);
 
 // Where onnxruntime's own warnings and errors go (the first 200; any
 // thread). Set before the first session.

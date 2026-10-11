@@ -2,6 +2,7 @@
 #include "../src/plugin/better_facial_animations.cc"
 
 #include <array>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 
@@ -167,6 +168,68 @@ int main() {
     partner_handle = 42;
     Expressions(fg, 0.1f, Tune(), false, actor, 42);
     CHECK(faces.count(fg) && faces.at(fg).ownership_blend > 0);
+    // The engine's expressions rewritten in one frame (a script's override,
+    // as CHIM's) reach the face smoothly (Face::shown, kSrcFollow), not as
+    // a snap. The engine's value is put back each frame (RestoreKeyframe).
+    {
+      Face& f = faces.at(fg);
+      int idx = 0;
+      while (!direct::PlaysExpression(idx)) ++idx;
+      auto frame = [&](float engine) {
+        std::fill_n(values, direct::kNumExpressions, engine);
+        Expressions(fg, 0.1f, Tune(), false, actor, 42);
+      };
+      for (int i = 0; i < 12; ++i) frame(0.65f);
+      CHECK(f.ownership_blend == 1 && f.speech_blend == 0);
+      CHECK(std::fabs(f.shown[idx] - 0.65f) < 1e-4f);
+      frame(0);  // override: neutral at once
+      CHECK(f.src[idx] == 0 && f.shown[idx] > 0.4f && f.shown[idx] < 0.47f);
+      frame(0);
+      CHECK(f.shown[idx] > 0.25f && f.shown[idx] < 0.32f);
+      for (int i = 0; i < 30; ++i) frame(0);
+      CHECK(f.shown[idx] < 0.01f);
+      frame(0.9f);  // override: a full expression at once
+      CHECK(f.shown[idx] > 0.25f && f.shown[idx] < 0.35f);
+      std::fill_n(values, direct::kNumExpressions, 0.65f);
+    }
+    // A quiet engine must still be asked to tick every frame of a handoff.
+    // Cover both mesh expressions and keyframe-only fallback; the last step
+    // must rebuild too, but a settled face must stop requesting updates.
+    {
+      Face& f = faces.at(fg);
+      const Tune tune;
+      auto frame = [&] {
+        std::fill_n(values, direct::kNumExpressions, 0.65f);
+        return Expressions(fg, 0.1f, tune, false, actor, 42);
+      };
+      for (State state : {State::kReady, State::kFailed}) {
+        f.head_state = state;
+        f.ownership_blend = 1;
+        f.speech_blend = 1;
+        for (int i = 0; i < direct::kNumExpressions; ++i)
+          f.shown[i] = direct::PlaysExpression(i) ? 0.65f : 0.f;
+        for (int i = 0; i < 20 && f.speech_blend > 0; ++i) {
+          const int updates = frame();
+          CHECK(updates & kFaceChanged);
+          CHECK(updates & kKeepUpdating);
+        }
+        CHECK(f.speech_blend == 0);
+        CHECK(!(frame() & kKeepUpdating));
+        std::fill_n(f.shown, direct::kNumExpressions, 0.f);
+        CHECK(frame() & kKeepUpdating);  // a new engine expression
+        for (int i = 0; i < 60; ++i) frame();
+        CHECK(!(frame() & kKeepUpdating));
+      }
+      f.head_state = State::kReady;
+      auto line = std::make_shared<a2f::Line>();
+      std::vector<float> pose(1, 1.f);
+      f.transition.Blend(line, Now(), 1, true, true, pose);
+      pose[0] = 0;
+      f.transition.Blend(nullptr, Now(), 1, true, false, pose);
+      CHECK(frame() & kKeepUpdating);  // speech pose still easing to zero
+      f.transition = a2f::PoseTransition();
+      CHECK(!(frame() & kKeepUpdating));
+    }
     // Disabling a race must release every live animation path.
     SetRaceEnabled(0x06000800, false);
     CHECK(!SpeakerOk(actor));
