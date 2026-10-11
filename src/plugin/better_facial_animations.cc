@@ -33,8 +33,10 @@
 #include "a2f/plugin/menu.h"
 #include "a2f/inference/net_keeper.h"
 #include "a2f/inference/ort_net.h"
+#include "a2f/speech/BFA_API.h"
 #include "a2f/speech/player_speech.h"
 #include "a2f/speech/native_speech_hook.h"
+#include "a2f/speech/provider.h"
 #include "a2f/plugin/plugin.h"
 #include "a2f/animation/pose.h"
 #include "a2f/runtime/scoped_lock.h"
@@ -122,6 +124,8 @@ constexpr float MeanExpressionScale() {
 
 // ---------------- generated lines ----------------
 struct Entry {
+  bool cancelled = false;  // EndUtterance discarded this provider entry
+  uint32_t failure_reason = BFA_kResultAudioFailed;
   State state = State::kPending;
   std::shared_ptr<const a2f::Line> line;
   uint64_t last_use = 0;
@@ -134,6 +138,8 @@ struct Entry {
   std::vector<Requester> requesters;
   uint64_t epoch = 0;
   std::shared_ptr<const ModelState> model_state;
+  // provider lines (BFA_API.h) told when it is generated or fails
+  std::vector<PlayerSpeechPtr> watchers;
 };
 struct Job {
   std::string cache_key, path;
@@ -142,6 +148,8 @@ struct Job {
   // the speaker's sex: with v3.0 the identity that speaks it
   bool female = false;
   std::shared_ptr<Entry> entry;
+  // a provider's audio bytes (path is then its name); null: read the file
+  std::shared_ptr<const std::vector<uint8_t>> audio;
 };
 enum FaceUpdate { kNoUpdate = 0, kFaceChanged = 1, kKeepUpdating = 2 };
 constexpr int kDirectTail = 3;  // forced resets after the last Direct frame
@@ -178,6 +186,10 @@ struct Playing {
   int engine_expr = -1;
   float engine_expr_v = 0, shown = 0;
 };
+// A provider interface line (BFA_API.h): it owns the face while it plays.
+bool ProviderLine(const Playing& p) {
+  return p.external && p.external->handle != 0;
+}
 // Final phonemes are cached by the engine when the source LIP sample is
 // unchanged. Restore our last suppression before that update, including on
 // line end/disable, so neither tongue capture nor vanilla reads our zeros.
@@ -223,6 +235,11 @@ struct Face {
   // the plugin's writes are never read back as the engine's), and what the
   // plugin wrote in its place
   float src[direct::kNumExpressions] = {};
+  // src as shown: following it smoothly (kSrcFollow), so a script's or a
+  // provider's one-frame rewrite of the engine's expressions (an override)
+  // never snaps the face
+  float shown[direct::kNumExpressions] = {};
+  bool shown_set = false;  // shown starts at src
   float written[direct::kNumExpressions] = {};
   float level[direct::kNumExpressions] = {};  // added to the meshes
   // 0..1: from the engine's expressions to the plugin's.
@@ -247,6 +264,11 @@ struct Face {
   bool female = false;
   bool player = false;
   a2f::PoseTransition transition;
+  // Provider lines that left the face, told (their terminal event) once it
+  // is handed back: their utterance no longer holds it and the engine's
+  // expressions have faded back in, or another line took it. The provider's
+  // own writes then never fight the fade.
+  std::vector<PlayerSpeechPtr> leaving;
 };
 // Times on play_clock:
 constexpr double kFaceLinger = 300;  // s after the conversation or line
@@ -258,6 +280,8 @@ constexpr double kPlayStep = 0.25;  // the most play_clock advances at once
 // s for the plugin to take a face's expressions over from the engine and to
 // give them back
 constexpr float kOwnIn = 0.25f, kOwnOut = 1;
+// s for the shown expressions to follow a change of the engine's (Face::shown)
+constexpr float kSrcFollow = 0.3f;
 constexpr size_t kMaxFaces = 8;
 
 SRWLOCK lock = SRWLOCK_INIT;  // guards everything below
@@ -302,6 +326,7 @@ void ResetPlayback(bool loading) {
   loading_game = loading;
   ++world_epoch;
   playing.clear();
+  ProviderReset();
   faces.clear();
   partner_fg = nullptr;
   partner_ref = nullptr;
@@ -327,6 +352,36 @@ double Tick(double now) {
 Face* LiveFace(uint8_t* fg) {
   auto it = faces.find(fg);
   return it == faces.end() || it->second.parked ? nullptr : &it->second;
+}
+
+// Lock held: tells the provider lines whose hand-back the face has finished
+// (or will not do), except those of the utterance keep (0: all).
+void ReleaseLeaving(Face& f, uint64_t keep = 0) {
+  for (auto it = f.leaving.begin(); it != f.leaving.end();) {
+    if (keep && (*it)->utterance_id == keep) {
+      ++it;
+      continue;
+    }
+    ProviderLineLeft(*it, BFA_kCompleted);
+    it = f.leaving.erase(it);
+  }
+}
+
+// Lock held: the line is leaving the face (or never got there) for the
+// reason (BFA_StopReason). A provider's is told at once when nothing of it
+// was shown or another utterance holds the face; else once the face is
+// handed back (Expressions, Face::leaving): between the segments of its
+// utterance the face keeps its expression state for the next one.
+void LineLeft(uint8_t* fg, Playing& p, uint32_t reason) {
+  if (!ProviderLine(p)) return;
+  ProviderLineStopping(p.external, reason);
+  Face* face = p.direct_frames != 0 ? LiveFace(fg) : nullptr;
+  const uint64_t holder = face ? ProviderHolder(p.external->form_id) : 0;
+  if (!face || (holder && holder != p.external->utterance_id)) {
+    ProviderLineLeft(p.external, reason);
+    return;
+  }
+  face->leaving.push_back(p.external);
 }
 
 }  // namespace
@@ -419,6 +474,10 @@ bool IsPlayer(uint8_t* actor) {
   return Field<uint32_t>(actor, kFormId) == kPlayerFormId;
 }
 
+uint32_t FormIdOf(const uint8_t* actor) {
+  return actor ? Field<uint32_t>(const_cast<uint8_t*>(actor), kFormId) : 0;
+}
+
 // The plugin animates this face: Enabled and, for the player's, the player
 // setting.
 bool EnabledFor(const Tune& tune, bool player) {
@@ -499,7 +558,8 @@ bool DialogueAllows(const Tune& tune, uint32_t handle, bool player = false) {
 
 // Lock held: keep shared work while at least one requester still needs it.
 bool EntryAllowed(const Entry& entry, const Tune& tune) {
-  return entry.state == State::kPending && CurrentWorld(entry.epoch) &&
+  return !entry.cancelled && entry.state == State::kPending &&
+         CurrentWorld(entry.epoch) &&
          (!entry.model_state ||
           entry.model_state->network == tune.SelectedModel()) &&
          std::any_of(entry.requesters.begin(), entry.requesters.end(),
@@ -514,9 +574,32 @@ bool JobAllowed(const Job& j) {
   return EntryAllowed(*j.entry, SnapshotTune());
 }
 
+// Lock held, after the entry's state is final: its provider lines are told
+// of a failure (success shows as kStarted once the line is on the face).
+void NotifyWatchers(Entry& e) {
+  std::vector<PlayerSpeechPtr> watchers = std::move(e.watchers);
+  e.watchers.clear();
+  if (e.state == State::kReady) return;
+  for (const PlayerSpeechPtr& w : watchers)
+    ProviderLineFailed(w, e.failure_reason);
+}
+
+// Lock held. Prepare and Start may resolve different cache entries.
+void WatchEntry(Entry& entry, const PlayerSpeechPtr& line) {
+  if (entry.state == State::kPending) {
+    if (std::find(entry.watchers.begin(), entry.watchers.end(), line) ==
+        entry.watchers.end())
+      entry.watchers.push_back(line);
+  } else if (entry.state == State::kFailed) {
+    ProviderLineFailed(line, entry.failure_reason);
+  }
+}
+
 // Lock held. Never leave cancelled entries pending or poison future requests.
 void CancelJob(const Job& j) {
   j.entry->state = State::kFailed;
+  j.entry->failure_reason = BFA_kResultCancelled;
+  NotifyWatchers(*j.entry);
   auto it = cache.find(j.cache_key);
   if (it != cache.end() && it->second == j.entry) cache.erase(it);
 }
@@ -524,30 +607,45 @@ void CancelJob(const Job& j) {
 // Queue a line unless it is cached or in flight (with the emotion settings
 // as now: after a change the next line spoken is generated anew). Returns
 // its entry. female: the speaker's sex; with a face per sex (v3.0) a line is
-// generated for each.
-std::shared_ptr<Entry> Request(const std::string& stem, int emo, int val,
-                               bool female, bool urgent, const Tune& tune,
-                               uint32_t speaker, uint64_t epoch,
-                               bool player = false) {
+// generated for each. given: instead of the game's emotion, a provider's
+// (a Skyrim type and value, or explicit channels; its gain a factor on the
+// setting). audio: a provider's bytes, whose stem names them by content.
+std::shared_ptr<Entry> Request(
+    const std::string& stem, int emo, int val, bool female, bool urgent,
+    const Tune& tune, uint32_t speaker, uint64_t epoch, bool player = false,
+    const a2f::Emotion* given = nullptr,
+    std::shared_ptr<const std::vector<uint8_t>> audio = {}) {
   std::string key = Lower(stem.c_str());
   const FaceTune& settings = tune.ForActor(female, player);
+  const bool channels = given && given->type == a2f::kExplicitEmotion;
+  if (given && !channels) {
+    emo = given->type;
+    val = given->value;
+  }
+  const float factor = given ? given->gain : 1;
   // neutral: no emotion to feed, or none wanted
-  if (settings.voice_emotion <= 0 || emo < 1 || emo > 7) {
+  if (settings.voice_emotion <= 0 || factor <= 0 ||
+      (!channels && (emo < 1 || emo > 7))) {
     emo = 0;
     val = 0;
   }
   a2f::Emotion em;
-  em.type = emo;
+  em.type = channels && factor > 0 && settings.voice_emotion > 0
+                ? a2f::kExplicitEmotion
+                : emo;
   em.value = val;
-  em.gain = emo ? settings.voice_emotion : 0;
+  em.gain = em.type ? settings.voice_emotion * factor : 0;
   em.swell = em.gain > 0 ? settings.voice_swell : 0;
   em.maximum = settings.max_emotion;
+  if (em.type == a2f::kExplicitEmotion) em.channels = given->channels;
   auto part = [&key](double v) {
     key += '|';
     key += std::to_string(std::lround(v));
   };
-  for (double v : {1. * emo, 1. * val, em.gain * 100., em.swell * 100.})
+  for (double v : {1. * em.type, 1. * val, em.gain * 100., em.swell * 100.})
     part(v);
+  if (em.type == a2f::kExplicitEmotion)
+    for (float level : em.channels) part(level * 1000.);
   // Preserve every stored cap value: even a small edit must bypass old work.
   for (float cap : em.maximum) {
     uint32_t cap_bits;
@@ -571,7 +669,7 @@ std::shared_ptr<Entry> Request(const std::string& stem, int emo, int val,
     e = std::make_shared<Entry>();
     e->epoch = epoch;
     e->model_state = selection;
-    Job j{key, stem, em, female, e};
+    Job j{key, stem, em, female, e, std::move(audio)};
     if (urgent) {
       queue.push_front(j);
     } else {
@@ -677,13 +775,37 @@ void NetEvent(const std::string& text) { skse::Report("%s", text.c_str()); }
 // metacommands and about the device they run on.
 a2f::Metacommands metacommands;
 a2f::Device device;
+bool device_checked = false;
+bool independent_device = false;
+
+bool IndependentGpuSelected() {
+  return device_checked ? independent_device : config.independent_device;
+}
+
+void SelectGpuDevice() {
+  if (device_checked) return;
+  device_checked = true;
+  independent_device = config.independent_device;
+  if (config.gpu_device == 0) {
+    std::string reason;
+    independent_device = a2f::IndependentDeviceSupported(reason);
+    if (independent_device)
+      skse::Report("GpuDevice=Auto: independent device and private queue");
+    else
+      skse::Report("GpuDevice=Auto: shared device; probe: %s", reason.c_str());
+  }
+  device.wrapper = config.use_device_wrapper;
+  device.fixed = config.gpu_device == 1 || config.gpu_device == 2;
+  a2f::SetUseDeviceWrapper(device.wrapper);
+}
 
 std::unique_ptr<a2f::Net> CreateNet(bool gpu, std::string& err,
                                     std::string& info) {
   const auto selection = SnapshotModel();
   const std::wstring dir = PluginDir(), file = dir + L"\\" + selection->file;
+  if (gpu) SelectGpuDevice();
   static bool dml_loaded;
-  if (gpu && !config.independent_device && !dml_loaded) {
+  if (gpu && !IndependentGpuSelected() && !dml_loaded) {
     // onnxruntime delay-loads DirectML.dll by name: load ours first so that
     // is the one it gets
     dml_loaded = LoadLibraryExW((dir + L"\\DirectML.dll").c_str(), nullptr,
@@ -695,7 +817,7 @@ std::unique_ptr<a2f::Net> CreateNet(bool gpu, std::string& err,
   a2f::OrtOptions o;
   o.gpu = gpu;
   o.batch = config.batch;
-  o.independent_device = config.independent_device;
+  o.independent_device = IndependentGpuSelected();
   if (selection->mapping->network !=
       ModelFor(selection->network).mapping_network) {
     err = "the A2FDirect bin is of the other network";
@@ -721,7 +843,7 @@ std::unique_ptr<a2f::Net> CreateNet(bool gpu, std::string& err,
   if (!gpu) return create(err, info);
   // The independent device has no metacommand or wrapper retries: DML1 takes
   // our device and queue as they are.
-  if (config.independent_device) {
+  if (independent_device) {
     auto net = create(err, info);
     if (!net && err.find("independent device:") != 0)
       err = "independent device: " + err;
@@ -762,7 +884,7 @@ void PublishNet(const a2f::NetKeeper& keeper) {
     // The VRAM as the GPU session failed (DXGI only; no device is made).
     why = a2f::DiagnoseNet(
         selection->gpu, keeper.error(), diagnosed,
-        selection->gpu && !config.independent_device ? a2f::QueryGpu()
+        selection->gpu && !IndependentGpuSelected() ? a2f::QueryGpu()
                                                      : a2f::GpuState{},
         ModelFor(selection->network).vram_mb);
     for (const auto& line : why) skse::Report("%s", line.c_str());
@@ -772,7 +894,7 @@ void PublishNet(const a2f::NetKeeper& keeper) {
     if (selection->gpu && !reported) {
       reported = true;
       skse::Report("-- at the first failure");
-      for (const auto& line : a2f::GpuReport(!config.independent_device))
+      for (const auto& line : a2f::GpuReport(!IndependentGpuSelected()))
         skse::Report("%s", line.c_str());
     }
   }
@@ -798,27 +920,35 @@ void Process(const Job& j, a2f::NetKeeper& keeper) {
   }
   static std::atomic<int> logged;
   std::vector<uint8_t> bytes;
+  const std::vector<uint8_t>* source = &bytes;
   std::string err, file;
-  for (const char* ext : {".fuz", ".xwm", ".wav"})
-    if (ReadGameFile(j.path + ext, bytes)) {
-      file = j.path + ext;
-      break;
-    }
+  if (j.audio) {
+    source = j.audio.get();
+    file = j.path;
+  } else {
+    for (const char* ext : {".fuz", ".xwm", ".wav"})
+      if (ReadGameFile(j.path + ext, bytes)) {
+        file = j.path + ext;
+        break;
+      }
+  }
   std::shared_ptr<a2f::Line> line;
   double t = Now(), audio_sec = 0;
+  bool inference_attempted = false;
   bool no_net = false;  // not this line's fault: generate it again next time
   bool silent = false;  // nothing to animate: vanilla, not a failure
   if (file.empty()) {
     err = "no voice file";
   } else {
     std::vector<float> pcm;
-    if (a2f::DecodeAudio(bytes.data(), bytes.size(), pcm, err)) {
+    if (a2f::DecodeAudio(source->data(), source->size(), pcm, err)) {
       audio_sec = pcm.size() / static_cast<double>(a2f::kSampleRate);
       silent = !a2f::HasAudibleAudio(pcm.data(), pcm.size());
       if (silent) {
         err = "silent or unusable audio; keeping vanilla facial animation";
       } else {
         line = std::make_shared<a2f::Line>();
+        inference_attempted = true;
         if (!keeper.Run(
                 [&](a2f::Net& net, std::string& e) {
                   const direct::Mark& face =
@@ -859,6 +989,9 @@ void Process(const Job& j, a2f::NetKeeper& keeper) {
     // replace them later. The active line retains its fallback entry.
     if (!line && (no_net || silent || file.empty())) cache.erase(it);
   }
+  j.entry->failure_reason = no_net ? BFA_kResultModelNotLoaded :
+      inference_attempted ? BFA_kResultInferenceFailed : BFA_kResultAudioFailed;
+  NotifyWatchers(*j.entry);
   if (line) {
     ++stats.lines;
     stats.audio_sec += audio_sec;
@@ -1029,14 +1162,11 @@ DWORD WINAPI Worker(void*) {
   ready = true;
   skse::Report("settings: GPU=%d, batch %d, model %ls", config.gpu,
                config.batch, config.model.c_str());
-  if (config.independent_device)
-    skse::Report("IndependentGpuDevice=1: strict independent device; "
-                 "private compute queue; CPU fallback on failure; "
-                 "UseDeviceWrapper ignored");
-  device.wrapper = device.fixed = config.use_device_wrapper;
-  a2f::SetUseDeviceWrapper(device.wrapper);
+  skse::Report("GpuDevice=%d (0 auto, 1 wrapper, 2 no wrapper, 3 independent)",
+               config.gpu_device);
+  if (config.gpu) SelectGpuDevice();
   const bool report_gpu =
-      config.gpu && !config.independent_device && SnapshotTune().enabled;
+      config.gpu && !IndependentGpuSelected() && SnapshotTune().enabled;
   for (const auto& line : a2f::GpuReport(report_gpu))
     skse::Report("%s", line.c_str());
   a2f::SetOrtLog([](const std::string& s) { skse::Report("%s", s.c_str()); });
@@ -1142,28 +1272,39 @@ int ActorVoice(uint8_t* actor, uint32_t& sound) {
   return !handle || !is_playing ? -1 : is_playing(handle);
 }
 
-// Shared entry for engine speech and optional provider notifications; the
-// one place a scene's actor is turned away.
-void BeginSpeech(uint8_t* actor, const std::string& stem, uint32_t sound_id,
-                 float dur, int emo_type, int emo_value, const Tune& tune,
-                 uint64_t epoch, PlayerSpeechPtr external = {}) {
-  if (!CurrentWorld(epoch)) return;
-  if (!RaceAllowed(actor) ||
-      !DialogueAllows(tune, HandleOf(actor), IsPlayer(actor))) return;
+// Shared entry for engine speech and provider lines (external: a DBReV /
+// DBVO notification, or a provider interface line); the one place a
+// scene's or a suppressed actor is turned away. Returns BFA_kResultOK once
+// the line is in playing, else the BFA_ResultCode.
+uint32_t BeginSpeech(uint8_t* actor, const std::string& stem,
+                     uint32_t sound_id, float dur, int emo_type,
+                     int emo_value, const Tune& tune, uint64_t epoch,
+                     PlayerSpeechPtr external = {}) {
+  if (!CurrentWorld(epoch)) return BFA_kResultNoFaceGenHead;
+  if (!RaceAllowed(actor)) return BFA_kResultRaceDisabled;
+  if (!DialogueAllows(tune, HandleOf(actor), IsPlayer(actor)))
+    return BFA_kResultNotInDialogue;
+  const uint32_t form_id = FormIdOf(actor);
+  const bool provider = external && external->handle != 0;
+  static std::atomic<int> logged;
   if (InScene(actor)) {
-    static std::atomic<int> logged;
     if (LogMore(logged)) Log("skip %s: its actor is in a scene", stem.c_str());
-    return;
+    return BFA_kResultInScene;
+  }
+  if (!external && ProviderClaims(form_id)) {
+    if (LogMore(logged))
+      Log("skip %s: a provider holds its actor's face", stem.c_str());
+    return BFA_kResultTakenByOtherLine;
   }
   auto get_fg = reinterpret_cast<uint8_t* (*)(uint8_t*)>(
       Field<void**>(actor, 0)[kVfGetFaceGenAnimationData]);
   uint8_t* fg = get_fg(actor);
-  if (!fg) return;
+  if (!fg) return BFA_kResultNoFaceGenHead;
   skse::ResId r{};
   Engine<GenerateFromPathFn, kIdGenerateFromPath>()(&r,
                                                     (stem + ".lip").c_str());
   const uint64_t lip_key = skse::KeyOf(r);
-  if (external) {
+  if (external && !provider) {
     // The engine hook may already have seen this same playback (the lip
     // resource tells, whatever the path's case and separators): its line
     // keeps its clock and pose and takes on the provider's cancellation.
@@ -1172,7 +1313,19 @@ void BeginSpeech(uint8_t* actor, const std::string& stem, uint32_t sound_id,
     if (old != playing.end() && !old->second.external &&
         old->second.lip_key == lip_key) {
       old->second.external = std::move(external);
-      return;
+      return BFA_kResultOK;
+    }
+  }
+  if (!external) {
+    // A provider interface line owns the face while it plays: the engine's
+    // own (idle chatter, a bark) waits for it, and is not generated.
+    ScopedLock guard(lock, ScopedLock::kShared);
+    auto old = playing.find(fg);
+    if (old != playing.end() && ProviderLine(old->second) &&
+        !old->second.external->stopped) {
+      if (LogMore(logged))
+        Log("skip %s: a provider's line is playing", stem.c_str());
+      return BFA_kResultTakenByOtherLine;
     }
   }
   // without a handle the actor could not be told to be still there later
@@ -1181,13 +1334,14 @@ void BeginSpeech(uint8_t* actor, const std::string& stem, uint32_t sound_id,
     static std::atomic<int> no_handle;
     if (LogMore(no_handle))
       Log("skip %s: the actor has no handle", stem.c_str());
-    return;
+    return BFA_kResultNoFaceGenHead;
   }
   const bool female = IsFemale(actor);
-  auto e =
-      Request(stem, emo_type, emo_value, female, true, tune, handle, epoch,
-              IsPlayer(actor));
-  if (!e) return;
+  const a2f::Emotion* given = provider ? &external->emotion : nullptr;
+  auto e = Request(stem, emo_type, emo_value, female, true, tune, handle,
+                   epoch, IsPlayer(actor), given,
+                   provider ? external->audio : nullptr);
+  if (!e) return BFA_kResultNotInDialogue;
   Playing p;
   p.entry = e;
   p.name = stem;
@@ -1209,16 +1363,27 @@ void BeginSpeech(uint8_t* actor, const std::string& stem, uint32_t sound_id,
     p.voice.Observe(sound, playing_now, p.voice.requested_at);
   }
   ScopedLock guard(lock);
-  if (!CurrentWorld(epoch)) return;
-  // The other way around: the engine's line replaces the provider's and
-  // keeps its cancellation.
+  if (!CurrentWorld(epoch)) return BFA_kResultNoFaceGenHead;
+  if (provider) WatchEntry(*e, p.external);
+  if (p.external && p.external->stopped) return BFA_kResultCancelled;
   auto old = playing.find(fg);
-  if (!p.external && old != playing.end() && old->second.lip_key == lip_key &&
-      old->second.external && !old->second.external->stopped)
-    p.external = old->second.external;
+  if (old != playing.end()) {
+    // a provider's line started meanwhile
+    if (!p.external && ProviderLine(old->second) &&
+        !old->second.external->stopped)
+      return BFA_kResultTakenByOtherLine;
+    // The other way around: the engine's line replaces DBReV's or DBVO's
+    // and keeps its cancellation.
+    if (!p.external && old->second.lip_key == lip_key &&
+        old->second.external && !ProviderLine(old->second) &&
+        !old->second.external->stopped)
+      p.external = old->second.external;
+    LineLeft(fg, old->second, BFA_kSuperseded);
+  }
   p.seen = play_clock;
   playing[fg] = std::move(p);
   Count();
+  return BFA_kResultOK;
 }
 
 // Shared observation runs only once when a call-site hook enters the native
@@ -1306,11 +1471,13 @@ __attribute__((noinline)) uint8_t* ResponseHook(uint8_t* self, void* topic,
   if ((tune.enabled || net_loaded) && tune.prefetch && voice && ready &&
       SpeakerOk(speaker) &&
       DialogueAllows(tune, HandleOf(speaker), IsPlayer(speaker)) &&
-      !InScene(speaker) && VoiceStem(voice, stem))
-    Request(stem, static_cast<int>(Field<uint32_t>(r, kRespEmoType)),
-            static_cast<int>(Field<uint32_t>(r, kRespEmoValue)),
+      !ProviderClaims(FormIdOf(speaker)) && !InScene(speaker) &&
+      VoiceStem(voice, stem)) {
+    const int emo = static_cast<int>(Field<uint32_t>(r, kRespEmoType));
+    Request(stem, emo, static_cast<int>(Field<uint32_t>(r, kRespEmoValue)),
             IsFemale(speaker), false, tune, HandleOf(speaker), epoch,
             IsPlayer(speaker));
+  }
   return r;
 }
 
@@ -1348,6 +1515,7 @@ void SweepPlaying(uint8_t* keep) {
     if (it->first != keep && play_clock - it->second.seen > kPlayingStale) {
       if (LogMore(logged_ends))
         Log("drop %s: its head is gone", it->second.name.c_str());
+      LineLeft(it->first, it->second, BFA_kAborted);
       it = playing.erase(it);
     } else {
       ++it;
@@ -1386,8 +1554,13 @@ float LineClock(uint8_t* fg, Playing& p, double now, bool& lip,
   const skse::ResId* act = skse::ActiveLine(fg);
   int voice_state = p.voice.Observe(sound, playing_now, now);
   bool hold = p.voice.Holding(voice_state);  // until the line's sound plays
-  float t = hold ? 0 : static_cast<float>(p.voice.Elapsed(now));
-  why = now - p.voice.requested_at > 120 ? "timed out" : nullptr;
+  // A provider interface line's clock is the provider's (Start, Pause,
+  // Seek); provider.cc stops it when the provider falls silent.
+  const bool provider = ProviderLine(p);
+  float t = hold ? 0
+                 : static_cast<float>(provider ? p.external->Position(now)
+                                               : p.voice.Elapsed(now));
+  why = !provider && now - p.voice.requested_at > 120 ? "timed out" : nullptr;
   if (p.external && p.external->stopped)
     why = "the provider ended or replaced the line";
   // A provider's own line (BeginSpeech) has no sound to follow: it ends with
@@ -1455,17 +1628,33 @@ int Apply(uint8_t* fg, const Tune& tune, bool in_scene, uint8_t* actor,
   // the actor is gone and this is another's head at the same address
   if (actor != p.actor) {
     if (LogMore(logged_ends)) Log("drop %s: its actor is gone", p.name.c_str());
+    LineLeft(fg, p, BFA_kAborted);
     playing.erase(it);
     Count();
     return kNoUpdate;
   }
   // The actor joined a scene: drop the line. Expressions releases its
   // Face immediately and requests an engine mesh rebuild.
-  if (in_scene || !RaceAllowed(actor) ||
-      !DialogueAllows(tune, actor_handle, p.player)) {
+  const bool provider = ProviderLine(p);
+  if ((provider && !EnabledFor(tune, p.player)) || in_scene ||
+      !RaceAllowed(actor) || !DialogueAllows(tune, actor_handle, p.player)) {
     if (LogMore(logged_ends))
       Log("drop %s: its actor is no longer eligible", p.name.c_str());
     const bool played = p.direct_frames != 0;
+    if (provider) {
+      uint32_t why = BFA_kResultNotInDialogue;
+      if (!tune.enabled) {
+        why = BFA_kResultDisabled;
+      } else if (!EnabledFor(tune, p.player)) {
+        why = BFA_kResultPlayerDisabled;
+      } else if (in_scene) {
+        why = BFA_kResultInScene;
+      } else if (!RaceAllowed(actor)) {
+        why = BFA_kResultRaceDisabled;
+      }
+      ProviderLineDeclined(p.external, why);
+    }
+    LineLeft(fg, p, BFA_kAborted);
     playing.erase(it);
     Count();
     return played ? kFaceChanged | kKeepUpdating : kNoUpdate;
@@ -1478,6 +1667,19 @@ int Apply(uint8_t* fg, const Tune& tune, bool in_scene, uint8_t* actor,
   Face* face = LiveFace(fg);
   const State head_state = face ? face->head_state : State::kPending;
   const bool generated = p.entry->state == State::kReady;
+  // A provider's line whose head cannot be mapped, or whose inference
+  // failed, is declined: the provider keeps its own lips for it.
+  if (ProviderLine(p) && !done &&
+      (head_state == State::kFailed || p.entry->state == State::kFailed)) {
+    if (head_state == State::kFailed)
+      ProviderLineDeclined(p.external, BFA_kResultHeadMapFailed);
+    LogEnd(p, head_state, "declined", t);
+    const bool played = p.direct_frames != 0;
+    LineLeft(fg, p, BFA_kAborted);
+    playing.erase(it);
+    Count();
+    return played ? kFaceChanged | kKeepUpdating : kNoUpdate;
+  }
   // holding (t = 0) too: the engine's .lip already runs before the sound
   if (done || !generated || !enabled || head_state != State::kReady) {
     p.direct_frame = -1;
@@ -1493,6 +1695,7 @@ int Apply(uint8_t* fg, const Tune& tune, bool in_scene, uint8_t* actor,
     }
     if (done && !tail) {
       LogEnd(p, head_state, why, t);
+      LineLeft(fg, p, BFA_kCompleted);
       playing.erase(it);
       Count();
     }
@@ -1518,6 +1721,7 @@ int Apply(uint8_t* fg, const Tune& tune, bool in_scene, uint8_t* actor,
   const std::string name = first ? p.name : std::string();
   const float ready_at = p.ready_at;
   const uint32_t frames = p.entry->line->frames;
+  if (ProviderLine(p)) ProviderLineStarted(p.external);
   PlayFrame(fg, mix, p.tongue_phonemes, face->phonemes);
   guard.Unlock();
   if (first && LogMore(logged_plays))
@@ -1528,6 +1732,8 @@ int Apply(uint8_t* fg, const Tune& tune, bool in_scene, uint8_t* actor,
 
 // Drops a face (lock held).
 void DropFace(uint8_t* fg) {
+  auto it = faces.find(fg);
+  if (it != faces.end()) ReleaseLeaving(it->second);
   if (fg == partner_fg) {
     partner_fg = nullptr;
     partner_ref = nullptr;
@@ -1638,6 +1844,7 @@ void SweepFaces(uint8_t* keep, double clock) {
     std::copy_n(f.written, direct::kNumExpressions, parked.written);
     parked.parked = true;
     parked.seen = clock;
+    ReleaseLeaving(f);
     f = std::move(parked);
   }
 }
@@ -1657,7 +1864,7 @@ int ShowExpressions(Face& f, const float* lv, skse::KeyframeMultiple* ex) {
       updates = kFaceChanged;  // re-apply the meshes
     f.level[i] = level;
     f.written[i] =
-        (1 - f.ownership_blend) * f.src[i] +
+        (1 - f.ownership_blend) * f.shown[i] +
         (mapped ? 0 : f.ownership_blend * lv[i] * MeanExpressionScale());
     if (ex) ex->values[i] = f.written[i];
   }
@@ -1682,7 +1889,13 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene,
   if (in_scene || !RaceAllowed(actor) ||
       !DialogueAllows(tune, actor_handle, actor && IsPlayer(actor))) {
     ScopedLock guard(lock);
-    const bool changed = playing.erase(fg) || faces.count(fg);
+    bool changed = faces.count(fg) != 0;
+    auto line = playing.find(fg);
+    if (line != playing.end()) {
+      LineLeft(fg, line->second, BFA_kAborted);
+      playing.erase(line);
+      changed = true;
+    }
     DropFace(fg);
     return changed ? kFaceChanged : kNoUpdate;
   }
@@ -1718,8 +1931,19 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene,
   SweepFaces(fg, clock);
   if (f.parked) f = Face();  // back: its keyframe was restored
   f.seen = clock;
-  for (int i = 0; i < direct::kNumExpressions; ++i)
+  const float follow =
+      f.shown_set ? std::min(1.f, std::max(dt, 0.f) / kSrcFollow) : 1.f;
+  bool following = false;
+  for (int i = 0; i < direct::kNumExpressions; ++i) {
     f.src[i] = has_ex && direct::PlaysExpression(i) ? ex.values[i] : 0.f;
+    const float before = f.shown[i];
+    f.shown[i] += (f.src[i] - f.shown[i]) * follow;
+    // Finish the asymptotic tail so an idle face can stop scheduling updates.
+    if (std::fabs(f.src[i] - f.shown[i]) <= 1e-4f)
+      f.shown[i] = f.src[i];
+    following |= before != f.shown[i] || f.shown[i] != f.src[i];
+  }
+  f.shown_set = true;
   if (actor && (actor != f.actor || !f.actor_handle)) {
     f.actor = actor;
     f.player = IsPlayer(actor);
@@ -1731,26 +1955,33 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene,
   } else if (in_scene) {
     f.until = 0;  // back to the engine's
   }
+  const bool speaking = in_line && enabled && pit->second.direct_frame >= 0;
+  // the utterance holding the face between its segments (ProviderHolder)
+  const uint64_t holder =
+      enabled && !in_scene && actor ? ProviderHolder(FormIdOf(actor)) : 0;
+  const bool held = !speaking && holder != 0;
   // While inference runs the head is prepared (the Face is kept) but the
   // expressions go back to the engine's, fading like after a line, until a
-  // generated animation is ready.
+  // generated animation is ready -- unless an utterance holds the face.
   const bool pending = in_line && pit->second.entry->state == State::kPending;
-  const bool owns_expressions = enabled && clock < f.until && !pending;
+  const bool owns_expressions =
+      enabled && clock < f.until && (!pending || holder);
   f.ownership_blend = std::clamp(
       f.ownership_blend + (owns_expressions ? dt / kOwnIn : -dt / kOwnOut), 0.f,
       1.f);
   // the levels to show: the engine's, faded out while a line plays (the
   // network alone shapes the speaking face; the game's emotion reaches it
   // as the network's input) and back in after it
-  const bool speaking = in_line && enabled && pit->second.direct_frame >= 0;
   const FaceTune& settings = tune.ForActor(f.female, f.player);
-  f.speech_blend = std::clamp(
-      f.speech_blend + (speaking ? dt / std::max(settings.face_in, 1e-3f)
-                                 : -dt / std::max(settings.face_out, 1e-3f)),
-      0.f, 1.f);
+  const float previous_speech_blend = f.speech_blend;
+  if (!held)
+    f.speech_blend = std::clamp(
+        f.speech_blend + (speaking ? dt / std::max(settings.face_in, 1e-3f)
+                                   : -dt / std::max(settings.face_out, 1e-3f)),
+        0.f, 1.f);
   float lv[direct::kNumExpressions];
   for (int i = 0; i < direct::kNumExpressions; ++i)
-    lv[i] = f.src[i] * (1 - f.speech_blend);
+    lv[i] = f.shown[i] * (1 - f.speech_blend);
   if (has_ex && speaking && pit->second.direct_frame >= 0) {  // log
     Playing& p = pit->second;
     for (uint32_t i = 0; i < ex.count; ++i)
@@ -1766,7 +1997,24 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene,
   int updates = ShowExpressions(f, lv, has_ex ? &ex : nullptr);
   // the speech pose is still easing out (AddDirect)
   const bool easing = f.transition.moving() && !f.transition.stale(now);
-  if (easing) updates |= kFaceChanged;
+  // CHIM's audio does not keep the engine's native lip animation ticking.
+  // Request the next update throughout every fade, including its final mesh
+  // reset, or a quiet face can freeze mid-blend then jump on its next update.
+  if (easing || following || previous_speech_blend != f.speech_blend ||
+      (!held && f.speech_blend > 0 && f.speech_blend < 1))
+    updates |= kFaceChanged | kKeepUpdating;
+  // The lines that left are told once the face is handed back: another
+  // line or utterance has it, or the engine's expressions are back.
+  if (!f.leaving.empty()) {
+    const uint64_t owner = in_line && ProviderLine(pit->second)
+                               ? pit->second.external->utterance_id
+                               : holder;
+    if (in_line || holder) {
+      ReleaseLeaving(f, owner);
+    } else if (f.speech_blend <= 0 && !easing) {
+      ReleaseLeaving(f);
+    }
+  }
   if (f.ownership_blend > 0 && f.ownership_blend < 1)
     updates |= kFaceChanged | kKeepUpdating;  // fading
   if (!owns_expressions && f.ownership_blend <= 0) {
@@ -1915,7 +2163,12 @@ void AddDirect(uint8_t* node, bool reset) {
     skse::ScopedFaceLock face_guard(Field<skse::SpinLock>(fg, skse::kFgLock));
     ScopedLock guard(lock);
     RestoreAndDropFace(fg);
-    playing.erase(fg);
+    auto line = playing.find(fg);
+    if (line != playing.end()) {
+      LineLeft(fg, line->second, BFA_kAborted);
+      playing.erase(line);
+      Count();
+    }
     fg[kFgDirty] = 1;
     return;
   }
@@ -2154,6 +2407,7 @@ void OnMessage(skse::SKSEMessage* m) {
         static_cast<unsigned long long>(world_epoch.load()));
   }
   PlayerSpeechMessage(m->type);
+  ProviderMessage(m->type);
   if (m->type == skse::kMessagePostLoad && DbvoInstalled() &&
       !native_speech_original) {
     if (NativeSpeechRuntimeSupported(skse::Runtime()))
@@ -2182,6 +2436,7 @@ void OnMessage(skse::SKSEMessage* m) {
 bool Load(const skse::SKSEInterface* iface) {
   skse::SetRuntime(iface->runtimeVersion);
   InitPlayerSpeech(iface);
+  InitProvider(iface);
   LoadIni();  // turns the log on when Logging=1
   skse::Report("Better Facial Animations %s, game runtime %08X", kVersion,
                iface->runtimeVersion);
@@ -2255,3 +2510,102 @@ extern "C" __declspec(dllexport) bool SKSEPlugin_Load(
 }
 
 BOOL WINAPI DllMain(HINSTANCE, DWORD, LPVOID) { return TRUE; }
+
+namespace bfa {
+// ---------------- the provider interface's plugin side ----------------
+uint32_t ResolveProviderActor(uint32_t form_id, ProviderActor& out) {
+  const Tune tune = SnapshotTune();
+  if (!tune.enabled) return BFA_kResultDisabled;
+  if (!ready || !net_loaded) return BFA_kResultModelNotLoaded;
+  if (loading_game) return BFA_kResultNoFaceGenHead;
+  const auto lookup = Engine<uint8_t* (*)(uint32_t), kIdLookupFormById>();
+  if (!lookup) return BFA_kResultUnsupportedRuntime;
+  uint8_t* actor = lookup(form_id);
+  if (!actor || actor[kFormType] != kFtActor) return BFA_kResultNoFaceGenHead;
+  const bool player = IsPlayer(actor);
+  if (player && !tune.player) return BFA_kResultPlayerDisabled;
+  uint8_t* base = Field<uint8_t*>(actor, kRefrBase);
+  uint8_t* race = Field<uint8_t*>(actor, kActorRace.Get());
+  if (!base || base[kFormType] != kFtNpc || !race ||
+      !(Field<uint32_t>(race, kRaceFlags) & 2))
+    return BFA_kResultNoFaceGenHead;
+  if (!RaceAllowed(actor)) return BFA_kResultRaceDisabled;
+  if (InScene(actor)) return BFA_kResultInScene;
+  const uint32_t handle = HandleOf(actor);
+  if (!handle) return BFA_kResultNoFaceGenHead;
+  if (!DialogueAllows(tune, handle, player)) return BFA_kResultNotInDialogue;
+  auto get_fg = reinterpret_cast<uint8_t* (*)(uint8_t*)>(
+      Field<void**>(actor, 0)[kVfGetFaceGenAnimationData]);
+  uint8_t* fg = get_fg(actor);
+  if (!fg) return BFA_kResultNoFaceGenHead;
+  out = ProviderActor{actor, handle, fg, IsFemale(actor), player};
+  ScopedLock guard(lock, ScopedLock::kShared);
+  auto face = faces.find(fg);
+  if (face != faces.end()) out.head_state = face->second.head_state;
+  return BFA_kResultOK;
+}
+
+uint32_t ProviderPrepare(const PlayerSpeechPtr& line,
+                         const ProviderActor& who) {
+  auto e = Request(line->stem, 0, 0, who.female, true, SnapshotTune(),
+                   who.handle, world_epoch, who.player, &line->emotion,
+                   line->audio);
+  if (!e) return BFA_kResultNotInDialogue;
+  ScopedLock guard(lock);
+  WatchEntry(*e, line);
+  return BFA_kResultOK;
+}
+
+uint32_t ProviderStart(const PlayerSpeechPtr& line) {
+  const uint64_t epoch = world_epoch;
+  ProviderActor who;
+  const uint32_t r = ResolveProviderActor(line->form_id, who);
+  if (r != BFA_kResultOK) return r;
+  return BeginSpeech(who.actor, line->stem, a2f::kNoSound, line->duration, 0,
+                     0, SnapshotTune(), epoch, line);
+}
+
+void ProviderDiscardUtterance(uint64_t utterance) {
+  char prefix[40];
+  snprintf(prefix, sizeof prefix, "provider:%016llx:",
+           static_cast<unsigned long long>(utterance));
+  const std::string key(prefix);
+  const auto of_utterance = [&](const std::string& cache_key) {
+    return cache_key.compare(0, key.size(), key) == 0;
+  };
+  ScopedLock guard(lock);
+  // A line shown on a face leaves it the regular way (stopped: LineClock),
+  // its animation kept for the hand-back fade; one not shown is failed so
+  // that it leaves at once.
+  std::vector<std::shared_ptr<Entry>> keep;
+  for (auto& [fg, p] : playing) {
+    if (!ProviderLine(p) || p.external->utterance_id != utterance) continue;
+    if (p.direct_frames != 0 && p.external->stopped) {
+      keep.push_back(p.entry);
+      continue;
+    }
+    p.direct_frame = -1;
+    p.entry->cancelled = true;
+    p.entry->line.reset();
+    p.entry->state = State::kFailed;
+  }
+  for (auto it = cache.begin(); it != cache.end();) {
+    if (!of_utterance(it->first)) {
+      ++it;
+      continue;
+    }
+    it->second->watchers.clear();
+    if (std::find(keep.begin(), keep.end(), it->second) == keep.end()) {
+      it->second->cancelled = true;
+      it->second->line.reset();
+      it->second->state = State::kFailed;
+    }
+    it = cache.erase(it);
+  }
+  queue.erase(std::remove_if(queue.begin(), queue.end(),
+                             [&](const Job& j) {
+                               return of_utterance(j.cache_key);
+                             }),
+              queue.end());
+}
+}  // namespace bfa

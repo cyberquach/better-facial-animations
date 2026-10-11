@@ -49,6 +49,9 @@ struct SKSEMessagingInterface {
   uint32_t interfaceVersion;
   bool (*RegisterListener)(uint32_t handle, const char* sender,
                            void (*cb)(SKSEMessage*));
+  // To every listener of the sender, or to the named receiver alone.
+  bool (*Dispatch)(uint32_t sender, uint32_t type, void* data,
+                   uint32_t dataLen, const char* receiver);
 };
 
 // SKSE GameThreads.h: no virtual destructor; Dispose owns deletion.
@@ -63,6 +66,7 @@ struct SKSETaskInterface {
 };
 constexpr uint32_t kInterfaceTask = 4;
 constexpr uint32_t kMessagePostLoad = 0;
+constexpr uint32_t kMessagePostPostLoad = 1;
 constexpr uint32_t kMessagePreLoadGame = 2;
 constexpr uint32_t kMessagePostLoadGame = 3;
 constexpr uint32_t kMessageNewGame = 7;

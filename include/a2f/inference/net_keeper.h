@@ -63,7 +63,7 @@ std::unique_ptr<Net> CreateGpuNet(
 // hooks' device only works through their wrapper: DLSS 5 bridges).
 struct Device {
   bool wrapper = false;  // sessions run on the wrapper
-  bool fixed = false;    // by the ini: UseDeviceWrapper=1, never switched
+  bool fixed = false;    // forced wrapper/no-wrapper mode, never switched
   std::string error;     // what the device inside failed with, once switched
 };
 // The device was removed, hung or reset or the driver failed.

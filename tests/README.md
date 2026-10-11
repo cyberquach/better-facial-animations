@@ -34,7 +34,11 @@ including Steam 1.6.353 and GOG 1.6.659.
 late-start sync, player-target/scene/runtime gating, restoration and hook coexistence.
 `independent-device` and `independent-routing` check strict factory isolation, failure handling and both model routes without GPU hardware. They do not establish driver or graphics-hook compatibility.
 Settings persistence is covered by `sex-settings`; eye-mesh calibration still needs
-in-game review.
+in-game review. `provider-api` runs the provider interface (`include/a2f/speech/BFA_API.h`)
+over the production plugin with mocked engine lookups and a synthetic generation;
+covers deferred admission, animation-start events, playback clocks, per-line emotion,
+reply-scoped queue/cache cleanup, late callback cancellation, capacity, reset and expiry.
+The simplified event ABI needs in-game validation.
 
 `assets` check that a locally extracted plugin owns the FACT records BFA looks
 up, by local id and editor id. `coverage_gaps` names what is not tested.

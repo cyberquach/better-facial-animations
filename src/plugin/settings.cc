@@ -355,10 +355,17 @@ void LoadIni() {
   config.cache_lines = std::max(8, static_cast<int>(GetPrivateProfileIntA(
                                        "General", "CacheLines", 300, kIni)));
   config.log_lines = GetPrivateProfileIntA("Debug", "LogLines", 400, kIni);
-  config.independent_device =
-      GetPrivateProfileIntA("General", "IndependentGpuDevice", 0, kIni) != 0;
-  config.use_device_wrapper =
-      GetPrivateProfileIntA("Debug", "UseDeviceWrapper", 0, kIni) != 0;
+  // The old opt-ins stand in for a missing GpuDevice; old zeros mean auto.
+  int legacy = 0;
+  if (GetPrivateProfileIntA("General", "IndependentGpuDevice", 0, kIni))
+    legacy = 3;
+  else if (GetPrivateProfileIntA("Debug", "UseDeviceWrapper", 0, kIni))
+    legacy = 1;
+  config.gpu_device =
+      GetPrivateProfileIntA("General", "GpuDevice", legacy, kIni);
+  if (config.gpu_device < 0 || config.gpu_device > 3) config.gpu_device = 0;
+  config.independent_device = config.gpu_device == 0 || config.gpu_device == 3;
+  config.use_device_wrapper = config.gpu_device == 1;
   // UseOldModel was Network=2 (3: v3.0) in earlier 3.0 builds, and ForceCPU
   // GPU=0
   tune.old_model = GetPrivateProfileIntA("General", "Network", 3, kIni) == 2;
