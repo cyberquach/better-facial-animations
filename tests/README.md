@@ -114,9 +114,6 @@ for comparison with the training frontend. `audio-fallback` runs a performance
 line through `Process`, including a model switch during a line. Model selection/migration/persistence is covered by
 `sex_settings_test`. These are offline tests, not in-game or Steam Deck certification.
 
-`face-update` checks zero-time pose refreshes, native hook chaining, nested and
-concurrent update contexts, and unchanged timing for normal facial updates.
-
 `alfiq-fallback` checks owner-based race defaults, opt-in, persistence, reset,
 speech and conversation admission, and normal Khajiit controls across SE/AE/VR layouts.
 `alfiq-23` checks the three owned RACE records in a local Alfiq 2.3 plugin;

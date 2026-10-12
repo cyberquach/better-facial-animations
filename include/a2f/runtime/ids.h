@@ -25,7 +25,6 @@ constexpr skse::Rel kIdStreamCtor{69636, 71014, 0xCBC490};
 constexpr skse::Rel kIdStreamDtor{69638, 71016, 0xCBC770};
 // BSFaceGenAnimationData::Update(fg, dt, bool)
 constexpr skse::Rel kIdFaceAnimUpdate{25983, 26598, 0x3D38B0};
-constexpr skse::Rel kIdFaceNodeVtable{252410, 200333, 0x1678620};
 // BSFaceGenNiNode: update keyframes, apply morphs
 constexpr skse::Rel kFaceCallers[] = {{26417, 26998, 0x3E8DC0}};
 // BSFaceGenNiNode::ApplyMorphs(node, force): reset to base + morphs, run by
@@ -73,7 +72,7 @@ constexpr skse::Rel kIds[] = {
     kIdMorphData,        kIdApplyMorph,           kIdLockDynamic,
     kIdUnlockDynamic,    kIdUpdateDynamic,        kIdSoundIsPlaying,
     kIdGenerateFromPath, kIdDataHandler,          kIdMenuTopicManager,
-    kIdLookupReference, kIdCreateHandle, kIdFaceNodeVtable,
+    kIdLookupReference, kIdCreateHandle,
 };
 // And those some runtime lacks.
 constexpr skse::Rel kOptionalIds[] = {kIdPlayer, kIdHeadtrackTarget,
