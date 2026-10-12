@@ -15,6 +15,12 @@ namespace bfa {
 constexpr skse::Rel kNodeChildren{0x118, 0x118, 0x140};
 constexpr skse::Rel kNodeNumChildren{0x122, 0x122, 0x14A};
 constexpr skse::Rel kNodeFg{0x150, 0x150, 0x178};
+constexpr skse::Rel kVfUpdateDownwardPass{0x2C, 0x2C, 0x2D};
+struct NiUpdateData {
+  float time;
+  uint32_t flags;
+};
+static_assert(sizeof(NiUpdateData) == 8);
 // u16, bit0 = reset needed
 constexpr skse::Rel kNodeFlags{0x160, 0x160, 0x188};
 constexpr uint32_t kObjName = 0x10;
