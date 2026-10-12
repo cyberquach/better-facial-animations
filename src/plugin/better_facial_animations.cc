@@ -26,7 +26,6 @@
 #include "a2f/runtime/call_sites.h"
 #include "a2f/animation/direct.h"
 #include "a2f/runtime/engine.h"
-#include "a2f/runtime/face_update.h"
 #include "a2f/animation/gaze.h"
 #include "a2f/animation/head_cache.h"
 #include "a2f/runtime/ids.h"
@@ -2028,30 +2027,6 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene,
   return updates;
 }
 
-using FaceNodeUpdateFn = void (*)(uint8_t*, NiUpdateData*, uint32_t);
-FaceNodeUpdateFn face_node_update_original = nullptr;
-
-void FaceNodeUpdateHook(uint8_t* node, NiUpdateData* data, uint32_t flags) {
-  const ScopedFaceUpdate update(Field<uint8_t*>(node, kNodeFg.Get()),
-                                data->time);
-  face_node_update_original(node, data, flags);
-}
-
-bool InstallFaceNodeUpdateHook() {
-  const auto address = Addr(kIdFaceNodeVtable);
-  if (!address) return false;
-  auto* slot = reinterpret_cast<FaceNodeUpdateFn*>(address) +
-               kVfUpdateDownwardPass.Get();
-  DWORD protection;
-  if (!VirtualProtect(slot, sizeof(*slot), PAGE_READWRITE, &protection))
-    return false;
-  face_node_update_original = *slot;
-  *slot = FaceNodeUpdateHook;
-  DWORD ignored;
-  VirtualProtect(slot, sizeof(*slot), protection, &ignored);
-  return true;
-}
-
 // Runs where the head's morphs are applied (ID 26998), around the engine's
 // recompute of the face keyframes (ID 26598) -- writing earlier would be
 // overwritten. Returns "changed" so the morphs are re-applied.
@@ -2059,9 +2034,6 @@ __attribute__((noinline)) bool AnimUpdateHook(uint8_t* fg, float dt,
                                               uint64_t flag) {
   auto orig =
       SiteOrig<AnimUpdateFn>(__builtin_return_address(0), kIdFaceAnimUpdate);
-  // Skyrim uses the global frame delta even for zero-time pose refreshes
-  // (for example Fluid Motion's second pass). Still recompute the keyframes.
-  dt = ScopedFaceUpdate::Delta(fg, dt);
   const uint64_t epoch = world_epoch;
   if (fg && num_faces && ready && CurrentWorld(epoch))
     RestoreFaceKeyframes(fg, epoch);
@@ -2485,7 +2457,6 @@ bool Load(const skse::SKSEInterface* iface) {
   if (!HookCalls("face", kIdFaceAnimUpdate, kFaceCallers,
                  reinterpret_cast<void*>(&AnimUpdateHook)))
     return false;
-  if (!InstallFaceNodeUpdateHook()) return false;
   if (!Addr(kIdMorphData) || !Addr(kIdApplyMorph) || !Addr(kIdLockDynamic) ||
       !Addr(kIdUnlockDynamic) || !Addr(kIdUpdateDynamic) ||
       !HookCalls("morphs", kIdApplyMorphs, kMorphCallers,

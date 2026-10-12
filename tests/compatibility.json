@@ -2,23 +2,6 @@
   "schema": 1,
   "contracts": [
     {
-      "id": "face-update",
-      "test": "face_update_test",
-      "sources": [
-        "tests/face_update_test.cc"
-      ],
-      "plugin_objects": true,
-      "link": [
-        "-Wl,--wrap=_ZN4skse4AddrEy"
-      ],
-      "covers": [
-        "zero-time pose refreshes recompute without advancing native facial time",
-        "normal, repeated, scaled, slow and paused updates retain their supplied delta",
-        "nested and concurrent face contexts, world reset and hook chaining",
-        "SE/AE/VR node layouts and protected virtual-slot installation"
-      ]
-    },
-    {
       "id": "model-switch",
       "test": "model_switch_test",
       "sources": [
