@@ -1396,6 +1396,23 @@ bool BuildHead(const Mark& mk, const std::vector<ShapeIn>& shapes,
     }
     out.shapes.push_back(std::move(hs));
   }
+  // Shared oral borders expose lower-lip/teeth separation. Preserve the
+  // resting offset to the jaw; only excess downward speech is constrained.
+  std::vector<float> border_weight(nv, 0.f);
+  bool lower_border = false;
+  for (const auto& shape : out.shapes)
+    for (const auto& seam : shape.seam)
+      if (lab[seam.skin_vertex] == kLowerLip) {
+        border_weight[seam.skin_vertex] = 1.f;
+        lower_border = true;
+      }
+  if (lower_border)
+    for (uint32_t v = 0; v < nv; ++v) {
+      const float weight = std::max(border_weight[v], out.lip_w[v * 2 + 1]);
+      if (weight > 0)
+        out.lip_jaw.push_back(
+            {v, {verts[v * 3], verts[v * 3 + 1], verts[v * 3 + 2]}, weight});
+    }
   why.clear();
   return true;
 }
@@ -1416,7 +1433,7 @@ bool Evaluate(const Head& h, const float* coefficients, const float* scales,
               const float* expressions, const float* phonemes,
               TongueMode tongue_mode, std::vector<std::vector<float>>& out,
               float upper_lip, float lower_lip, float smile_eyes,
-              float speech_joy) {
+              float speech_joy, bool limit_lower_lip) {
   // Keep the authored tongue default at 1 in the user settings.
   constexpr float kAuthoredTongueGain = 1.5f;
   // The authored cues' total: overlapping phonemes share it instead of
@@ -1459,6 +1476,29 @@ bool Evaluate(const Head& h, const float* coefficients, const float* scales,
       for (int j = 0; j < 3; ++j) skin[v * 3 + j] += w * happy[v * 3 + j];
     }
   }
+  // the jaw: the rigid motion that takes its points at rest to where the
+  // network puts them
+  const float* tongue = speaking ? c + nk : nullptr;
+  float jr[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+  V3 jt{0, 0, 0};
+  if (speaking) {
+    V3 rest[kNumJawPoints], now[kNumJawPoints];
+    for (int i = 0; i < kNumJawPoints; ++i) {
+      rest[i] = At(&h.jaw_points[i * 3]);
+      now[i] =
+          rest[i] + Rotate(h.jaw_motion, At(&tongue[a2f::kNumTongue + i * 3])) *
+                        scales[kJaw];
+    }
+    float one;
+    Similarity(rest, now, kNumJawPoints, one, jr, jt, true);
+  }
+  if (speaking && limit_lower_lip)
+    for (const auto& lip : h.lip_jaw) {
+      const V3 p = At(lip.pos);
+      const float jaw_z = (Rotate(jr, p) + jt - p).z;
+      float& z = skin[lip.vertex * 3 + 2];
+      z += lip.weight * std::max(0.f, jaw_z - z);
+    }
   // Copy only speech at shared oral borders. Native expressions still use
   // each part's authored morph, including during expression-only playback.
   if (speaking)
@@ -1476,22 +1516,6 @@ bool Evaluate(const Head& h, const float* coefficients, const float* scales,
         sv *= 1 + smile_eyes * h.region_w[v * kNumSkinRegions + kEyes];
       for (int j = 0; j < 3; ++j) skin[v * 3 + j] += sv * d[v * 3 + j];
     }
-  }
-  // the jaw: the rigid motion that takes its points at rest to where the
-  // network puts them
-  const float* tongue = speaking ? c + nk : nullptr;
-  float jr[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
-  V3 jt{0, 0, 0};
-  if (speaking) {
-    V3 rest[kNumJawPoints], now[kNumJawPoints];
-    for (int i = 0; i < kNumJawPoints; ++i) {
-      rest[i] = At(&h.jaw_points[i * 3]);
-      now[i] =
-          rest[i] + Rotate(h.jaw_motion, At(&tongue[a2f::kNumTongue + i * 3])) *
-                        scales[kJaw];
-    }
-    float one;
-    Similarity(rest, now, kNumJawPoints, one, jr, jt, true);
   }
   // Use every authored phoneme on the tongue mask. These are visual tuning
   // defaults, not an anatomical reconstruction from the LIP track.

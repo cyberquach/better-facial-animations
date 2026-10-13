@@ -158,6 +158,13 @@ struct Head {
   std::vector<float> region_w;  // nv x kNumSkinRegions
   // Upper/lower lip influence per skin vertex; fades out at the lip box edge.
   std::vector<float> lip_w;  // nv x 2
+  // Lower lips on heads with shared oral borders: cap downward speech at
+  // the rigid jaw, fading the correction into the surrounding skin.
+  struct LipJaw {
+    uint32_t vertex;
+    float pos[3], weight;
+  };
+  std::vector<LipJaw> lip_jaw;
   // Mark's jaw points at rest on this head, and the matrix that takes a
   // point's network output (less rest) to its displacement here
   float jaw_points[a2f::kNumJaw] = {}, jaw_motion[9] = {};
@@ -225,16 +232,18 @@ constexpr float kLowerLipCalibration = 1.2f;
 // Without weights the tongue only follows the jaw. TongueMode::kModel
 // restores the pre-feature mapping and network tongue scale. Lip multipliers
 // (times k{Upper,Lower}LipCalibration) affect speech skin motion only;
-// followers and shared oral borders inherit it, interior jaw/tongue and
-// engine expressions retain their
-// existing controls. Smile eyes adds the authored MoodHappy eye-region motion
-// during speech (speech_joy is the faded, capped line mean joy) and boosts
-// the eye portion of native happy expressions. Zero preserves the old pose.
+// followers and shared oral borders inherit it. Shared lower oral borders
+// limit downward speech against the rigid jaw only when limit_lower_lip
+// is enabled by the caller for Khajiit/Argonian actors. Interior jaw/tongue and
+// engine expressions retain their existing controls. Smile eyes adds the
+// authored MoodHappy eye-region motion during speech (speech_joy is the faded,
+// capped line mean joy) and boosts the eye portion of native happy expressions.
+// Zero preserves the old pose.
 bool Evaluate(const Head& head, const float* coefficients, const float* scales,
               const float* expressions, const float* phonemes,
               TongueMode tongue_mode, std::vector<std::vector<float>>& out,
               float upper_lip = 1, float lower_lip = 1, float smile_eyes = 0,
-              float speech_joy = 0);
+              float speech_joy = 0, bool limit_lower_lip = false);
 
 // The line's coefficients (head.k + kNumMouthCoef) at a fractional frame (of
 // the line's own rate), as
