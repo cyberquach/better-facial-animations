@@ -11,3 +11,10 @@ dbvo-contracts:
     - python3 -m unittest discover -s tests -p test_dbvo_compatibility.py -v
     - x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -static -Iinclude src/speech/native_speech_hook.cc tests/native_speech_hook_test.cc -o /tmp/dbvo-hook.exe
     - WINEDEBUG=-all WINEPREFIX=/tmp/bfa-wine timeout 90 /usr/lib/wine/wine64 /tmp/dbvo-hook.exe
+
+# No third-party assets needed: protect the shared capture/playback filter.
+hair-filter-contracts:
+  extends: dbvo-contracts
+  script:
+    - x86_64-w64-mingw32-g++ -std=c++17 -O2 -Wall -static -Iinclude src/animation/direct.cc tests/head_parts_test.cc -o /tmp/hair-filter.exe
+    - WINEDEBUG=-all WINEPREFIX=/tmp/bfa-wine timeout 90 /usr/lib/wine/wine64 /tmp/hair-filter.exe

@@ -433,9 +433,103 @@ void TestPerformance(a2f::NetKeeper& keeper, const bfa::Tune& t) {
   Count();
 }
 
+void TestSpeechTiming() {
+  using namespace bfa;
+  std::array<uint8_t, 0x20> resource{}, replacement{};
+  Field<uint32_t>(resource.data(), 0x0C) = 0x30000000;
+  Field<uint32_t>(replacement.data(), 0x0C) = 0x30000000;
+  Field<uint32_t>(replacement.data(), 0) = 1;
+  Playing p;
+  bool lip;
+  const char* why;
+  auto reset = [&] {
+    Field<uint8_t*>(fg, skse::kFgDialogue) = resource.data();
+    p = Playing();
+    p.entry = std::make_shared<Entry>();
+    p.entry->state = State::kReady;
+    auto line = std::make_shared<a2f::Line>();
+    line->frames = 360;
+    line->fps = 60;
+    p.entry->line = line;
+    p.voice = {12, 100, 6};
+    p.lip_key = skse::KeyOf(*skse::ActiveLine(fg));
+  };
+  auto sample = [&](double elapsed, float timer, uint32_t sound = 12,
+                    int state = 1) {
+    Field<float>(fg, skse::kFgPhon1Timer) = timer;
+    return LineClock(fg, p, 100 + elapsed, lip, why, sound, state);
+  };
+  for (bool female : {false, true}) {
+    reset();
+    p.female = female;
+    CHECK(sample(0, 0) == 0 && !why);
+    float last = 0;
+    for (int frame = 1; frame <= 180; ++frame) {
+      const float t = frame / 60.f;
+      const float shown = sample(t, 2 * t);
+      CHECK(!why && shown >= last);
+      if (t >= 1) CHECK(std::fabs(shown - t) < 0.02f);
+      last = shown;
+    }
+    CHECK(p.speech_clock.corrected);
+    Field<uint8_t*>(fg, skse::kFgDialogue) = nullptr;
+    for (int frame = 181; frame <= 330; ++frame) {
+      const float t = frame / 60.f;
+      CHECK(std::fabs(sample(t, 6) - t) < 0.02f && !why);
+    }
+    sample(5.6, 6, 13);
+    CHECK(why);  // another sound must not sustain the old face
+  }
+  // Transient sound observations must not switch back to the accelerated
+  // native timer, or bypass the stop grace after the lip resource expires.
+  reset();
+  sample(0, 0);
+  for (int frame = 1; frame <= 120; ++frame) sample(frame / 60., frame / 30.f);
+  CHECK(p.speech_clock.corrected && !why);
+  CHECK(std::fabs(sample(121 / 60., 121 / 30.f, 12, 0) - 121 / 60.f) < .02f);
+  CHECK(!why);
+  for (int frame = 122; frame <= 180; ++frame)
+    CHECK(std::fabs(sample(frame / 60., frame / 30.f) - frame / 60.f) < .02f);
+  Field<uint8_t*>(fg, skse::kFgDialogue) = nullptr;
+  CHECK(std::fabs(sample(181 / 60., 6, 12, 0) - 181 / 60.f) < .02f);
+  CHECK(!why);
+  CHECK(std::fabs(sample(182 / 60., 6) - 182 / 60.f) < .02f && !why);
+  sample(3.1, 6, 12, 0);
+  CHECK(!why);
+  sample(3.4, 6, 12, 0);
+  CHECK(why);  // a sustained stop still ends the corrected line
+  reset();
+  CHECK(sample(0, 0) == 0);
+  for (int tick = 1; tick <= 600; ++tick) {
+    const float timer = (tick / 2) / 60.f;
+    CHECK(std::fabs(sample(tick / 120., timer) - timer) < 1e-4f);
+    CHECK(!why && !p.speech_clock.corrected);
+  }
+  CHECK(sample(7, 5) == 5 && !why);
+  CHECK(sample(8, 6) == 6 && !why);
+  reset();
+  CHECK(sample(0, 0) == 0);
+  CHECK(sample(4, 5) == 5 && !p.speech_clock.corrected);
+  Field<uint8_t*>(fg, skse::kFgDialogue) = replacement.data();
+  sample(4.1, 5);
+  CHECK(why);  // a different native lip resource still supersedes the line
+  reset();
+  sample(0, 0);
+  sample(1, 1, 12, 0);
+  CHECK(!why);  // one stopped frame is not the end of a lip-synced line
+  sample(1.05, 1.05);
+  CHECK(!why);
+  sample(1.5, 1.5, 12, 0);
+  CHECK(!why);  // the stopped interval restarts after the sound played again
+  sample(1.8, 1.8, 12, 0);
+  CHECK(why);  // a sound stopped this long wins over its lip resource
+  Field<uint8_t*>(fg, skse::kFgDialogue) = nullptr;
+}
+
 void TestPlayback(uint32_t runtime, a2f::NetKeeper& keeper) {
   using namespace bfa;
   skse::SetRuntime(runtime);
+  TestSpeechTiming();
   ResetPlayback(false);
   cache.clear();
   queue.clear();
@@ -484,7 +578,7 @@ void TestPlayback(uint32_t runtime, a2f::NetKeeper& keeper) {
   CHECK(!FailedSpeech(fg) && queue.size() == 2);
   TestPendingMapping(t, keeper, phon);
   TestPerformance(keeper, t);
-  // A matched lip resource keeps vanilla ownership, then its removal ends it.
+  // An exhausted lip resource cannot end a voice that is still playing.
   BeginSpeech(actor, stem, 12, 2, 0, 0, t, world_epoch);
   std::array<uint8_t, 0x20> lip_resource{};
   Field<uint32_t>(lip_resource.data(), 0x0C) = 0x30000000;
@@ -493,6 +587,12 @@ void TestPlayback(uint32_t runtime, a2f::NetKeeper& keeper) {
   CHECK(playing.at(fg).lip_seen);
   Field<uint8_t*>(fg, skse::kFgDialogue) = nullptr;
   Apply(fg, t, false, actor, 42, 12, 1);
+  CHECK(playing.count(fg));
+  playing.at(fg).voice.requested_at -= 1;
+  Apply(fg, t, false, actor, 42, 12, 0);
+  CHECK(playing.count(fg));  // retain the face during a transient stopped report
+  playing.at(fg).voice.stopped_at -= a2f::VoiceStart::kLipStop + .01;
+  Apply(fg, t, false, actor, 42, 12, 0);
   CHECK(playing.empty());
   BeginSpeech(actor, stem, 12, 2, 0, 0, t, world_epoch);
   CHECK(playing.count(fg));

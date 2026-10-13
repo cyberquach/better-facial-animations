@@ -41,7 +41,7 @@ constexpr int kNumOut3 = 2 * kLatent3 + kJawEyes3;
 constexpr int kState3 = 2 * 2 * 256;
 constexpr int kNumIdentity3 = 3;  // 0 Claire, 1 James, 2 Mark
 
-// The performance network (Thin96, distilled from v3.0): log-mel frames at
+// The performance network (Thin120, distilled from v3.0): log-mel frames at
 // 30 fps, run in windows of kPerformanceWindowFrames that advance by
 // kPerformanceHopFrames, with kPerformanceContextFrames of context on each
 // side; each frame yields kPerformanceChannels of the v3 direct mapping.
@@ -167,7 +167,7 @@ enum EmotionChannel {
   kSadness
 };
 using EmotionCaps = std::array<float, kNumMod>;
-constexpr EmotionCaps kDefaultEmotionCaps = {2, 2, 2, 2, 2, 2, 2, 2, 2, 2};
+constexpr EmotionCaps kDefaultEmotionCaps = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
 // type kExplicitEmotion: channels are the game's levels (0..1 each) instead
 // of the Skyrim emotion's mapping, for lines whose emotion a provider gives
 // per channel (BFA_API.h).

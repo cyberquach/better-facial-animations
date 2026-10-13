@@ -32,7 +32,7 @@ including Steam 1.6.353 and GOG 1.6.659.
 
 `conversation-gaze` checks v2/v3 eye-track alignment, additive look controls,
 late-start sync, player-target/scene/runtime gating, restoration and hook coexistence.
-`independent-device` and `independent-routing` check strict factory isolation, failure handling and both model routes without GPU hardware. They do not establish driver or graphics-hook compatibility.
+`independent-device` and `independent-routing` check strict factory isolation, retained GPU context ownership across model/CPU transitions, latched device failures and both model routes without GPU hardware. They do not establish driver or graphics-hook compatibility.
 Settings persistence is covered by `sex-settings`; eye-mesh calibration still needs
 in-game review. `provider-api` runs the provider interface (`include/a2f/speech/BFA_API.h`)
 over the production plugin with mocked engine lookups and a synthetic generation;
@@ -40,8 +40,13 @@ covers deferred admission, animation-start events, playback clocks, per-line emo
 reply-scoped queue/cache cleanup, late callback cancellation, capacity, reset and expiry.
 The simplified event ABI needs in-game validation.
 
-`assets` check that a locally extracted plugin owns the FACT records BFA looks
-up, by local id and editor id. `coverage_gaps` names what is not tested.
+`assets` check local plugin record identities and pinned geometry/filter corpora.
+`coverage_gaps` names what is not tested.
+
+`voice-timing` and `audio-fallback` cover accelerated native lip clocks,
+repeated samples, pause gaps, 1.25x playback, and an exhausted lip resource
+while its voice continues. The fallback estimates speech time; it does not
+measure the audio device cursor or certify a particular animation replacer.
 
 ## Fixtures
 
@@ -70,6 +75,31 @@ wine64 build/compatibility/<run>/efa_test.exe /path/MaleHead.tri /path/FemaleHea
 
 This checks both editions, each alone, modified/swapped files and failed reads.
 Missing supplied files return 2. Do not commit the TRI files.
+
+For changes to head-part classification, hair exclusion or face-shape traversal,
+run `./build.sh compat` and the `hair-assets` regression gate before merging or
+releasing those changes.
+`head-parts` runs synthetic oral-extra inheritance, hair-extra graph, shader, alias and facial-hair controls
+on SE/AE/VR layouts in the normal suite and CI. `hair-assets` replays the reviewed
+installed-source corpus through the current production traversal: all 18,582
+scalp-hair occurrences must remain excluded and all 12,314 beard/brow/lash
+controls admitted. It includes the KS Scarlet alias and Erin SMP support cases.
+
+Add `"hair-assets": {"path": "/path/to/hair-corpus"}` to the fixture map and run:
+
+```sh
+python3 tools/compatibility.py --tier assets --case hair-assets --fixtures fixtures.json
+```
+
+The local corpus contains `queries.bin` (HDPT graphs and mesh names/shader flags)
+and independently reviewed `expectations.json`; hashes and counts are pinned in
+[hair_assets.json](hair_assets.json). Missing files are blocked; changed hashes
+or admission results fail. Keep third-party derived fixtures outside Git. To
+refresh the corpus after asset changes, repeat the installed-source audit, review
+hair versus facial-hair labels and parser exclusions, then update the pins; never
+regenerate expected admissions from the filter being tested. Source occurrences
+include inactive/overridden variants and valid synthetic FOD data. This gate does
+not establish runtime asset precedence, SMP behavior or in-game shadow rendering.
 
 ## Adding a case
 
@@ -113,6 +143,16 @@ count, silence floor, tone placement, cancellation); `performance_features_test`
 for comparison with the training frontend. `audio-fallback` runs a performance
 line through `Process`, including a model switch during a line. Model selection/migration/persistence is covered by
 `sex_settings_test`. These are offline tests, not in-game or Steam Deck certification.
+
+`face-update` checks zero-time pose refreshes, native hook chaining, nested and
+concurrent update contexts, and unchanged timing for normal facial updates.
+
+`npc-blacklist` checks override migration, sparse profile inheritance, persistence,
+emotion cache isolation, full/light identities across load-order changes and missing
+plugins, removal, provider admission, and live speech/expression/morph handoff on
+SE/AE/VR layouts. `npc-menu` checks keyboard binding, menu/text guards, target
+lifetime, editing/reopening/resetting overrides and stale tasks
+with a fake framework/dispatcher. These do not establish in-game UI compatibility.
 
 `alfiq-fallback` checks owner-based race defaults, opt-in, persistence, reset,
 speech and conversation admission, and normal Khajiit controls across SE/AE/VR layouts.

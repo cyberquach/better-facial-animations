@@ -454,6 +454,13 @@ int main() {
     return false;
   };
   const std::string removed = kRemoved;
+  const auto retained_failure = DiagnoseNet(true,
+      "independent context: [DirectML removed reason 887A0020]; "
+      "GPU disabled until restart", 3, roomy);
+  Expect(any(retained_failure, "CPU fallback") &&
+             any(retained_failure, "Restart the game") &&
+             !any(retained_failure, "each on a new device"),
+         "retained failed context requires restart, not device recreation");
   Expect(any(DiagnoseNet(true, kOom, 1, roomy), "restart the game"),
          "out of memory: advised to free VRAM and restart");
   Expect(Has(first(DiagnoseNet(true, kOom, 1, roomy)), "no VRAM left"),

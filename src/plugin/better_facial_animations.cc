@@ -23,24 +23,25 @@
 #include <utility>
 #include <vector>
 
-#include "a2f/runtime/call_sites.h"
 #include "a2f/animation/direct.h"
-#include "a2f/runtime/engine.h"
 #include "a2f/animation/gaze.h"
 #include "a2f/animation/head_cache.h"
-#include "a2f/runtime/ids.h"
+#include "a2f/animation/pose.h"
 #include "a2f/inference/live_core.h"
-#include "a2f/plugin/menu.h"
 #include "a2f/inference/net_keeper.h"
 #include "a2f/inference/ort_net.h"
-#include "a2f/speech/BFA_API.h"
-#include "a2f/speech/player_speech.h"
-#include "a2f/speech/native_speech_hook.h"
-#include "a2f/speech/provider.h"
+#include "a2f/plugin/menu.h"
 #include "a2f/plugin/plugin.h"
-#include "a2f/animation/pose.h"
+#include "a2f/runtime/call_sites.h"
+#include "a2f/runtime/engine.h"
+#include "a2f/runtime/face_update.h"
+#include "a2f/runtime/ids.h"
 #include "a2f/runtime/scoped_lock.h"
 #include "a2f/runtime/skse.h"
+#include "a2f/speech/BFA_API.h"
+#include "a2f/speech/native_speech_hook.h"
+#include "a2f/speech/player_speech.h"
+#include "a2f/speech/provider.h"
 #include "a2f/speech/voice_sync.h"
 
 // From VERSION, with a feature-build suffix for releases, via build.sh.
@@ -167,6 +168,7 @@ struct Playing {
   PlayerSpeechPtr external;
   a2f::VoiceStart voice;
   a2f::LipClock lip_clock;
+  a2f::SpeechClock speech_clock;
   float ready_at = -1;
   bool lip_seen = false, logged = false;
   // Direct: the frame (fractional, -1 none) for the morph hook, and whether
@@ -397,12 +399,6 @@ double Now() {
   return static_cast<double>(c.QuadPart) / f.QuadPart;
 }
 
-std::string Lower(const char* s) {
-  std::string n = s;
-  for (auto& c : n) c = static_cast<char>(tolower(static_cast<uint8_t>(c)));
-  return n;
-}
-
 Stats SnapshotStats(size_t& cached, size_t& queued) {
   ScopedLock guard(lock, ScopedLock::kShared);
   Stats st = stats;
@@ -467,7 +463,7 @@ bool SpeakerOk(uint8_t* ref) {
   if (!base || base[kFormType] != kFtNpc || !race ||
       !(Field<uint32_t>(race, kRaceFlags) & 2))
     return false;
-  return RaceAllowed(ref);
+  return RaceAllowed(ref) && NpcAllowed(ref);
 }
 
 bool IsPlayer(uint8_t* actor) {
@@ -614,9 +610,10 @@ std::shared_ptr<Entry> Request(
     const std::string& stem, int emo, int val, bool female, bool urgent,
     const Tune& tune, uint32_t speaker, uint64_t epoch, bool player = false,
     const a2f::Emotion* given = nullptr,
-    std::shared_ptr<const std::vector<uint8_t>> audio = {}) {
+    std::shared_ptr<const std::vector<uint8_t>> audio = {},
+    uint8_t* actor = nullptr) {
   std::string key = Lower(stem.c_str());
-  const FaceTune& settings = tune.ForActor(female, player);
+  const FaceTune settings = NpcFaceTune(tune, actor, female, player);
   const bool channels = given && given->type == a2f::kExplicitEmotion;
   if (given && !channels) {
     emo = given->type;
@@ -1282,6 +1279,7 @@ uint32_t BeginSpeech(uint8_t* actor, const std::string& stem,
                      PlayerSpeechPtr external = {}) {
   if (!CurrentWorld(epoch)) return BFA_kResultNoFaceGenHead;
   if (!RaceAllowed(actor)) return BFA_kResultRaceDisabled;
+  if (!NpcAllowed(actor)) return BFA_kResultDisabled;
   if (!DialogueAllows(tune, HandleOf(actor), IsPlayer(actor)))
     return BFA_kResultNotInDialogue;
   const uint32_t form_id = FormIdOf(actor);
@@ -1338,9 +1336,9 @@ uint32_t BeginSpeech(uint8_t* actor, const std::string& stem,
   }
   const bool female = IsFemale(actor);
   const a2f::Emotion* given = provider ? &external->emotion : nullptr;
-  auto e = Request(stem, emo_type, emo_value, female, true, tune, handle,
-                   epoch, IsPlayer(actor), given,
-                   provider ? external->audio : nullptr);
+  auto e = Request(stem, emo_type, emo_value, female, true, tune, handle, epoch,
+                   IsPlayer(actor), given, provider ? external->audio : nullptr,
+                   actor);
   if (!e) return BFA_kResultNotInDialogue;
   Playing p;
   p.entry = e;
@@ -1476,7 +1474,7 @@ __attribute__((noinline)) uint8_t* ResponseHook(uint8_t* self, void* topic,
     const int emo = static_cast<int>(Field<uint32_t>(r, kRespEmoType));
     Request(stem, emo, static_cast<int>(Field<uint32_t>(r, kRespEmoValue)),
             IsFemale(speaker), false, tune, HandleOf(speaker), epoch,
-            IsPlayer(speaker));
+            IsPlayer(speaker), nullptr, {}, speaker);
   }
   return r;
 }
@@ -1566,16 +1564,31 @@ float LineClock(uint8_t* fg, Playing& p, double now, bool& lip,
   // A provider's own line (BeginSpeech) has no sound to follow: it ends with
   // the provider's notification or audio length, never the delay after it.
   const bool followed = !p.external || p.voice.sound_id != a2f::kNoSound;
+  const bool native_voice = !p.external && p.voice.sound_id != a2f::kNoSound;
+  const bool audible = native_voice && p.voice.seen && voice_state == 1;
+  // A stopped observation of the same sound may be transient. Once the
+  // speech clock is established, retain its phase until the stop grace ends.
+  // A different sound cannot sustain an expired lip resource.
+  const bool same_voice =
+      native_voice && p.voice.seen && sound == p.voice.sound_id;
   lip = act && skse::KeyOf(*act) == p.lip_key;
   if (lip) {  // engine lip clock
     t = p.lip_clock.Update(Field<float>(fg, skse::kFgPhon1Timer), now, p.voice,
                            hold, p.direct_frames != 0);
+    if (audible || (same_voice && p.speech_clock.initialized))
+      t = p.speech_clock.Update(t, now);
     p.lip_seen = true;
   } else if (p.lip_seen) {
-    why = "the engine ended or replaced its lip line";
+    if (!act && same_voice && p.speech_clock.initialized)
+      t = p.speech_clock.Continue(now);
+    else
+      why = "the engine ended or replaced its lip line";
   } else if (followed && p.voice.Ended(voice_state, now)) {
     why = "the voice ended";  // no .lip: wall clock while the voice plays
   }
+  if (native_voice &&
+      p.voice.EndedFor(voice_state, now, a2f::VoiceStart::kLipStop))
+    why = "the voice ended";
   if (!why && p.external && p.external->duration > 0 &&
       t >= p.external->duration)
     why = "the player audio ended";
@@ -1621,7 +1634,7 @@ int Apply(uint8_t* fg, const Tune& tune, bool in_scene, uint8_t* actor,
     return kNoUpdate;
   }
   Playing& p = it->second;
-  const FaceTune& settings = tune.ForActor(p.female, p.player);
+  const FaceTune settings = NpcFaceTune(tune, actor, p.female, p.player);
   p.seen = play_clock;
   // the line began after the caller looked its actor up: from the next update
   if (actor_handle != p.actor_handle) return kKeepUpdating;
@@ -1637,7 +1650,8 @@ int Apply(uint8_t* fg, const Tune& tune, bool in_scene, uint8_t* actor,
   // Face immediately and requests an engine mesh rebuild.
   const bool provider = ProviderLine(p);
   if ((provider && !EnabledFor(tune, p.player)) || in_scene ||
-      !RaceAllowed(actor) || !DialogueAllows(tune, actor_handle, p.player)) {
+      !RaceAllowed(actor) || !NpcAllowed(actor) ||
+      !DialogueAllows(tune, actor_handle, p.player)) {
     if (LogMore(logged_ends))
       Log("drop %s: its actor is no longer eligible", p.name.c_str());
     const bool played = p.direct_frames != 0;
@@ -1649,6 +1663,8 @@ int Apply(uint8_t* fg, const Tune& tune, bool in_scene, uint8_t* actor,
         why = BFA_kResultPlayerDisabled;
       } else if (in_scene) {
         why = BFA_kResultInScene;
+      } else if (!NpcAllowed(actor)) {
+        why = BFA_kResultDisabled;
       } else if (!RaceAllowed(actor)) {
         why = BFA_kResultRaceDisabled;
       }
@@ -1886,7 +1902,7 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene,
   // Exclusive scenes own the face immediately, including paused frames.
   // The original update has already produced their keyframes. Do not fade
   // our expressions or speech pose over those values.
-  if (in_scene || !RaceAllowed(actor) ||
+  if (in_scene || !RaceAllowed(actor) || !NpcAllowed(actor) ||
       !DialogueAllows(tune, actor_handle, actor && IsPlayer(actor))) {
     ScopedLock guard(lock);
     bool changed = faces.count(fg) != 0;
@@ -1972,7 +1988,7 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene,
   // the levels to show: the engine's, faded out while a line plays (the
   // network alone shapes the speaking face; the game's emotion reaches it
   // as the network's input) and back in after it
-  const FaceTune& settings = tune.ForActor(f.female, f.player);
+  const FaceTune settings = NpcFaceTune(tune, actor, f.female, f.player);
   const float previous_speech_blend = f.speech_blend;
   if (!held)
     f.speech_blend = std::clamp(
@@ -2027,6 +2043,30 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene,
   return updates;
 }
 
+using FaceNodeUpdateFn = void (*)(uint8_t*, NiUpdateData*, uint32_t);
+FaceNodeUpdateFn face_node_update_original = nullptr;
+
+void FaceNodeUpdateHook(uint8_t* node, NiUpdateData* data, uint32_t flags) {
+  const ScopedFaceUpdate update(Field<uint8_t*>(node, kNodeFg.Get()),
+                                data->time);
+  face_node_update_original(node, data, flags);
+}
+
+bool InstallFaceNodeUpdateHook() {
+  const auto address = Addr(kIdFaceNodeVtable);
+  if (!address) return false;
+  auto* slot = reinterpret_cast<FaceNodeUpdateFn*>(address) +
+               kVfUpdateDownwardPass.Get();
+  DWORD protection;
+  if (!VirtualProtect(slot, sizeof(*slot), PAGE_READWRITE, &protection))
+    return false;
+  face_node_update_original = *slot;
+  *slot = FaceNodeUpdateHook;
+  DWORD ignored;
+  VirtualProtect(slot, sizeof(*slot), protection, &ignored);
+  return true;
+}
+
 // Runs where the head's morphs are applied (ID 26998), around the engine's
 // recompute of the face keyframes (ID 26598) -- writing earlier would be
 // overwritten. Returns "changed" so the morphs are re-applied.
@@ -2034,6 +2074,9 @@ __attribute__((noinline)) bool AnimUpdateHook(uint8_t* fg, float dt,
                                               uint64_t flag) {
   auto orig =
       SiteOrig<AnimUpdateFn>(__builtin_return_address(0), kIdFaceAnimUpdate);
+  // Skyrim uses the global frame delta even for zero-time pose refreshes
+  // (for example Fluid Motion's second pass). Still recompute the keyframes.
+  dt = ScopedFaceUpdate::Delta(fg, dt);
   const uint64_t epoch = world_epoch;
   if (fg && num_faces && ready && CurrentWorld(epoch))
     RestoreFaceKeyframes(fg, epoch);
@@ -2148,12 +2191,12 @@ void AddDirect(uint8_t* node, bool reset) {
   TrackPartner(node, fg);
   const FaceActor known = FaceActorOf(fg);
   ScopedReference reference(known.handle);
-  const Tune tune = SnapshotTune();
-  if (!DialogueAllows(tune, known.handle,
-                      reference.get() && reference.get() == known.actor &&
-                          IsPlayer(reference.get())) ||
-      (reference.get() == known.actor &&
-       (InScene(reference.get()) || !RaceAllowed(reference.get())))) {
+  // The retained actor, when it is still the face's; null otherwise.
+  uint8_t* actor = reference.get() == known.actor ? reference.get() : nullptr;
+  const Tune tune = NpcDirectTune(SnapshotTune(), actor);
+  if (!DialogueAllows(tune, known.handle, actor && IsPlayer(actor)) ||
+      (actor &&
+       (InScene(actor) || !RaceAllowed(actor) || !NpcAllowed(actor)))) {
     {
       ScopedLock guard(lock, ScopedLock::kShared);
       if (!faces.count(fg) && !playing.count(fg)) return;
@@ -2203,7 +2246,7 @@ void AddDirect(uint8_t* node, bool reset) {
     if (expected_entry && expected_entry->model_state)
       selection = expected_entry->model_state;
   }
-  const FaceTune& settings = tune.ForActor(female, player);
+  const FaceTune settings = NpcFaceTune(tune, actor, female, player);
   const std::string key = HeadKey(node, female, selection->mapping);
   std::shared_ptr<const a2f::Line> line;
   std::shared_ptr<const direct::Head> head;
@@ -2258,6 +2301,10 @@ void AddDirect(uint8_t* node, bool reset) {
   const size_t tongue_start = coefficients.size();
   coefficients.insert(coefficients.end(), tongue_phonemes,
                       tongue_phonemes + direct::kNumPhonemes);
+  // Carry joy through the same transition as speech, including line endings.
+  const size_t joy_index = coefficients.size();
+  coefficients.push_back(
+      line ? std::clamp(line->emotion_mean[a2f::kJoy], 0.f, 1.f) : 0.f);
   bool speaking = false;
   {
     ScopedLock guard(lock);
@@ -2281,7 +2328,8 @@ void AddDirect(uint8_t* node, bool reset) {
                         levels, coefficients.data() + tongue_start,
                         tune.disable_tongue ? direct::TongueMode::kModel
                                             : direct::TongueMode::kAuthored,
-                        deltas, settings.upper_lip, settings.lower_lip))
+                        deltas, settings.upper_lip, settings.lower_lip,
+                        settings.smile_eyes, coefficients[joy_index]))
     return;
   float peak[3] = {};
   const bool added = AddDeltas(node, *head, deltas, peak);
@@ -2299,17 +2347,22 @@ void AddDirect(uint8_t* node, bool reset) {
 // accumulate and nothing has to be restored when the actor goes away.
 uint64_t GazeMorphs(ApplyMorphsFn orig, uint8_t* node, uint8_t force,
                     bool& reset, uint64_t epoch) {
-  const Tune tune = SnapshotTune();
+  Tune tune = SnapshotTune();
   auto* fg = Field<uint8_t*>(node, kNodeFg.Get());
-  if (!CurrentWorld(epoch) || !ready || !fg || !tune.enabled ||
-      !tune.conversation_gaze || tune.gaze_strength <= 0 || skse::IsVr())
+  if (!CurrentWorld(epoch) || !ready || !fg || !tune.enabled || skse::IsVr())
     return orig(node, force);
+  // Globally off, and no NPC override can turn it on: skip the handle work.
+  const bool gaze_off = !tune.conversation_gaze || tune.gaze_strength <= 0;
+  if (gaze_off && !NpcOverridesActive()) return orig(node, force);
   const FaceActor known = FaceActorOf(fg);
   if (!known.handle || known.handle != PartnerHandle())
     return orig(node, force);
   ScopedReference actor(known.handle);
   if (!actor.get() || actor.get() != known.actor || IsPlayer(actor.get()) ||
-      InScene(actor.get()))
+      InScene(actor.get()) || !NpcAllowed(actor.get()))
+    return orig(node, force);
+  tune = NpcDirectTune(std::move(tune), actor.get());
+  if (!tune.conversation_gaze || tune.gaze_strength <= 0)
     return orig(node, force);
   // Use the priority-resolved target: scripts/packages can override dialogue.
   auto* process = Field<uint8_t*>(actor.get(), kActorProcess.Get());
@@ -2335,7 +2388,8 @@ uint64_t GazeMorphs(ApplyMorphsFn orig, uint8_t* node, uint8_t force,
         // The sampled frame includes playback sync; fade in on that same
         // clock so late starts do not jump when the sync slider is nonzero.
         const float ready_frame =
-            (p.ready_at + tune.ForActor(p.female, false).time_offset) *
+            (p.ready_at +
+             NpcFaceTune(tune, actor.get(), p.female, false).time_offset) *
             line.fps;
         a2f::GazeOffset(line, p.direct_frame, ready_frame, tune.gaze_strength,
                         offset);
@@ -2406,6 +2460,7 @@ void OnMessage(skse::SKSEMessage* m) {
         : m->type == skse::kMessageNewGame ? "new game" : "post-load",
         static_cast<unsigned long long>(world_epoch.load()));
   }
+  MenuMessage(m->type);
   PlayerSpeechMessage(m->type);
   ProviderMessage(m->type);
   if (m->type == skse::kMessagePostLoad && DbvoInstalled() &&
@@ -2424,6 +2479,7 @@ void OnMessage(skse::SKSEMessage* m) {
   LoadHeadPartTypes();  // before the worker, which turns Direct on
   LoadSceneFactions();
   LoadRaceSettings();
+  LoadNpcSettings();
   RetakeSites();
   RegisterMenu();
   HANDLE h = CreateThread(nullptr, 0, Worker, nullptr, 0, nullptr);
@@ -2435,6 +2491,7 @@ void OnMessage(skse::SKSEMessage* m) {
 
 bool Load(const skse::SKSEInterface* iface) {
   skse::SetRuntime(iface->runtimeVersion);
+  InitMenu(iface);
   InitPlayerSpeech(iface);
   InitProvider(iface);
   LoadIni();  // turns the log on when Logging=1
@@ -2457,6 +2514,7 @@ bool Load(const skse::SKSEInterface* iface) {
   if (!HookCalls("face", kIdFaceAnimUpdate, kFaceCallers,
                  reinterpret_cast<void*>(&AnimUpdateHook)))
     return false;
+  if (!InstallFaceNodeUpdateHook()) return false;
   if (!Addr(kIdMorphData) || !Addr(kIdApplyMorph) || !Addr(kIdLockDynamic) ||
       !Addr(kIdUnlockDynamic) || !Addr(kIdUpdateDynamic) ||
       !HookCalls("morphs", kIdApplyMorphs, kMorphCallers,
@@ -2530,6 +2588,7 @@ uint32_t ResolveProviderActor(uint32_t form_id, ProviderActor& out) {
       !(Field<uint32_t>(race, kRaceFlags) & 2))
     return BFA_kResultNoFaceGenHead;
   if (!RaceAllowed(actor)) return BFA_kResultRaceDisabled;
+  if (!NpcAllowed(actor)) return BFA_kResultDisabled;
   if (InScene(actor)) return BFA_kResultInScene;
   const uint32_t handle = HandleOf(actor);
   if (!handle) return BFA_kResultNoFaceGenHead;
@@ -2547,9 +2606,9 @@ uint32_t ResolveProviderActor(uint32_t form_id, ProviderActor& out) {
 
 uint32_t ProviderPrepare(const PlayerSpeechPtr& line,
                          const ProviderActor& who) {
-  auto e = Request(line->stem, 0, 0, who.female, true, SnapshotTune(),
-                   who.handle, world_epoch, who.player, &line->emotion,
-                   line->audio);
+  auto e =
+      Request(line->stem, 0, 0, who.female, true, SnapshotTune(), who.handle,
+              world_epoch, who.player, &line->emotion, line->audio, who.actor);
   if (!e) return BFA_kResultNotInDialogue;
   ScopedLock guard(lock);
   WatchEntry(*e, line);

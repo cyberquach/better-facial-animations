@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "corpus": "Installed source-variant hair audit, 2026-10-12",
+  "scope": "Offline HDPT/name/shader traversal with valid synthetic dynamic/FOD data; source occurrences include inactive variants. No game-rendering or physics guarantee.",
+  "queries": 1364251,
+  "scenarios": 130,
+  "assertions": {
+    "excluded": 18582,
+    "preserved": 12314
+  },
+  "files": {
+    "queries.bin": "bed4914b9649111dab7fa73c9f71f5b0e7ff43946d8677f716a5a7d7956ee906",
+    "expectations.json": "2f02999686c7149360be6350519d2914bcab9e7256c77edcaf54c13775faf7c2"
+  }
+}

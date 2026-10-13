@@ -25,6 +25,7 @@ constexpr skse::Rel kIdStreamCtor{69636, 71014, 0xCBC490};
 constexpr skse::Rel kIdStreamDtor{69638, 71016, 0xCBC770};
 // BSFaceGenAnimationData::Update(fg, dt, bool)
 constexpr skse::Rel kIdFaceAnimUpdate{25983, 26598, 0x3D38B0};
+constexpr skse::Rel kIdFaceNodeVtable{252410, 200333, 0x1678620};
 // BSFaceGenNiNode: update keyframes, apply morphs
 constexpr skse::Rel kFaceCallers[] = {{26417, 26998, 0x3E8DC0}};
 // BSFaceGenNiNode::ApplyMorphs(node, force): reset to base + morphs, run by
@@ -58,6 +59,10 @@ constexpr skse::Rel kIdCreateHandle{12193, 12326, 0x1428A0};
 // PlayerCharacter* singleton (CommonLibSSE-NG PlayerCharacter::GetSingleton).
 // None on VR: DBReV supports SE/AE, and VR's player is not verified.
 constexpr skse::Rel kIdPlayer{517014, 403521, 0};
+// Optional desktop NPC targeting/menu guards (CommonLibSSE-NG).
+constexpr skse::Rel kIdCrosshairPick{515446, 401585, 0};
+constexpr skse::Rel kIdUI{514178, 400327, 0};
+constexpr skse::Rel kIdControlMap{514705, 400863, 0};
 // TESForm::LookupByID(FormID) (CommonLibSSE-NG TESForm.h). None on VR: the
 // provider interface (BFA_API.h) resolves actors by form id on SE/AE only.
 constexpr skse::Rel kIdLookupFormById{14461, 14617, 0};
@@ -72,10 +77,11 @@ constexpr skse::Rel kIds[] = {
     kIdMorphData,        kIdApplyMorph,           kIdLockDynamic,
     kIdUnlockDynamic,    kIdUpdateDynamic,        kIdSoundIsPlaying,
     kIdGenerateFromPath, kIdDataHandler,          kIdMenuTopicManager,
-    kIdLookupReference, kIdCreateHandle,
+    kIdLookupReference,  kIdCreateHandle,         kIdFaceNodeVtable,
 };
 // And those some runtime lacks.
-constexpr skse::Rel kOptionalIds[] = {kIdPlayer, kIdHeadtrackTarget,
-                                      kIdLookupFormById};
+constexpr skse::Rel kOptionalIds[] = {
+    kIdPlayer,     kIdCrosshairPick,   kIdUI,
+    kIdControlMap, kIdHeadtrackTarget, kIdLookupFormById};
 
 #endif  // INCLUDE_A2F_RUNTIME_IDS_H_

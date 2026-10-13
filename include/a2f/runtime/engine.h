@@ -15,12 +15,22 @@ namespace bfa {
 constexpr skse::Rel kNodeChildren{0x118, 0x118, 0x140};
 constexpr skse::Rel kNodeNumChildren{0x122, 0x122, 0x14A};
 constexpr skse::Rel kNodeFg{0x150, 0x150, 0x178};
+constexpr skse::Rel kVfUpdateDownwardPass{0x2C, 0x2C, 0x2D};
+struct NiUpdateData {
+  float time;
+  uint32_t flags;
+};
+static_assert(sizeof(NiUpdateData) == 8);
 // u16, bit0 = reset needed
 constexpr skse::Rel kNodeFlags{0x160, 0x160, 0x188};
 constexpr uint32_t kObjName = 0x10;
 constexpr uint32_t kObjExtra = 0x20;
 constexpr uint32_t kObjNumExtra = 0x28;
 constexpr skse::Rel kGeomType{0x150, 0x150, 0x190};  // 4 = BSDynamicTriShape
+// CommonLibSSE-NG: BSGeometry::shaderProperty, BSShaderProperty::flags.
+constexpr skse::Rel kGeomShaderProperty{0x128, 0x128, 0x168};
+constexpr uint32_t kShaderFlags = 0x38;
+constexpr uint64_t kShaderHairTint = uint64_t{1} << 18;
 constexpr skse::Rel kDynNumVerts{0x15A, 0x15A, 0x19A};
 constexpr skse::Rel kDynDataSize{0x170, 0x170, 0x1B0};
 constexpr uint32_t kBaseVerts = 0x18;  // BSFaceGenBaseMorphExtraData ("FOD")
@@ -43,8 +53,29 @@ constexpr uint32_t kPlayerFormId = 0x14;  // the form id itself
 constexpr uint32_t kFormType = 0x1A;
 constexpr uint32_t kRefrBase = 0x40;
 constexpr uint32_t kNpcFlags = 0x38;  // TESNPC actor data flags; bit 0: female
+constexpr uint32_t kNpcName = 0xE0;   // TESActorBase::TESFullName::fullName
 // MenuTopicManager: the handle of the actor the player is talking to
 constexpr uint32_t kMtmSpeaker = 0x68;
+// CrosshairPickData::target (ObjectRefHandle)
+constexpr uint32_t kCrosshairTarget = 0x04;
+// UI: menu counts that take input from gameplay, and modal state
+constexpr uint32_t kUiNumPausesGame = 0x160;
+constexpr uint32_t kUiNumItemMenus = 0x164;
+constexpr uint32_t kUiNumApplicationMenus = 0x178;
+constexpr uint32_t kUiModal = 0x17C;
+// ControlMap: contextPriorityStack (BSTArray<InputContextID>: data, size)
+// and textEntryCount. The extra marketplace context in 1.6.1130 shifts
+// these fields by eight bytes (CommonLibVR ControlMap::GetRuntimeData).
+// Only used for SE/AE: VR target hotkeys are disabled.
+struct ControlMapOffset {
+  uint32_t before_1130;
+  uint32_t Get() const {
+    return before_1130 + (skse::Runtime() >= skse::Version(1, 6, 1130) ? 8 : 0);
+  }
+};
+constexpr ControlMapOffset kControlMapContexts{0x100};
+constexpr ControlMapOffset kControlMapNumContexts{0x110};
+constexpr ControlMapOffset kControlMapTextEntry{0x120};
 // TESObjectREFR's BSHandleRefObject and its reference count, whose low bits
 // are the count (the rest: "has a handle" and the handle's entry index)
 constexpr uint32_t kRefrHandleObj = 0x20;
