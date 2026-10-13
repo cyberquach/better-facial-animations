@@ -4,13 +4,19 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <string>
+#include <utility>
 
 #include "a2f/animation/head_cache.h"
 #include "a2f/inference/net_keeper.h"
 #include "a2f/inference/ort_net.h"
 #include "a2f/plugin/plugin.h"
+#include "a2f/runtime/engine.h"
 #include "a2f/runtime/scoped_lock.h"
 #include "a2f/runtime/skse.h"
 
@@ -39,7 +45,310 @@ struct ImGui {  // cimgui export names
   void (*TextColored)(ImVec4, const char*, ...);
   void (*PushTextWrapPos)(float);
   void (*PopTextWrapPos)();
+  bool (*Begin)(const char*, bool*, int);
+  void (*End)();
+  void (*SetNextWindowSize)(ImVec2, int);
 } ig;
+
+// Common prefix of Menu Framework 2/3's WindowInterface. Only Framework 3
+// exports the input callback API; older versions retain page-based controls.
+struct MenuWindow {
+  std::atomic<bool> open{false};
+};
+MenuWindow *npc_window = nullptr, *main_window = nullptr;
+bool (*blocking_window)() = nullptr;
+const skse::SKSETaskInterface* menu_tasks = nullptr;
+bool npc_input = false;
+std::atomic<bool> bind_npc_key{false};
+std::atomic<bool> overrides_drawn{false};
+std::atomic<bool> consumed_keys[256]{};
+SRWLOCK npc_menu_lock = SRWLOCK_INIT;
+uint64_t menu_epoch = 0;
+bool target_pending = false;
+NpcSetting& selected_npc = *new NpcSetting;
+
+uint8_t* Singleton(skse::Rel id) {
+  const auto address = skse::Addr(id);
+  return address ? *reinterpret_cast<uint8_t**>(address) : nullptr;
+}
+
+bool CanTargetNpc() {
+  return !skse::IsVr() && menu_tasks && menu_tasks->AddTask &&
+         skse::Addr(kIdCrosshairPick);
+}
+
+// Input callbacks run on the game's input thread. Do not steal keys from
+// text entry, paused/item/application menus or other framework windows.
+bool NpcHotkeyAllowed() {
+  if (!CanTargetNpc() || !blocking_window || blocking_window()) return false;
+  auto* ui = Singleton(kIdUI);
+  auto* controls = Singleton(kIdControlMap);
+  if (!ui || !controls) return false;
+  // The top ControlMap context must be gameplay (0), including when a
+  // mod's inventory/console menu deliberately does not pause the game.
+  const auto* contexts = Field<uint32_t*>(controls, kControlMapContexts.Get());
+  const auto count = Field<uint32_t>(controls, kControlMapNumContexts.Get());
+  if (count && (!contexts || count > 64 || contexts[count - 1] != 0))
+    return false;
+  return !Field<uint32_t>(ui, kUiNumPausesGame) &&
+         !Field<uint32_t>(ui, kUiNumItemMenus) &&
+         !Field<uint32_t>(ui, kUiNumApplicationMenus) &&
+         !Field<uint8_t>(ui, kUiModal) &&
+         !Field<int8_t>(controls, kControlMapTextEntry.Get());
+}
+
+class NpcTargetTask final : public skse::TaskDelegate {
+ public:
+  explicit NpcTargetTask(uint64_t epoch) : epoch_(epoch) {}
+  void Run() override {
+    {
+      ScopedLock guard(npc_menu_lock, ScopedLock::kShared);
+      if (epoch_ != menu_epoch) return;
+    }
+    // No engine pointers escape this task. A reference owns the actor while
+    // we copy its base identity, so despawn and load cannot leave a UI pointer.
+    NpcSetting npc;
+    if (auto* pick = Singleton(kIdCrosshairPick)) {
+      ScopedReference ref(Field<uint32_t>(pick, kCrosshairTarget));
+      npc = DescribeNpc(ref.get());
+    }
+    ScopedLock guard(npc_menu_lock);
+    if (epoch_ != menu_epoch) return;
+    selected_npc = std::move(npc);
+    target_pending = false;
+    if (npc_window) npc_window->open = true;
+  }
+  void Dispose() override { delete this; }
+
+ private:
+  uint64_t epoch_;
+};
+
+void RequestNpcTarget() {
+  if (!CanTargetNpc() || !npc_window) return;
+  uint64_t epoch;
+  {
+    ScopedLock guard(npc_menu_lock);
+    if (target_pending) return;
+    target_pending = true;
+    epoch = menu_epoch;
+  }
+  menu_tasks->AddTask(new NpcTargetTask(epoch));
+}
+
+// RE::InputEvent / IDEvent / ButtonEvent ABI. Framework calls this once per
+// event; true consumes that event. Keyboard only, no polling or extra hook.
+bool NpcInput(uint8_t* event) {
+  if (!event || Field<uint32_t>(event, 0x0C) != 0 ||
+      Field<uint32_t>(event, 0x08) != 0)
+    return false;
+  const int key = Field<uint32_t>(event, 0x20);
+  const float value = Field<float>(event, 0x28);
+  const float held = Field<float>(event, 0x2C);
+  if (key < 1 || key > 255) return false;
+  if (consumed_keys[key]) {
+    if (value == 0) consumed_keys[key] = false;
+    if (value <= 0 || held != 0) return true;
+    // The framework may hide a release while another widget owns input.
+    consumed_keys[key] = false;  // a fresh down is a new press
+  }
+  if (value <= 0 || held != 0) return false;
+  if (bind_npc_key) {
+    if (main_window ? !main_window->open : !blocking_window()) {
+      bind_npc_key = false;
+      return false;
+    }
+    bind_npc_key = false;
+    consumed_keys[key] = true;
+    if (key != 1) {
+      SetNpcHotkey(key);
+      ScheduleSaveIni();
+    }
+    return true;  // Escape cancels rebinding
+  }
+  if (npc_window && npc_window->open) {
+    if (key != 1) return false;
+    npc_window->open = false;
+    consumed_keys[key] = true;
+    return true;
+  }
+  if (!key || key != NpcHotkey() || !NpcHotkeyAllowed()) return false;
+  consumed_keys[key] = true;
+  RequestNpcTarget();
+  return true;
+}
+
+std::string NpcKeyName() {
+  const int key = NpcHotkey();
+  if (!key) return "Not assigned";
+  char name[128];
+  const LONG scan = ((key & 0x7F) << 16) | ((key & 0x80) ? (1 << 24) : 0);
+  if (GetKeyNameTextA(scan, name, sizeof name)) return name;
+  return "Key " + std::to_string(key);
+}
+
+void RenderNpcWindow() {
+  bool open = true;
+  if (ig.SetNextWindowSize) ig.SetNextWindowSize(ImVec2{650, 650}, 4);
+  if (ig.Begin("NPC overrides##BFA", &open, 0)) {
+    NpcSetting npc;
+    {
+      ScopedLock guard(npc_menu_lock, ScopedLock::kShared);
+      npc = selected_npc;
+    }
+    if (npc.key.empty()) {
+      ig.Text("Look at an NPC, then open this window again.");
+      ig.Text(
+          "The player and NPCs with temporary base records cannot be "
+          "selected.");
+    } else {
+      for (const auto& entry : SnapshotOverrides())
+        if (entry.key == npc.key) {
+          npc = entry;
+          break;
+        }
+      ig.Text("%s", npc.label.c_str());
+      if (ig.IsItemHovered(0)) ig.SetTooltip("%s", npc.key.c_str());
+      ig.Text("Applies to this NPC base, including copies, across all saves.");
+      ig.Text(
+          "Edits save automatically. Untouched sliders follow the global "
+          "profile.");
+      bool enabled = !npc.blocked;
+      bool changed =
+          ig.Checkbox("Enable facial animations for this NPC", &enabled);
+      npc.blocked = !enabled;
+      ig.Text("Global enable and race settings still apply.");
+      const Tune defaults = SnapshotTune();
+      FaceTune inherited = defaults.ForSex(npc.female);
+      Sec section = Sec::kGeneral;
+      for (const Param& param : kParams) {
+        if (!NpcParamSupported(param)) continue;
+        if (param.sec != section) {
+          section = param.sec;
+          ig.SeparatorText(section == Sec::kPlayback ? "Playback"
+                           : section == Sec::kDirect ? "Strength"
+                                                     : "Emotion");
+        }
+        auto value = npc.values.find(param.key);
+        const float fallback =
+            param.profile == 0                    ? *param.FaceValue(inherited)
+            : !strcmp(param.key, "GazeStrength")  ? defaults.gaze_strength
+            : !strcmp(param.key, "DisableTongue") ? defaults.disable_tongue
+                                                  : defaults.conversation_gaze;
+        float current = value == npc.values.end() ? fallback : value->second;
+        const std::string label =
+            std::string(param.label) + "##npc_" + param.key;
+        bool checked = current != 0;
+        if (param.flag ? ig.Checkbox(label.c_str(), &checked)
+                       : ig.SliderFloat(label.c_str(), &current, param.lo,
+                                        param.hi, "%.3g", 0)) {
+          npc.values[param.key] = param.flag ? float(checked) : current;
+          changed = true;
+        }
+        if (ig.IsItemHovered(0)) ig.SetTooltip("%s", param.tip);
+        ig.SameLine(0, -1);
+        if (npc.values.count(param.key)) {
+          if (ig.Button((std::string("Use global##") + param.key).c_str(),
+                        ImVec2{0, 0})) {
+            npc.values.erase(param.key);
+            changed = true;
+          }
+        } else {
+          ig.Text("Global");
+        }
+      }
+      if (ig.Button("Reset NPC to global settings", ImVec2{0, 0})) {
+        npc.blocked = false;
+        npc.values.clear();
+        changed = true;
+      }
+      if (changed) {
+        SetNpcOverride(npc);
+        {
+          ScopedLock guard(npc_menu_lock);
+          selected_npc = npc;
+        }
+        ScheduleSaveIni();
+      }
+    }
+    if (ig.Button("Close", ImVec2{0, 0})) open = false;
+  }
+  ig.End();
+  if (!open) npc_window->open = false;
+}
+
+void RenderOverrides() {
+  overrides_drawn = true;
+  ig.SeparatorText("NPC overrides");
+  ig.Text(
+      "Edit playback, strength and emotion per NPC. Changes save "
+      "automatically.");
+  ig.Text("Choices apply across saves and survive load-order changes.");
+  if (npc_input) {
+    ig.Text("Target hotkey: %s", NpcKeyName().c_str());
+    if (ig.Button(
+            bind_npc_key ? "Press a key (Escape cancels)" : "Assign hotkey",
+            ImVec2{0, 0}))
+      bind_npc_key = !bind_npc_key;
+    ig.SameLine(0, -1);
+    if (ig.Button("Unbind", ImVec2{0, 0})) {
+      bind_npc_key = false;
+      SetNpcHotkey(0);
+      ScheduleSaveIni();
+    }
+    ig.Text(
+        "Choose an unused keyboard key. Aim at an NPC, press it, then edit "
+        "their settings.");
+  } else {
+    ig.Text("Target hotkeys require SKSE Menu Framework 3 and Skyrim SE/AE.");
+  }
+  if (CanTargetNpc() && npc_window &&
+      ig.Button("Select NPC under crosshair", ImVec2{0, 0}))
+    RequestNpcTarget();
+  auto entries = SnapshotOverrides();
+  constexpr size_t kPageSize = 12;
+  static size_t page = 0;
+  const size_t pages =
+      std::max(size_t{1}, (entries.size() + kPageSize - 1) / kPageSize);
+  page = std::min(page, pages - 1);
+  ig.SeparatorText("Saved NPCs");
+  if (ig.Button("Previous##npc", ImVec2{0, 0}) && page) --page;
+  ig.SameLine(0, -1);
+  ig.Text("%zu / %zu", page + 1, pages);
+  ig.SameLine(0, -1);
+  if (ig.Button("Next##npc", ImVec2{0, 0}) && page + 1 < pages) ++page;
+  for (size_t i = page * kPageSize;
+       i < std::min(entries.size(), (page + 1) * kPageSize); ++i) {
+    const auto& npc = entries[i];
+    ig.Text("%s%s", npc.label.c_str(), npc.id ? "" : " (not loaded)");
+    if (ig.IsItemHovered(0)) ig.SetTooltip("%s", npc.key.c_str());
+    ig.SameLine(0, -1);
+    if (npc_window && ig.Button(("Edit##" + npc.key).c_str(), ImVec2{0, 0})) {
+      ScopedLock guard(npc_menu_lock);
+      selected_npc = npc;
+      npc_window->open = true;
+    }
+    ig.SameLine(0, -1);
+    if (ig.Button(("Remove##" + npc.key).c_str(), ImVec2{0, 0})) {
+      RemoveNpcOverride(npc);
+      {
+        ScopedLock guard(npc_menu_lock);
+        if (selected_npc.key == npc.key) {
+          selected_npc.blocked = false;
+          selected_npc.values.clear();
+        }
+      }
+      ScheduleSaveIni();
+    }
+  }
+  if (entries.empty()) ig.Text("No saved NPC overrides.");
+}
+
+void NpcMenuEvent(int type) {
+  // Framework's AfterRender event: changing pages or closing the menu ends
+  // a pending rebind, so typing on another mod's page cannot assign a key.
+  if (type == 4 && !overrides_drawn.exchange(false)) bind_npc_key = false;
+}
 
 constexpr ImVec4 kRed{1, 0.3f, 0.25f, 1}, kYellow{1, 0.8f, 0.2f, 1};
 // Wrapped text in a color.
@@ -281,6 +590,24 @@ bool Import(HMODULE m, const char* name, Fn& fn) {
 
 }  // namespace
 
+void InitMenu(const skse::SKSEInterface* iface) {
+  menu_tasks = static_cast<const skse::SKSETaskInterface*>(
+      iface->QueryInterface(skse::kInterfaceTask));
+}
+
+void MenuMessage(uint32_t type) {
+  if (type != skse::kMessagePreLoadGame && type != skse::kMessagePostLoadGame &&
+      type != skse::kMessageNewGame)
+    return;
+  ScopedLock guard(npc_menu_lock);
+  ++menu_epoch;
+  target_pending = false;
+  selected_npc = {};
+  bind_npc_key = false;
+  for (auto& key : consumed_keys) key = false;
+  if (npc_window) npc_window->open = false;
+}
+
 void RegisterMenu() {
   HMODULE m = GetModuleHandleA("SKSEMenuFramework.dll");
   if (!m) {
@@ -300,6 +627,7 @@ void RegisterMenu() {
     Log("SKSE Menu Framework: missing exports, no menu page");
     return;
   }
+  Import(m, "igSetNextWindowSize", ig.SetNextWindowSize);
   Import(m, "igTextColored", ig.TextColored);
   if (!Import(m, "igPushTextWrapPos", ig.PushTextWrapPos) ||
       !Import(m, "igPopTextWrapPos", ig.PopTextWrapPos)) {
@@ -308,6 +636,26 @@ void RegisterMenu() {
   }
   add("Better Facial Animations/Settings", RenderMenu);
   add("Better Facial Animations/Races", RenderRaces);
+  add("Better Facial Animations/Overrides", RenderOverrides);
+  MenuWindow* (*add_window)(void (*)());
+  MenuWindow* (*get_main)();
+  int64_t (*register_input)(bool (*)(uint8_t*));
+  int64_t (*register_event)(void (*)(int), float);
+  if (CanTargetNpc() && Import(m, "AddWindow", add_window) &&
+      Import(m, "igBegin", ig.Begin) && Import(m, "igEnd", ig.End)) {
+    npc_window = add_window(RenderNpcWindow);
+    if (npc_window &&
+        Import(m, "IsAnyBlockingWindowOpened", blocking_window) &&
+        Import(m, "RegisterInpoutEvent", register_input) &&
+        Import(m, "RegisterEventPriority", register_event) &&
+        skse::Addr(kIdUI) && skse::Addr(kIdControlMap)) {
+      // Older Framework 3 builds expose input callbacks but not GetMainWindow.
+      if (Import(m, "GetMainWindow", get_main)) main_window = get_main();
+      register_input(NpcInput);  // upstream export really is spelled Inpout
+      register_event(NpcMenuEvent, 0);
+      npc_input = true;
+    }
+  }
   Log("menu page registered (SKSE Menu Framework)");
 }
 

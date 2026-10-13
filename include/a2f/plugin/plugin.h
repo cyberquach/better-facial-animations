@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -62,6 +63,7 @@ struct FaceTune {
   a2f::EmotionCaps max_emotion = a2f::kDefaultEmotionCaps;
   float upper_lip = 1;
   float lower_lip = 1;
+  float smile_eyes = 1.0f;
 };
 struct Tune {  // menu; defaults as dist/BetterFacialAnimations.ini
   bool enabled = true;
@@ -117,6 +119,12 @@ struct Param {
   bool* flag;
   int profile = -1;  // -1: shared, 0: male NPC, 1: female NPC, 2: player
   bool stored = true;  // in the ini
+  // Typed access to a profile field, independent of the global tune's layout.
+  float* (*face_value)(FaceTune&, size_t) = nullptr;
+  size_t face_index = 0;  // array element, when applicable
+  float* FaceValue(FaceTune& face) const {
+    return face_value ? face_value(face, face_index) : nullptr;
+  }
 };
 extern const std::vector<Param> kParams;
 extern const size_t kNumParams;
@@ -137,6 +145,31 @@ void LoadRaceSettings();  // at data loaded, before the menu and worker
 std::vector<RaceSetting> SnapshotRaces();
 bool RaceEnabled(uint32_t id);
 void SetRaceEnabled(uint32_t id, bool enabled);
+
+struct NpcSetting {
+  uint32_t id = 0;  // base form, resolved for this load order; 0 when absent
+  std::string key, label;
+  bool blocked = false;
+  bool female = false;
+  std::map<std::string, float> values;  // absent keys inherit the sex profile
+};
+void LoadNpcSettings();
+// Game thread; copies the base identity and never retains forms.
+NpcSetting DescribeNpc(uint8_t* actor);
+std::vector<NpcSetting> SnapshotOverrides();
+void SetNpcOverride(const NpcSetting& npc);
+void RemoveNpcOverride(const NpcSetting& npc);
+bool NpcParamSupported(const Param& param);
+// The tune for an actor: the defaults, with the actor's override applied.
+// Without any override these return the defaults without locking.
+Tune NpcDirectTune(Tune defaults, uint8_t* actor);
+FaceTune NpcFaceTune(const Tune& defaults, uint8_t* actor, bool female,
+                     bool player);
+bool NpcOverridesActive();  // any NPC override resolved in this load order
+bool NpcAllowed(uint8_t* actor);
+void SetNpcBlocked(const NpcSetting& npc, bool blocked);
+int NpcHotkey();  // keyboard scan code; 0 = unbound
+void SetNpcHotkey(int key);
 
 void LoadIni();  // at load
 void SaveIni();

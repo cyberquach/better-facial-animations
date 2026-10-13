@@ -42,7 +42,7 @@ std::unique_ptr<Net> CreateOrtNet3(const std::wstring& dll_dir,
                                    const OrtOptions& o, std::string& err,
                                    std::string& info);
 
-// Fixed-shape Thin96 student; the same GPU/CPU options as the other models.
+// Fixed-shape Thin120 student; the same GPU/CPU options as the other models.
 std::unique_ptr<Net> CreatePerformanceNet(const std::wstring& dll_dir,
                                           const std::wstring& model,
                                           const OrtOptions& o, std::string& err,
@@ -69,7 +69,8 @@ void SetUseDeviceWrapper(bool use);
 // True once D3D12CreateDevice handed out a wrapper of the device.
 bool DeviceWrapped();
 // Try strict device creation against the installed runtime and driver.
-// The temporary device is released; never touches the shared device.
+// Retains the independent context until process exit, including on failure;
+// later sessions reuse it. Never touches the shared device. Worker thread only.
 bool IndependentDeviceSupported(std::string& err);
 
 // Where onnxruntime's own warnings and errors go (the first 200; any

@@ -3,12 +3,17 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 #include <iterator>
+#include <map>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -25,6 +30,15 @@ namespace {
 Tune tune;
 // Sorted by runtime id; settings_lock guards it. Outlives the INI writer.
 std::vector<RaceSetting>& races = *new std::vector<RaceSetting>;
+std::map<std::string, NpcSetting>& npcs =
+    *new std::map<std::string, NpcSetting>;
+std::unordered_set<uint32_t>& blocked_npcs = *new std::unordered_set<uint32_t>;
+std::unordered_map<uint32_t, std::string>& npc_ids =
+    *new std::unordered_map<uint32_t, std::string>;
+int npc_hotkey = 0;
+// Any override resolved to a base in this load order: the per-frame tune
+// lookups skip settings_lock while this is false.
+std::atomic<bool> npc_overrides{false};
 
 // Races that start disabled: their heads differ too much from the model's.
 constexpr const char* kOptInRaceFiles[] = {"DWAlfiqKhajiit.esp"};
@@ -113,59 +127,107 @@ extern const std::vector<Param> kParams = [] {
   for (int profile = 0; profile < 3; ++profile) {
     FaceTune& face =
         profile == 2 ? tune.player_face : profile ? tune.female : tune.male;
-    for (Param p : std::initializer_list<Param>{
-             {"TimeOffset", &face.time_offset, -0.3f, 0.3f, "Sync offset (s)",
-              "Positive = mouth shapes earlier.", Sec::kPlayback, nullptr},
-             {"BlendIn", &face.blend_in, 0, 0.5f, "Blend-in (s)",
-              "Crossfade from vanilla lip-sync when a line is ready after it "
-              "started.",
-              Sec::kPlayback, nullptr},
-             {"DirectBrows", &face.direct_scale[direct::kBrows], 0, 3, "Brows",
-              "Brow movement.", Sec::kDirect, nullptr},
-             {"DirectEyes", &face.direct_scale[direct::kEyes], 0, 3, "Eyes",
-              "Eyelid and eye region movement.", Sec::kDirect, nullptr},
-             {"DirectCheeks", &face.direct_scale[direct::kCheeks], 0, 3,
-              "Cheeks & nose", "Cheek and nose movement.", Sec::kDirect,
-              nullptr},
-             {"DirectMouth", &face.direct_scale[direct::kMouth], 0, 3, "Mouth",
-              mouth_tip, Sec::kDirect, nullptr},
-             {"DirectJaw", &face.direct_scale[direct::kJaw], 0, 3, "Jaw",
-              "How far the lower teeth and gums move with the jaw.",
-              Sec::kDirect, nullptr},
-             {"DirectTongue", &face.direct_scale[direct::kTongue], 0, 3,
-              "Tongue",
-              "Tongue articulation strength for all phonemes. 1 uses the "
-              "calibrated default; 0 keeps jaw follow only.",
-              Sec::kDirect, nullptr},
-             {"UpperLip", &face.upper_lip, 0, 3, "Upper lip",
-              "Upper lip movement, multiplied by Mouth strength.", Sec::kDirect,
-              nullptr},
-             {"LowerLip", &face.lower_lip, 0, 3, "Lower lip",
-              "Lower lip movement, multiplied by Mouth strength.", Sec::kDirect,
-              nullptr},
-             // all of these apply from the next line spoken
-             {"VoiceEmotion", &face.voice_emotion, 0, 3, "Strength",
-              "How strongly a line's emotion (the game's) drives the brows, "
-              "eyes, "
-              "cheeks and mouth. 1 = as given. Applies from the next line.",
-              Sec::kEmotion, nullptr},
-             {"VoiceSwell", &face.voice_swell, 0, 2, "Swell with volume",
-              "How much the emotion grows where the voice is loud. 0 = steady. "
-              "Applies from the next line.",
-              Sec::kEmotion, nullptr},
-             {"FaceFadeIn", &face.face_in, 0, 3, "Fade to the mod's face (s)",
-              "When a line starts: how long the game's own expressions take to "
-              "fade "
-              "out, leaving the face to Audio2Face.",
-              Sec::kEmotion, nullptr},
-             {"FaceFadeOut", &face.face_out, 0, 3,
-              "Fade to the game's face (s)",
-              "After a line: how long the game's own expressions take to fade "
-              "back "
-              "in.",
-              Sec::kEmotion, nullptr},
-         }) {
+    auto face_param = [&](Param p, float* (*access)(FaceTune&, size_t),
+                          size_t index = 0) {
+      p.face_value = access;
+      p.face_index = index;
+      p.value = p.FaceValue(face);
       p.profile = profile;
+      return p;
+    };
+    for (Param p : std::initializer_list<Param>{
+             face_param(
+                 {"TimeOffset", nullptr, -0.3f, 0.3f, "Sync offset (s)",
+                  "Positive = mouth shapes earlier.", Sec::kPlayback, nullptr},
+                 [](FaceTune& f, size_t) { return &f.time_offset; }),
+             face_param({"BlendIn", nullptr, 0, 0.5f, "Blend-in (s)",
+                         "Crossfade from vanilla lip-sync when a line is ready "
+                         "after it "
+                         "started.",
+                         Sec::kPlayback, nullptr},
+                        [](FaceTune& f, size_t) { return &f.blend_in; }),
+             face_param({"DirectBrows", nullptr, 0, 3, "Brows",
+                         "Brow movement.", Sec::kDirect, nullptr},
+                        [](FaceTune& f, size_t) {
+                          return &f.direct_scale[direct::kBrows];
+                        }),
+             face_param(
+                 {"DirectEyes", nullptr, 0, 3, "Eyes",
+                  "Eyelid and eye region movement.", Sec::kDirect, nullptr},
+                 [](FaceTune& f, size_t) {
+                   return &f.direct_scale[direct::kEyes];
+                 }),
+             face_param(
+                 {"SmileEyes", nullptr, 0, 2, "Smile reaches eyes",
+                  "Extra happy-expression movement around the eyes. 0 restores "
+                  "the original behavior. Default: 1.0 for every profile. "
+                  "Applies immediately.",
+                  Sec::kDirect, nullptr},
+                 [](FaceTune& f, size_t) { return &f.smile_eyes; }),
+             face_param({"DirectCheeks", nullptr, 0, 3, "Cheeks & nose",
+                         "Cheek and nose movement.", Sec::kDirect, nullptr},
+                        [](FaceTune& f, size_t) {
+                          return &f.direct_scale[direct::kCheeks];
+                        }),
+             face_param({"DirectMouth", nullptr, 0, 3, "Mouth", mouth_tip,
+                         Sec::kDirect, nullptr},
+                        [](FaceTune& f, size_t) {
+                          return &f.direct_scale[direct::kMouth];
+                        }),
+             face_param({"DirectJaw", nullptr, 0, 3, "Jaw",
+                         "How far the lower teeth and gums move with the jaw.",
+                         Sec::kDirect, nullptr},
+                        [](FaceTune& f, size_t) {
+                          return &f.direct_scale[direct::kJaw];
+                        }),
+             face_param(
+                 {"DirectTongue", nullptr, 0, 3, "Tongue",
+                  "Tongue articulation strength for all phonemes. 1 uses the "
+                  "calibrated default; 0 keeps jaw follow only.",
+                  Sec::kDirect, nullptr},
+                 [](FaceTune& f, size_t) {
+                   return &f.direct_scale[direct::kTongue];
+                 }),
+             face_param({"UpperLip", nullptr, 0, 3, "Upper lip",
+                         "Upper lip movement, multiplied by Mouth strength.",
+                         Sec::kDirect, nullptr},
+                        [](FaceTune& f, size_t) { return &f.upper_lip; }),
+             face_param({"LowerLip", nullptr, 0, 3, "Lower lip",
+                         "Lower lip movement, multiplied by Mouth strength.",
+                         Sec::kDirect, nullptr},
+                        [](FaceTune& f, size_t) { return &f.lower_lip; }),
+             // all of these apply from the next line spoken
+             face_param(
+                 {"VoiceEmotion", nullptr, 0, 3, "Strength",
+                  "How strongly a line's emotion (the game's) drives the "
+                  "brows, "
+                  "eyes, "
+                  "cheeks and mouth. 1 = as given. Applies from the next line.",
+                  Sec::kEmotion, nullptr},
+                 [](FaceTune& f, size_t) { return &f.voice_emotion; }),
+             face_param({"VoiceSwell", nullptr, 0, 2, "Swell with volume",
+                         "How much the emotion grows where the voice is loud. "
+                         "0 = steady. "
+                         "Applies from the next line.",
+                         Sec::kEmotion, nullptr},
+                        [](FaceTune& f, size_t) { return &f.voice_swell; }),
+             face_param(
+                 {"FaceFadeIn", nullptr, 0, 3, "Fade to the mod's face (s)",
+                  "When a line starts: how long the game's own expressions "
+                  "take to "
+                  "fade "
+                  "out, leaving the face to Audio2Face.",
+                  Sec::kEmotion, nullptr},
+                 [](FaceTune& f, size_t) { return &f.face_in; }),
+             face_param(
+                 {"FaceFadeOut", nullptr, 0, 3, "Fade to the game's face (s)",
+                  "After a line: how long the game's own expressions take to "
+                  "fade "
+                  "back "
+                  "in.",
+                  Sec::kEmotion, nullptr},
+                 [](FaceTune& f, size_t) { return &f.face_out; }),
+         }) {
       params.push_back(p);
     }
     static const char* const kKeys[a2f::kNumMod] = {
@@ -178,17 +240,18 @@ extern const std::vector<Param> kParams = [] {
     for (int c = 0; c < a2f::kNumMod; ++c) {
       const bool unused =
           c == a2f::kGrief || c == a2f::kOutOfBreath || c == a2f::kPain;
-      Param p{kKeys[c], &face.max_emotion[c], 0, 2, kLabels[c],
-              unused
-                  ? "Caps this model emotion channel. The current Skyrim emotion "
-                    "mapping does not feed this channel, so this slider currently "
-                    "has no visible effect. 2 = original limit."
-                  : "Caps only this emotion after Strength and Swell with volume. "
-                    "0 = off, 1 = full game intensity, 2 = original limit. "
-                    "Lower Joy / happiness to soften wide smiles. Applies from "
-                    "the next line; other emotions and lip-sync remain active.",
-              Sec::kEmotion, nullptr};
-      p.profile = profile;
+      Param p = face_param(
+          {kKeys[c], nullptr, 0, 2, kLabels[c],
+           unused
+               ? "Caps this model emotion channel. The current Skyrim emotion "
+                 "mapping does not feed this channel, so this slider currently "
+                 "has no visible effect. 2 = original limit."
+               : "Caps only this emotion after Strength and Swell with volume. "
+                 "0 = off, 1 = full game intensity, 2 = original limit. "
+                 "Lower Joy / happiness to soften wide smiles. Applies from "
+                 "the next line; other emotions and lip-sync remain active.",
+           Sec::kEmotion, nullptr},
+          [](FaceTune& f, size_t index) { return &f.max_emotion[index]; }, c);
       params.push_back(p);
     }
   }
@@ -237,6 +300,46 @@ DWORD WINAPI IniWriter(void* event) {
 
 constexpr char kIni[] = "Data\\SKSE\\Plugins\\BetterFacialAnimations.ini";
 
+// A form's identity across load orders: "<plugin>|<local id>" as the ini
+// stores it; empty without a source plugin.
+std::string FormKey(uint8_t* form) {
+  const char* file = SourceFileName(form);
+  if (!file || !*file) return {};
+  char suffix[16];
+  snprintf(suffix, sizeof suffix, "|%06X",
+           LocalFormId(Field<uint32_t>(form, kFormId)));
+  return file + std::string(suffix);
+}
+
+// NPC keys lower the plugin name so that its spelling cannot split entries;
+// the local id stays upper-case hex.
+std::string NpcKey(uint8_t* base) {
+  if (!base || base[kFormType] != kFtNpc) return {};
+  const uint32_t id = Field<uint32_t>(base, kFormId);
+  if (!id || (id >> 24) == 0xFF) return {};  // save-created: not stable
+  const std::string key = FormKey(base);
+  const size_t split = key.find('|');
+  if (key.empty() || key.find_first_of("=[]\r\n/\\") != std::string::npos ||
+      key.rfind('|') != split)
+    return {};
+  return Lower(key.substr(0, split).c_str()) + key.substr(split);
+}
+
+}  // namespace
+
+std::string Lower(const char* s) {
+  std::string n = s;
+  for (auto& c : n) c = static_cast<char>(tolower(static_cast<uint8_t>(c)));
+  return n;
+}
+
+namespace {
+
+std::string NpcLabel(uint8_t* base) {
+  const char* name = Field<const char*>(base, kNpcName);
+  return name && *name ? name : "Unnamed NPC";
+}
+
 // Version 2 renamed Direct to LocalAnimationStrength and changed its defaults.
 // Version 3 turned Logging on by default: an older ini's Logging=0 was that
 // version's default, not a choice, so it is turned on once.
@@ -244,7 +347,8 @@ constexpr char kIni[] = "Data\\SKSE\\Plugins\\BetterFacialAnimations.ini";
 // Version 4 gives each sex its own sliders; shared values seed both profiles.
 // Version 5 adds a player profile and normalizes lips to backend calibration.
 // Version 6 turns Argonians on by default and drops their saved off state.
-constexpr int kIniVersion = 6;
+// Version 7 lowers the emotion caps' default to 1 and adds NPC overrides.
+constexpr int kIniVersion = 7;
 
 std::string Section(const Param& p) {
   static const char* const kNames[] = {"General",  "General",
@@ -269,10 +373,8 @@ void LoadRaceSettings() {
       continue;
     const uint32_t id = Field<uint32_t>(form, kFormId);
     const char* file = SourceFileName(form);
-    if (!file) continue;
-    char suffix[16];
-    snprintf(suffix, sizeof suffix, "|%06X", LocalFormId(id));
-    const std::string key = std::string(file) + suffix;
+    const std::string key = FormKey(form);
+    if (key.empty()) continue;
     const char* name = Field<const char*>(form, kRaceName);
     const char* editor = Field<const char*>(form, kRaceEditorId);
     std::string label = name && *name ? name : "Unnamed race";
@@ -306,6 +408,221 @@ void SetRaceEnabled(uint32_t id, bool enabled) {
   ScopedLock guard(settings_lock);
   const auto it = FindRace(id);
   if (it != races.end() && it->id == id) it->enabled = enabled;
+}
+
+void LoadNpcSettings() {
+  // Legacy exclusions migrate to disabled overrides. New entries take
+  // precedence.
+  std::map<std::string, NpcSetting> loaded;
+  for (const char* section : {"Blacklist", "Overrides"}) {
+    std::vector<char> keys(4096);
+    for (;;) {
+      const DWORD n = GetPrivateProfileStringA(section, nullptr, "",
+                                               keys.data(), keys.size(), kIni);
+      if (n < keys.size() - 2) break;
+      if (keys.size() >= 1024 * 1024) {
+        skse::Report(
+            "NPC overrides too large to read; keeping current settings");
+        return;
+      }
+      keys.resize(keys.size() * 2);
+    }
+    for (const char* p = keys.data(); *p; p += std::strlen(p) + 1) {
+      if (GetPrivateProfileIntA(section, p, 0, kIni) != 1) continue;
+      std::string key = p;
+      const auto split = key.find('|');
+      if (split == std::string::npos || !split || key.size() != split + 7 ||
+          key.find_first_of("=[]\r\n/\\") != std::string::npos)
+        continue;
+      bool valid = true;
+      for (size_t i = split + 1; i < key.size(); ++i) {
+        char& c = key[i];
+        if (c >= 'a' && c <= 'f') c -= 'a' - 'A';
+        if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F'))) valid = false;
+      }
+      if (!valid) continue;
+      key = Lower(key.substr(0, split).c_str()) + key.substr(split);
+      NpcSetting npc{0, key, key, !strcmp(section, "Blacklist")};
+      if (!npc.blocked) {
+        const std::string detail = "Override:" + key;
+        npc.blocked =
+            !GetPrivateProfileIntA(detail.c_str(), "Enabled", 1, kIni);
+        for (const Param& param : kParams) {
+          if (!NpcParamSupported(param)) continue;
+          char value[128];
+          GetPrivateProfileStringA(detail.c_str(), param.key, "", value,
+                                   sizeof value, kIni);
+          char* end;
+          const float v = std::strtof(value, &end);
+          if (end != value && !*end && std::isfinite(v))
+            npc.values[param.key] = std::clamp(v, param.flag ? 0.f : param.lo,
+                                               param.flag ? 1.f : param.hi);
+        }
+      }
+      loaded[key] = std::move(npc);
+    }
+  }
+  std::unordered_set<uint32_t> ids;
+  if (const BSTArray* forms = FormArray(kFtNpc)) {
+    for (uint32_t i = 0; i < forms->n; ++i) {
+      uint8_t* form = forms->items[i];
+      const auto it = loaded.find(NpcKey(form));
+      if (it == loaded.end()) continue;
+      it->second.id = Field<uint32_t>(form, kFormId);
+      it->second.label = NpcLabel(form);
+      it->second.female = (Field<uint32_t>(form, kNpcFlags) & 1) != 0;
+      if (it->second.blocked) ids.insert(it->second.id);
+    }
+  }
+  ScopedLock guard(settings_lock);
+  npcs = std::move(loaded);
+  blocked_npcs = std::move(ids);
+  npc_ids.clear();
+  for (const auto& [key, npc] : npcs)
+    if (npc.id && (npc.blocked || !npc.values.empty())) npc_ids[npc.id] = key;
+  npc_overrides = !npc_ids.empty();
+}
+
+NpcSetting DescribeNpc(uint8_t* actor) {
+  if (!actor || actor[kFormType] != kFtActor ||
+      Field<uint32_t>(actor, kFormId) == kPlayerFormId)
+    return {};
+  auto* base = Field<uint8_t*>(actor, kRefrBase);
+  const std::string key = NpcKey(base);
+  if (key.empty()) return {};
+  NpcSetting npc{Field<uint32_t>(base, kFormId), key, NpcLabel(base), false};
+  ScopedLock guard(settings_lock, ScopedLock::kShared);
+  npc.female = (Field<uint32_t>(base, kNpcFlags) & 1) != 0;
+  const auto it = npcs.find(key);
+  if (it != npcs.end()) {
+    npc.blocked = it->second.blocked;
+    npc.values = it->second.values;
+  }
+  return npc;
+}
+
+std::vector<NpcSetting> SnapshotOverrides() {
+  ScopedLock guard(settings_lock, ScopedLock::kShared);
+  std::vector<NpcSetting> result;
+  for (const auto& item : npcs)
+    if (item.second.blocked || !item.second.values.empty())
+      result.push_back(item.second);
+  return result;
+}
+
+bool NpcOverridesActive() { return npc_overrides; }
+
+bool NpcAllowed(uint8_t* actor) {
+  if (!npc_overrides || !actor ||
+      Field<uint32_t>(actor, kFormId) == kPlayerFormId)
+    return true;
+  auto* base = Field<uint8_t*>(actor, kRefrBase);
+  if (!base || base[kFormType] != kFtNpc) return true;
+  ScopedLock guard(settings_lock, ScopedLock::kShared);
+  return !blocked_npcs.count(Field<uint32_t>(base, kFormId));
+}
+
+bool NpcParamSupported(const Param& param) {
+  return (param.profile == 0 && param.face_value) ||
+         (param.profile == -1 && param.sec == Sec::kDirect);
+}
+
+Tune NpcDirectTune(Tune result, uint8_t* actor) {
+  if (!npc_overrides || !actor ||
+      Field<uint32_t>(actor, kFormId) == kPlayerFormId)
+    return result;
+  auto* base = Field<uint8_t*>(actor, kRefrBase);
+  if (!base || base[kFormType] != kFtNpc) return result;
+  ScopedLock guard(settings_lock, ScopedLock::kShared);
+  const auto id = npc_ids.find(Field<uint32_t>(base, kFormId));
+  if (id == npc_ids.end()) return result;
+  const auto& values = npcs.at(id->second).values;
+  auto get = [&](const char* key, float fallback) {
+    const auto it = values.find(key);
+    return it == values.end() ? fallback : it->second;
+  };
+  result.disable_tongue = get("DisableTongue", result.disable_tongue) != 0;
+  result.conversation_gaze =
+      get("ConversationGaze", result.conversation_gaze) != 0;
+  result.gaze_strength = get("GazeStrength", result.gaze_strength);
+  return result;
+}
+
+FaceTune NpcFaceTune(const Tune& defaults, uint8_t* actor, bool female,
+                     bool player) {
+  FaceTune face = defaults.ForActor(female, player);
+  if (!npc_overrides || !actor || player) return face;
+  auto* base = Field<uint8_t*>(actor, kRefrBase);
+  if (!base || base[kFormType] != kFtNpc) return face;
+  ScopedLock guard(settings_lock, ScopedLock::kShared);
+  const auto id = npc_ids.find(Field<uint32_t>(base, kFormId));
+  if (id == npc_ids.end()) return face;
+  const auto& values = npcs.at(id->second).values;
+  for (const Param& param : kParams) {
+    if (param.profile != 0) continue;
+    float* target = param.FaceValue(face);
+    if (!target) continue;
+    const auto value = values.find(param.key);
+    if (value != values.end()) *target = value->second;
+  }
+  return face;
+}
+
+void SetNpcOverride(const NpcSetting& npc) {
+  if (npc.key.empty()) return;
+  NpcSetting entry = npc;
+  // Only known finite settings may enter the runtime or the INI writer.
+  entry.values.clear();
+  for (const Param& param : kParams) {
+    if (!NpcParamSupported(param)) continue;
+    const auto value = npc.values.find(param.key);
+    if (value != npc.values.end() && std::isfinite(value->second))
+      entry.values[param.key] =
+          std::clamp(value->second, param.flag ? 0.f : param.lo,
+                     param.flag ? 1.f : param.hi);
+  }
+  ScopedLock guard(settings_lock);
+  const bool active = entry.blocked || !entry.values.empty();
+  npcs[npc.key] = std::move(entry);
+  if (npc.id) {
+    if (active)
+      npc_ids[npc.id] = npc.key;
+    else
+      npc_ids.erase(npc.id);
+    if (npc.blocked)
+      blocked_npcs.insert(npc.id);
+    else
+      blocked_npcs.erase(npc.id);
+    npc_overrides = !npc_ids.empty();
+  }
+}
+
+void RemoveNpcOverride(const NpcSetting& npc) {
+  auto cleared = npc;
+  cleared.blocked = false;
+  cleared.values.clear();
+  SetNpcOverride(cleared);  // tombstone lets the writer remove persisted keys
+}
+
+void SetNpcBlocked(const NpcSetting& npc, bool blocked) {
+  auto changed = npc;
+  {
+    ScopedLock guard(settings_lock, ScopedLock::kShared);
+    const auto it = npcs.find(npc.key);
+    if (it != npcs.end()) changed.values = it->second.values;
+  }
+  changed.blocked = blocked;
+  SetNpcOverride(changed);
+}
+
+int NpcHotkey() {
+  ScopedLock guard(settings_lock, ScopedLock::kShared);
+  return npc_hotkey;
+}
+
+void SetNpcHotkey(int key) {
+  ScopedLock guard(settings_lock);
+  npc_hotkey = key > 1 && key <= 255 ? key : 0;  // Escape always cancels
 }
 
 Tune SnapshotTune() {
@@ -345,6 +662,9 @@ bool LogMore(std::atomic<int>& written) {
 void LoadIni() {
   // Startup only: no readers or menu callbacks exist yet.
   tune = Tune();
+  SetNpcHotkey(GetPrivateProfileIntA(
+      "General", "OverridesHotkey",
+      GetPrivateProfileIntA("General", "BlacklistHotkey", 0, kIni), kIni));
   const int version =
       GetFileAttributesA(kIni) == INVALID_FILE_ATTRIBUTES
           ? kIniVersion
@@ -408,6 +728,13 @@ void LoadIni() {
   config.model = ModelFor(config.network).model_file;
   config.direct = ModelFor(config.network).mapping_file;
   if (version < 3) tune.logging = true;
+  // Version 7 lowered the emotion caps' default from 2 to 1: a stored cap at
+  // the old default was that version's default, not a choice.
+  if (version < 7)
+    for (const Param& p : kParams)
+      if (p.value && p.sec == Sec::kEmotion && !strncmp(p.key, "Max", 3) &&
+          *p.value == 2)
+        *p.value = 1;
   if (version < 6) {  // Argonians were saved as off while that was the default
     WritePrivateProfileStringA("Races", "Skyrim.esm|013740", nullptr, kIni);
     WritePrivateProfileStringA("Races", "Skyrim.esm|08883A", nullptr, kIni);
@@ -440,9 +767,13 @@ void SaveIni() {
   ScopedLock writer(ini_write_lock);
   std::vector<std::string> values;
   std::vector<RaceSetting> saved_races;
+  std::vector<NpcSetting> saved_npcs;
+  int saved_hotkey;
   {
     ScopedLock guard(settings_lock, ScopedLock::kShared);
     saved_races = races;
+    for (const auto& item : npcs) saved_npcs.push_back(item.second);
+    saved_hotkey = npc_hotkey;
     values.reserve(kNumParams);
     for (const Param& p : kParams) {
       char value[64];
@@ -453,6 +784,29 @@ void SaveIni() {
   char b[64];
   snprintf(b, sizeof b, "%d", kIniVersion);
   WritePrivateProfileStringA("General", "IniVersion", b, kIni);
+  snprintf(b, sizeof b, "%d", saved_hotkey);
+  WritePrivateProfileStringA("General", "OverridesHotkey", b, kIni);
+  WritePrivateProfileStringA("General", "BlacklistHotkey", nullptr, kIni);
+  for (const NpcSetting& npc : saved_npcs) {
+    const bool active = npc.blocked || !npc.values.empty();
+    const std::string section = "Override:" + npc.key;
+    if (!active) {
+      WritePrivateProfileStringA("Overrides", npc.key.c_str(), nullptr, kIni);
+      WritePrivateProfileStringA(section.c_str(), nullptr, nullptr, kIni);
+    } else {
+      // One write replaces the section, dropping keys no longer overridden.
+      std::string body = std::string("Enabled=") + (npc.blocked ? "0" : "1");
+      body += '\0';
+      for (const auto& [key, value] : npc.values) {
+        snprintf(b, sizeof b, "%.9g", value);
+        body += key + "=" + b;
+        body += '\0';
+      }
+      WritePrivateProfileSectionA(section.c_str(), body.c_str(), kIni);
+      WritePrivateProfileStringA("Overrides", npc.key.c_str(), "1", kIni);
+    }
+    WritePrivateProfileStringA("Blacklist", npc.key.c_str(), nullptr, kIni);
+  }
   for (size_t i = 0; i < kNumParams; ++i) {
     const Param& p = kParams[i];
     if (!p.stored) continue;

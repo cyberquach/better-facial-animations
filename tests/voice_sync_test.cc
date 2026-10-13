@@ -15,6 +15,36 @@ bool Near(double a, double b) { return std::fabs(a - b) < 1e-5; }
 }  // namespace
 
 int main() {
+  for (double rate : {1., 1.25, 2., 3.}) {
+    a2f::SpeechClock speech;
+    speech.Update(0, 0);
+    float last = 0;
+    bool stable = true, advances = true;
+    for (int tick = 1; tick <= 1200; ++tick) {
+      // Render at 120 Hz, native lip track at 60 Hz.
+      const float native = static_cast<float>((tick / 2) * rate / 60.);
+      const float shown = speech.Update(native, tick / 120.);
+      stable &= shown >= last;
+      if (tick > 120)
+        stable &= std::fabs(shown - (rate < 1.5 ? native : tick / 120.)) < .02;
+      // Once corrected, every lip step still moves the face: no freeze while
+      // the wall-clock estimate catches up with the accelerated track.
+      if (speech.corrected && tick % 2 == 0) advances &= shown > last;
+      last = shown;
+    }
+    Expect(stable && speech.corrected == (rate > 1.5),
+           "cadence preserves normal rates and corrects accelerated tracks");
+    Expect(advances, "a corrected clock keeps moving while it catches up");
+    if (speech.corrected) {
+      Expect(Near(speech.Update(rate * 10, 40), last),
+             "corrected stationary lip timer holds through a menu gap");
+      Expect(std::fabs(speech.Update(rate * 10 + rate / 60, 40 + 1. / 60) -
+                       (last + 1. / 60)) < .001,
+             "corrected timer resumes without consuming the pause");
+      Expect(std::fabs(speech.Continue(40 + 2. / 60) - (last + 2. / 60)) < .001,
+             "missing native lip track continues from the corrected phase");
+    }
+  }
   // The lip timer runs while the line's sound is still stopped, then the
   // sound starts (observed in game: Irileth, 00093129_3).
   a2f::VoiceStart voice{172};

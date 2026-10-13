@@ -384,9 +384,10 @@ bool BuildFixture(TongueMotion mode, MouthFixture& fixture) {
     ShapeIn candidate = mouth;
     candidate.part = Part::kPinned;
     candidate.mouth_candidate = true;
-    for (const char* name : {"Female_Teeth_Lily", "Female_Teeth_Alma",
-                             "Female_Teeth_DVA", "Female_Teeth_Eve",
-                             "Female_Teeth_Squirrel_Girl"}) {
+    for (const char* name :
+         {"Female_Teeth_Lily", "Female_Teeth_Alma", "Female_Teeth_DVA",
+          "Female_Teeth_Eve", "Female_Teeth_Squirrel_Girl",
+          "FutureUpperTeethHead", "OralHeadLayer", "FutureDentition"}) {
       candidate.name = name;
       Head mapped;
       std::vector<std::vector<float>> actual;
@@ -396,7 +397,22 @@ bool BuildFixture(TongueMotion mode, MouthFixture& fixture) {
                               TongueMode::kAuthored, actual) &&
                     actual == d;
       Check(passed, name);
+      Head reordered;
+      Check(BuildHead(mk, {candidate, skin, rings}, reordered, why) &&
+                reordered.skin == 1 &&
+                reordered.shapes[0].part == Part::kMouth &&
+                Evaluate(reordered, pose.data(), kScales, kNoExpressions,
+                         nullptr, TongueMode::kAuthored, actual) &&
+                actual[0] == d[1] && actual[1] == d[0] && actual[2] == d[2],
+            "oral extra before skin preserves mapping and deformation");
     }
+    ShapeIn explicit_mouth = mouth;
+    explicit_mouth.name = "00DZBMself_FemaleMouth";
+    Head explicit_head;
+    Check(BuildHead(mk, {explicit_mouth, skin}, explicit_head, why) &&
+              explicit_head.skin == 1 &&
+              explicit_head.shapes[0].part == Part::kMouth,
+          "explicit mouth extra cannot become calibration skin");
     auto mapped_part = [&](ShapeIn part, Part expected, const char* label) {
       Head mapped;
       bool passed = BuildHead(mk, {skin, part}, mapped, why);
@@ -666,6 +682,42 @@ void MouthScaling(Head h) {
   Check(ok, "mouth scale is applied once; brows unchanged");
 }
 
+void SmileEyes(Head h) {
+  h.region_w.assign(h.nv * kNumSkinRegions, 0.f);
+  for (uint32_t v = 0; v < h.nv; ++v)
+    h.region_w[v * kNumSkinRegions + (v == 0 ? kEyes : kMouth)] = 1;
+  auto& happy = h.shapes[h.skin].expr[kHappy - kExpression];
+  happy.assign(h.nv * 3, 1.f);
+  std::vector<float> pose(h.k + kNumMouthCoef, 0.f);
+  std::vector<std::vector<float>> base, boosted, neutral, muted;
+  Evaluate(h, pose.data(), kScales, kNoExpressions, nullptr,
+           TongueMode::kAuthored, base, 1, 1, 0, 1);
+  Evaluate(h, pose.data(), kScales, kNoExpressions, nullptr,
+           TongueMode::kAuthored, boosted, 1, 1, .5f, 1);
+  Evaluate(h, pose.data(), kScales, kNoExpressions, nullptr,
+           TongueMode::kAuthored, neutral, 1, 1, .5f, 0);
+  bool ok = base == neutral;
+  for (uint32_t i = 0; i < h.nv * 3; ++i)
+    ok &= std::fabs(boosted[h.skin][i] - base[h.skin][i] -
+                    (i < 3 ? .5f : 0.f)) < 1e-5f;
+  Check(ok, "smile boosts eyes only; neutral speech and zero boost unchanged");
+  float scales[kNumRegions] = {1, 0, 1, 1, 1, 1};
+  Evaluate(h, pose.data(), scales, kNoExpressions, nullptr,
+           TongueMode::kAuthored, muted, 1, 1, .5f, 1);
+  Check(muted == base, "speech smile respects disabled eye motion");
+  float levels[kNumExpressions] = {};
+  levels[kHappy - kExpression] = .5f;
+  Evaluate(h, nullptr, kScales, levels, nullptr, TongueMode::kAuthored, base, 1,
+           1, 0);
+  Evaluate(h, nullptr, kScales, levels, nullptr, TongueMode::kAuthored, boosted,
+           1, 1, .5f);
+  ok = true;
+  for (uint32_t i = 0; i < h.nv * 3; ++i)
+    ok &= std::fabs(boosted[h.skin][i] - base[h.skin][i] -
+                    (i < 3 ? .25f : 0.f)) < 1e-5f;
+  Check(ok, "native happiness gains eye motion without changing mouth");
+}
+
 void MorphSelection() {
   // Runtime capture must visit each (type, index) once per shape.
   for (Part part : {Part::kHead, Part::kMouth, Part::kEyes, Part::kPinned}) {
@@ -716,6 +768,7 @@ int RunTests() {
     JawAndCarriedPose(fixture);
     if (mode == TongueMotion::kNone) {
       MouthScaling(fixture.head);
+      SmileEyes(fixture.head);
     } else {
       TongueCues(fixture, mode);
       OverlapAndToggle(fixture, mode);

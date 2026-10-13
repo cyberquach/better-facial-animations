@@ -2,6 +2,60 @@
   "schema": 1,
   "contracts": [
     {
+      "id": "npc-blacklist",
+      "test": "npc_blacklist_test",
+      "sources": [
+        "tests/npc_blacklist_test.cc"
+      ],
+      "plugin_objects": true,
+      "link": [
+        "-Wl,--wrap=_ZN4skse4AddrEy"
+      ],
+      "covers": [
+        "full/light NPC base identity, load-order changes, missing plugins and persistent removal",
+        "player and temporary-base rejection, hotkey persistence and defaults preservation",
+        "speech/provider admission and immediate expression/morph handoff across SE/AE/VR"
+      ]
+    },
+    {
+      "id": "npc-menu",
+      "test": "npc_menu_test",
+      "sources": [
+        "tests/npc_menu_test.cc",
+        "src/plugin/settings.cc",
+        "src/runtime/skse.cc"
+      ],
+      "link": [
+        "-Wl,--wrap=_ZN4skse4AddrEy",
+        "-Wl,--wrap=_ZN3bfa15ScheduleSaveIniEv",
+        "-lshell32",
+        "-lole32",
+        "-luuid"
+      ],
+      "covers": [
+        "keyboard binding, cancellation, repeat/release consumption and menu/text guards",
+        "retained target identity, explicit confirmation, removal and invalid targets",
+        "deferred task cancellation on load, reference lifetime and optional desktop targeting"
+      ]
+    },
+    {
+      "id": "face-update",
+      "test": "face_update_test",
+      "sources": [
+        "tests/face_update_test.cc"
+      ],
+      "plugin_objects": true,
+      "link": [
+        "-Wl,--wrap=_ZN4skse4AddrEy"
+      ],
+      "covers": [
+        "zero-time pose refreshes recompute without advancing native facial time",
+        "normal, repeated, scaled, slow and paused updates retain their supplied delta",
+        "nested and concurrent face contexts, world reset and hook chaining",
+        "SE/AE/VR node layouts and protected virtual-slot installation"
+      ]
+    },
+    {
       "id": "model-switch",
       "test": "model_switch_test",
       "sources": [
@@ -47,7 +101,9 @@
         "missing API, rejected flags, driver refusal and device removal",
         "factory reference lifetime and invalid success responses",
         "DML1 and metacommand capability failures",
-        "missing DirectML.dll beside the model with DML1 present"
+        "missing DirectML.dll beside the model with DML1 present",
+        "one retained device, DirectML device and queue across probes and model/CPU transitions",
+        "partial initialization and removed-device failures latch without recreation"
       ]
     },
     {
@@ -178,8 +234,13 @@
         "synthetic HDPT classification",
         "Lily/Alma/DVA/Eve/Squirrel Girl mouth-extra names",
         "nested/cyclic mouth extras and jewelry exclusions",
+        "True 3D Mouth face-owned Misc graph on SE/AE/VR",
+        "oral hints survive face/eye/beard inheritance and unnamed intermediates",
         "candidate morph capture and vertex restoration",
-        "unregistered candidate traversal"
+        "unregistered candidate traversal",
+        "recursive hair exclusion and shared/cyclic hair extras",
+        "SE/AE/VR hair-tint guards, KS Scarlet aliases and SMP support meshes",
+        "hair-tinted beard, brow and eye-attached lash controls"
       ]
     },
     {
@@ -554,6 +615,16 @@
           "id": "00084E",
           "editor_id": "0_KhajiitAlfiqRaceBoss"
         }
+      ]
+    },
+    {
+      "id": "hair-assets",
+      "python": "tools/hair_assets.py",
+      "fixture_directory": true,
+      "covers": [
+        "pinned installed HDPT registries and dynamic mesh names/shader flags",
+        "18,582 excluded scalp-hair occurrences and 12,314 preserved facial-hair controls",
+        "production capture/playback traversal, including inactive source variants"
       ]
     }
   ],

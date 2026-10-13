@@ -29,6 +29,9 @@ direct::Part Classify(const char* name, bool& skin);
 // only a hint; BuildHead checks placement and morph data before promotion.
 bool MouthCandidate(const char* name);
 
+// Hair-tinted geometry is excluded unless it is identifiable facial hair.
+bool HairGeometry(uint8_t* shape, const char* name);
+
 // Base (pre-morph) vertices of a face shape: its "FOD" extra data.
 const float* BaseVerts(uint8_t* shape, uint32_t& nv);
 
@@ -60,6 +63,7 @@ void ForFaceShapes(uint8_t* node, Fn fn) {
     bool skin = false;
     direct::Part part = name ? Classify(name, skin) : direct::Part::kNone;
     if (part == direct::Part::kNone && (!name || !MouthCandidate(name))) continue;
+    if (HairGeometry(shape, name)) continue;
     uint32_t nv = Field<uint16_t>(shape, kDynNumVerts.Get());
     if (Field<uint32_t>(shape, kDynDataSize.Get()) != nv * 16) continue;
     uint32_t nb = 0;
