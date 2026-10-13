@@ -140,6 +140,21 @@ int main() {
       LoadRaceSettings();
       CHECK(SpeakerOk(actor));
     }
+    // Eligibility is independent of cached geometry, names and load order.
+    CHECK(!LimitLowerLip(nullptr));
+    Field<uint8_t*>(actor, kActorRace.Get()) = nullptr;
+    CHECK(!LimitLowerLip(actor));
+    Field<uint8_t*>(actor, kActorRace.Get()) = race.data();
+    for (uint32_t id : {0x13745u, 0x88845u, 0x13740u, 0x8883Au}) {
+      Field<uint32_t>(race.data(), kFormId) = id;
+      CHECK(LimitLowerLip(actor));
+      Field<uint32_t>(race.data(), kFormId) = id | 0x05000000;
+      CHECK(!LimitLowerLip(actor));
+    }
+    for (uint32_t id : {0u, 0x13746u, 0x13747u, 0x06000800u, 0xFE123ABCu}) {
+      Field<uint32_t>(race.data(), kFormId) = id;
+      CHECK(!LimitLowerLip(actor));
+    }
     Field<uint32_t>(race.data(), kFormId) = 0x13746;
     SetOwner("DWAlfiqKhajiit.esp");
     source.count = 0;
