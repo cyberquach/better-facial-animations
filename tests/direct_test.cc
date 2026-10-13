@@ -53,6 +53,86 @@ void Check(bool ok, const char* label) {
   if (!ok) ++failures;
 }
 
+void CheckLipJawMotion(const Head& h, const ShapeIn& skin,
+                       uint32_t first_skin) {
+  std::vector<float> c(h.k + kNumMouthCoef, 0.f);
+  // A shut jaw still permits upward lip closure, but no downward gap.
+  c[0] = 1;
+  for (float direction : {-1.f, 1.f}) {
+    Head vertical = h;
+    vertical.basis = {0.f, 0.f, direction};
+    std::vector<std::vector<float>> result;
+    Evaluate(vertical, c.data(), kScales, kNoExpressions, nullptr,
+             TongueMode::kAuthored, result, 1, 1, 0, 0, true);
+    bool ok = true;
+    for (uint32_t i = 4; i < 8; ++i) {
+      const float z = result[0][(first_skin + i) * 3 + 2];
+      ok &= direction < 0 ? std::fabs(z) < 1e-5f : z > 0;
+    }
+    Check(ok, "closed jaw limits downward motion and preserves upward closure");
+  }
+  // A rotating jaw has different vertical travel at each lip point.
+  Head rotated = h;
+  rotated.basis = {0.f, 0.f, -10.f};
+  std::fill_n(rotated.jaw_motion, 9, 0.f);
+  rotated.jaw_motion[0] = rotated.jaw_motion[4] = rotated.jaw_motion[8] = 1.f;
+  const float angle = -0.15f, cs = std::cos(angle), sn = std::sin(angle);
+  for (int i = 0; i < kNumJawPoints; ++i) {
+    const float y = h.jaw_points[i * 3 + 1], z = h.jaw_points[i * 3 + 2];
+    c[h.k + a2f::kNumTongue + i * 3 + 1] = cs * y - sn * z - y;
+    c[h.k + a2f::kNumTongue + i * 3 + 2] = sn * y + cs * z - z;
+  }
+  std::vector<std::vector<float>> rotation;
+  Evaluate(rotated, c.data(), kScales, kNoExpressions, nullptr,
+           TongueMode::kAuthored, rotation, 1, 1, 0, 0, true);
+  bool follows_rotation = true;
+  for (uint32_t i = 4; i < 8; ++i) {
+    const uint32_t v = first_skin + i;
+    const float y = skin.verts[v * 3 + 1], z = skin.verts[v * 3 + 2];
+    follows_rotation &=
+        std::fabs(rotation[0][v * 3 + 2] - (sn * y + cs * z - z)) < 1e-4f;
+  }
+  Check(follows_rotation, "lower lip limit follows local jaw rotation");
+}
+
+// Use the same cached head with the limit enabled and disabled. A caller's
+// race choice must not change the shared mapping or other mouth behavior.
+void CheckLipJawFade(const Head& head, uint32_t partial, uint32_t outside) {
+  Head h = head;
+  h.basis = {0.3f, 0.2f, -1.f};
+  std::vector<float> c(h.k + kNumMouthCoef, 0.f);
+  c[0] = 1;
+  const float weight = h.lip_w[partial * 2 + 1];
+  Check(weight > 0.f && weight < 1.f && h.lip_w[outside * 2 + 1] == 0.f,
+        "fixture has partial and zero-weight neighboring lower lip vertices");
+  Head legacy = h;
+  legacy.lip_jaw.clear();
+  for (auto mode : {TongueMode::kAuthored, TongueMode::kModel}) {
+    std::vector<std::vector<float>> enabled, disabled, original, again;
+    Evaluate(h, c.data(), kScales, kNoExpressions, nullptr, mode, enabled, 1, 1,
+             0, 0, true);
+    Evaluate(h, c.data(), kScales, kNoExpressions, nullptr, mode, disabled);
+    Evaluate(legacy, c.data(), kScales, kNoExpressions, nullptr, mode, original,
+             1, 1, 0, 0, true);
+    Evaluate(h, c.data(), kScales, kNoExpressions, nullptr, mode, again, 1, 1,
+             0, 0, true);
+    Check(disabled == original && enabled == again,
+          "race gate preserves legacy output and does not mutate cached heads");
+    const float before = disabled[0][partial * 3 + 2];
+    const float after = enabled[0][partial * 3 + 2];
+    Check(before < after && after < 0.f &&
+              std::fabs(after - before * (1.f - weight)) < 1e-5f,
+          "partial lip weight fades the correction instead of fully clamping");
+    bool unchanged = true;
+    for (int j = 0; j < 3; ++j)
+      unchanged &= enabled[0][outside * 3 + j] == disabled[0][outside * 3 + j];
+    for (uint32_t v : {partial, outside})
+      for (int j = 0; j < 2; ++j)
+        unchanged &= enabled[0][v * 3 + j] == disabled[0][v * 3 + j];
+    Check(unchanged, "fade preserves the outer neighbor and horizontal motion");
+  }
+}
+
 // An oral border duplicates skin positions and native jaw motion, as on
 // Khajiit. Nearby teeth alone must not become skin followers.
 void SharedMouthBorder(const Mark& mk, ShapeIn skin, ShapeIn mouth) {
@@ -71,6 +151,13 @@ void SharedMouthBorder(const Mark& mk, ShapeIn skin, ShapeIn mouth) {
     for (uint32_t v = shape->nv - 8; v < shape->nv; ++v)
       shape->morphs[kBigAah][v * 3 + 2] = v < shape->nv - 4 ? 0 : -0.4f;
   }
+  // Neighbors beyond the full-strength border exercise the skin fade.
+  skin.verts.insert(skin.verts.end(), {2.3f, 9.f, -2.2f, 2.8f, 9.f, -2.2f});
+  skin.nv += 2;
+  for (auto& morph : skin.morphs)
+    if (!morph.empty()) morph.resize(skin.nv * 3);
+  for (uint32_t v = skin.nv - 2; v < skin.nv; ++v)
+    skin.morphs[kBigAah][v * 3 + 2] = -0.4f;
   std::string why;
   for (float factor : {0.5f, 1.f, 2.f}) {
     for (bool skeleton_mouth : {false, true}) {
@@ -96,6 +183,7 @@ void SharedMouthBorder(const Mark& mk, ShapeIn skin, ShapeIn mouth) {
       h.shapes[1].expr[10].assign(m.nv * 3, 0.1f);
       Head detached = h;
       detached.shapes[1].seam.clear();
+      detached.lip_jaw.clear();
       std::vector<float> c(h.k + kNumMouthCoef, 0);
       c[0] = 1;
       for (int i = 0; i < kNumJawPoints; ++i)
@@ -105,34 +193,52 @@ void SharedMouthBorder(const Mark& mk, ShapeIn skin, ShapeIn mouth) {
           float scales[kNumRegions] = {1, 1, 1, 1, 2 - lip, 1};
           std::vector<std::vector<float>> actual, original;
           Evaluate(h, c.data(), scales, kNoExpressions, nullptr, mode, actual,
-                   lip, 2 - lip);
+                   lip, 2 - lip, 0, 0, true);
           Evaluate(detached, c.data(), scales, kNoExpressions, nullptr, mode,
-                   original, lip, 2 - lip);
+                   original, lip, 2 - lip, 0, 0, true);
           bool closed = true;
           for (uint32_t i = 0; i < 8; ++i)
             for (int j = 0; j < 3; ++j)
               closed &= actual[1][(first_mouth + i) * 3 + j] ==
                         actual[0][(first_skin + i) * 3 + j];
           Check(closed, "speech preserves the authored oral seam offset");
-          Check(actual[0] == original[0] &&
-                    std::equal(actual[1].begin(),
-                               actual[1].begin() + first_mouth * 3,
-                               original[1].begin()),
-                "seam correction preserves skin and rigid interior teeth");
+          bool limited = true, upper_unchanged = true;
+          const float jaw_z = -0.25f * h.jaw_motion[7] * scales[kJaw];
+          for (uint32_t i = 0; i < 8; ++i) {
+            const uint32_t v = first_skin + i;
+            if (i >= 4)
+              limited &= actual[0][v * 3 + 2] >= jaw_z - 1e-5f;
+            else
+              for (int j = 0; j < 3; ++j)
+                upper_unchanged &=
+                    actual[0][v * 3 + j] == original[0][v * 3 + j];
+            for (int j = 0; j < 2; ++j)
+              limited &= actual[0][v * 3 + j] == original[0][v * 3 + j];
+          }
+          Check(limited, "lower lip cannot drop below rigid jaw displacement");
+          Check(upper_unchanged, "upper lip retains independent articulation");
+          Check(
+              std::equal(actual[1].begin(), actual[1].begin() + first_mouth * 3,
+                         original[1].begin()),
+              "lip lock preserves rigid interior teeth");
         }
       }
+      CheckLipJawMotion(h, s, first_skin);
+      CheckLipJawFade(h, skin.nv - 2, skin.nv - 1);
       float expr[kNumExpressions] = {};
       expr[10] = 1;
       std::vector<std::vector<float>> actual, original;
-      Evaluate(h, nullptr, kScales, expr, nullptr, TongueMode::kAuthored, actual);
+      Evaluate(h, nullptr, kScales, expr, nullptr, TongueMode::kAuthored,
+               actual, 1, 1, 0, 0, true);
       Evaluate(detached, nullptr, kScales, expr, nullptr, TongueMode::kAuthored,
-               original);
+               original, 1, 1, 0, 0, true);
       Check(actual == original, "expression-only playback is unchanged");
       const auto expression = actual;
       std::vector<std::vector<float>> speech;
       Evaluate(h, c.data(), kScales, kNoExpressions, nullptr,
-               TongueMode::kAuthored, speech);
-      Evaluate(h, c.data(), kScales, expr, nullptr, TongueMode::kAuthored, actual);
+               TongueMode::kAuthored, speech, 1, 1, 0, 0, true);
+      Evaluate(h, c.data(), kScales, expr, nullptr, TongueMode::kAuthored,
+               actual, 1, 1, 0, 0, true);
       bool overlay = true;
       for (size_t si = 0; si < actual.size(); ++si)
         for (size_t i = 0; i < actual[si].size(); ++i)
@@ -141,7 +247,7 @@ void SharedMouthBorder(const Mark& mk, ShapeIn skin, ShapeIn mouth) {
       Check(overlay, "speech seam correction preserves authored expressions");
       std::fill(c.begin(), c.end(), 0);
       Evaluate(h, c.data(), kScales, kNoExpressions, nullptr,
-               TongueMode::kAuthored, actual);
+               TongueMode::kAuthored, actual, 1, 1, 0, 0, true);
       Check(std::all_of(actual[1].begin(), actual[1].end(),
                         [](float v) { return std::fabs(v) < 1e-5f; }),
             "zero speech leaves the mouth at rest");
@@ -155,7 +261,8 @@ void SharedMouthBorder(const Mark& mk, ShapeIn skin, ShapeIn mouth) {
       if (control == 1) m.morphs[kBigAah][v * 3 + 2] += 1;
     }
     Head h;
-    Check(BuildHead(mk, {skin, m}, h, why) && h.shapes[1].seam.empty(),
+    Check(BuildHead(mk, {skin, m}, h, why) && h.shapes[1].seam.empty() &&
+              h.lip_jaw.empty(),
           "nearby teeth, conflicting morphs and sparse contacts are not seams");
   }
 }
@@ -164,9 +271,9 @@ void SharedMouthBorder(const Mark& mk, ShapeIn skin, ShapeIn mouth) {
 bool BuildFixture(TongueMotion mode, MouthFixture& fixture) {
   Mark mk;
   // the landmarks' places, and one skin vertex at each (plus filler)
-  const float lm[kNumLandmarks][3] = {
-      {-3, 8, 4}, {3, 8, 4},  {-3, 8, 6},  {3, 8, 6},
-      {0, 8, -5}, {0, 9, -2}, {-2, 8, -1}, {2, 8, -1}};
+  const float lm[kNumLandmarks][3] = {{-3, 8, 4},  {3, 8, 4},  {-3, 8, 6},
+                                      {3, 8, 6},   {0, 8, -5}, {0, 9, -2},
+                                      {-2, 8, -1}, {2, 8, -1}};
   for (int i = 0; i < kNumLandmarks * 3; ++i)
     mk.landmarks[i] = lm[i / 3][i % 3];
   std::vector<float> v(&lm[0][0], &lm[0][0] + kNumLandmarks * 3);
@@ -182,8 +289,8 @@ bool BuildFixture(TongueMotion mode, MouthFixture& fixture) {
   mk.jaw[4] = -1;
   mk.row.assign(mk.nv, -1);
   mk.proj.assign(a2f::kNumPca, 0.f);
-  const float jaw[a2f::kNumJaw] = {
-      -2, 2, -3, 2, 2, -3, -1, 7, -3, 1, 7, -3, 0, 8, -4};
+  const float jaw[a2f::kNumJaw] = {-2, 2, -3, 2,  2, -3, -1, 7,
+                                   -3, 1, 7,  -3, 0, 8,  -4};
   std::copy(jaw, jaw + a2f::kNumJaw, mk.jaw_points);
   mk.jaw_strength = 2;
   mk.rest.assign(a2f::kNumOut, 0.f);

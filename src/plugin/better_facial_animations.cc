@@ -450,6 +450,22 @@ bool IsFemale(uint8_t* ref) {
          (Field<uint32_t>(base, kNpcFlags) & 1);
 }
 
+// Exact base-game race IDs also cover overridden records and custom NPCs
+// using those races. Shared head geometry alone must not enable this limit.
+bool LimitLowerLip(uint8_t* actor) {
+  uint8_t* race = actor ? Field<uint8_t*>(actor, kActorRace.Get()) : nullptr;
+  if (!race) return false;
+  switch (Field<uint32_t>(race, kFormId)) {
+    case 0x13745:  // Khajiit
+    case 0x88845:  // Khajiit vampire
+    case 0x13740:  // Argonian
+    case 0x8883A:  // Argonian vampire
+      return true;
+    default:
+      return false;
+  }
+}
+
 bool RaceAllowed(uint8_t* actor) {
   uint8_t* race = actor ? Field<uint8_t*>(actor, kActorRace.Get()) : nullptr;
   return !race || RaceEnabled(Field<uint32_t>(race, kFormId));
@@ -2329,7 +2345,8 @@ void AddDirect(uint8_t* node, bool reset) {
                         tune.disable_tongue ? direct::TongueMode::kModel
                                             : direct::TongueMode::kAuthored,
                         deltas, settings.upper_lip, settings.lower_lip,
-                        settings.smile_eyes, coefficients[joy_index]))
+                        settings.smile_eyes, coefficients[joy_index],
+                        LimitLowerLip(actor)))
     return;
   float peak[3] = {};
   const bool added = AddDeltas(node, *head, deltas, peak);
