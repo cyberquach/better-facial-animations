@@ -67,8 +67,9 @@ enum Morph {
   kK,
   kTh,
   kR,
-  kExpression,                // kNumExpressions
-  kHappy = kExpression + 10,  // MoodHappy
+  kExpression,                       // kNumExpressions
+  kDialogueHappy = kExpression + 2,  // DialogueHappy
+  kHappy = kExpression + 10,         // MoodHappy
   kAah = kExpression + kNumExpressions,
   kBmp,
   kChJSh,
@@ -226,11 +227,14 @@ constexpr float kLowerLipCalibration = 1.2f;
 // (times k{Upper,Lower}LipCalibration) affect speech skin motion only;
 // followers and shared oral borders inherit it, interior jaw/tongue and
 // engine expressions retain their
-// existing controls.
+// existing controls. Smile eyes adds the authored MoodHappy eye-region motion
+// during speech (speech_joy is the faded, capped line mean joy) and boosts
+// the eye portion of native happy expressions. Zero preserves the old pose.
 bool Evaluate(const Head& head, const float* coefficients, const float* scales,
               const float* expressions, const float* phonemes,
               TongueMode tongue_mode, std::vector<std::vector<float>>& out,
-              float upper_lip = 1, float lower_lip = 1);
+              float upper_lip = 1, float lower_lip = 1, float smile_eyes = 0,
+              float speech_joy = 0);
 
 // The line's coefficients (head.k + kNumMouthCoef) at a fractional frame (of
 // the line's own rate), as

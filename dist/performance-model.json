@@ -1,12 +1,25 @@
 {
-  "architecture": "Thin96",
-  "parameters": 55385,
-  "training_epochs": 20,
-  "source_commit": "463a3953e26882268d3878007bad5deeb0768eaa",
-  "onnx_sha256": "6ca7c152ad8dad2250f5a3eddde54e0111d5715d122bd8b93b9705af8252d451",
+  "architecture": "Thin120",
+  "parameters": 80729,
+  "training_epochs": 200,
+  "source_commit": "65331d83735542169003d8c629c657f60ae3de14",
+  "onnx_sha256": "a47628fa281ea24771f758b5683ec8af3d182fff5c805c7f13cbdd4b82b1adff",
   "normalization_sha256": "6d68d40ca42da0d4ca33d1de67b6e42ad84420637ba1ecc840d322d70f712b9a",
   "frontend": "student_model.mel_features; 16kHz mono, 30Hz, 80 log-mel channels; context17",
   "output": "48 skin + 10 tongue + 15 jaw; normalization in performance_stats.h; no gaze",
   "coverage": "308255 Skyrim/DLC/installed-mod canonical recordings, both identities; neutral or one hash-assigned emotion0.5; formerly held-out data included",
-  "limitations": "Less emotive; arbitrary dialogue/emotion settings and Steam Deck not validated; numerical targets projected at30Hz"
+  "limitations": "Experimental screening checkpoint, not final refined model; former holdouts used for training; arbitrary dialogue/emotion settings, visual quality and Steam Deck not validated; numerical targets projected at 30Hz; no gaze",
+  "selected_checkpoint_epoch": 199,
+  "training_manifest_sha256": "3a307335bb52ad235149fe19c93c75cb89e017eb26aea43502e8e868a7c9316d",
+  "checkpoint_sha256": "064beb1d259dce9cdf8dce229ecd09d4c48dc2ecfc7194b0be0de5d7ea18cb25",
+  "initialization": "Thin120 function-preserving widened trained Thin96",
+  "reconstruction": {
+    "frames": 83314868,
+    "normalized_mse": 0.4315704891977972,
+    "velocity_mse": 0.05976350049315744,
+    "skin_rmse": 2.349323287269659,
+    "tongue_rmse": 1.3790154859634693,
+    "jaw_rmse": 0.06967078752437367
+  },
+  "export_max_abs_error": 3.874301910400391e-06
 }

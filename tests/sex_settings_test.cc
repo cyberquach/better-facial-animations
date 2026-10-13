@@ -69,7 +69,7 @@ int main() {
   CHECK(t.male.time_offset == .12f && t.female.time_offset == .12f);
   CHECK(t.male.voice_emotion == .375f && t.female.voice_emotion == .375f);
   CHECK(t.old_model && !t.logging);
-  CHECK(GetPrivateProfileIntA("General", "IniVersion", 0, ini) == 6);
+  CHECK(GetPrivateProfileIntA("General", "IniVersion", 0, ini) == 7);
   CHECK(t.player_face.upper_lip == 1 && t.player_face.lower_lip == 1);
   CHECK(t.player_face.voice_emotion == 1 && t.player_face.time_offset == 0);
   CHECK(&t.ForActor(false, true) == &t.player_face);
@@ -85,6 +85,19 @@ int main() {
   LoadIni();  // conversion is applied once, not on each load
   CHECK(SnapshotTune().male.upper_lip == 1);
   CHECK(SnapshotTune().female.lower_lip == 1);
+  // Version 7: caps saved at the old default of 2 take the new default of 1;
+  // deliberate caps, and caps written at version 7, are kept.
+  write("General", "IniVersion", "6");
+  write("EmotionMale", "MaxJoy", "2");
+  write("EmotionFemale", "MaxAnger", "1.5");
+  write("EmotionPlayer", "MaxFear", "2");
+  LoadIni();
+  CHECK(SnapshotTune().male.max_emotion[a2f::kJoy] == 1);
+  CHECK(SnapshotTune().female.max_emotion[a2f::kAnger] == 1.5f);
+  CHECK(SnapshotTune().player_face.max_emotion[a2f::kFear] == 1);
+  write("EmotionMale", "MaxJoy", "2");
+  LoadIni();
+  CHECK(SnapshotTune().male.max_emotion[a2f::kJoy] == 2);
   // The shared menu entry must remain a checkbox bound to live gaze tuning.
   const Param* gaze = nullptr;
   for (const Param& p : kParams) {
@@ -107,6 +120,17 @@ int main() {
   CHECK(SnapshotTune().conversation_gaze && SnapshotTune().gaze_strength == 1);
   LoadIni();
   CHECK(!SnapshotTune().conversation_gaze && SnapshotTune().gaze_strength == 1.5f);
+  CHECK(SnapshotTune().male.smile_eyes == 1.0f &&
+        SnapshotTune().female.smile_eyes == 1.0f &&
+        SnapshotTune().player_face.smile_eyes == 1.0f);
+  int smile_profiles = 0;
+  for (const Param& p : kParams)
+    if (!strcmp(p.key, "SmileEyes")) {
+      CHECK(p.value && p.sec == Sec::kDirect && p.profile >= 0 &&
+            p.profile < 3);
+      smile_profiles |= 1 << p.profile;
+    }
+  CHECK(smile_profiles == 7);
   // Every slider has independent storage and survives saving and reloading.
   std::vector<float> expected;
   for (const Param& p : kParams) {
@@ -205,7 +229,7 @@ int main() {
   write("EmotionFemale", "MaxJoy", "-1");
   write("EmotionPlayer", "MaxJoy", "9");
   LoadIni();
-  CHECK(SnapshotTune().male.max_emotion[a2f::kJoy] == 2);
+  CHECK(SnapshotTune().male.max_emotion[a2f::kJoy] == 1);
   CHECK(SnapshotTune().female.max_emotion[a2f::kJoy] == 0);
   CHECK(SnapshotTune().player_face.max_emotion[a2f::kJoy] == 2);
   ResetTune();

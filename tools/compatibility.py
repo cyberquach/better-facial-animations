@@ -233,7 +233,7 @@ def main():
     inputs += sorted((ROOT / 'tests').glob('*.cc'))
     inputs += sorted((ROOT / 'tests').glob('*.py'))
     inputs += [ROOT / c['python'] for c in selected if c.get('python')]
-    inputs += [ROOT / 'tests/follower_teeth.json']
+    inputs += [ROOT / 'tests/follower_teeth.json', ROOT / 'tests/hair_assets.json']
     report = {
         'schema': 1,
         'tier': args.tier,
