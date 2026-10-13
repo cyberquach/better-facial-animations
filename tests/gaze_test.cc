@@ -204,6 +204,29 @@ void AdmissionAndRestoration() {
   Draw(true);
   CHECK(!mods.is_updated);
   Draw(true);  // same baseline, no accumulation
+  std::array<uint8_t, 0x100> base{};
+  base[kFormType] = kFtNpc;
+  Field<uint32_t>(base.data(), kFormId) = 0x05001234;
+  Field<void*>(npc.data(), kRefrBase) = base.data();
+  const NpcSetting excluded{0x05001234, "follower.esp|001234", "Follower",
+                            true};
+  SetNpcBlocked(excluded, true);
+  Draw(false);  // even before the speech/morph handoff, disabled override
+                // yields gaze
+  SetNpcBlocked(excluded, false);
+  Draw(true);
+  auto customized = excluded;
+  customized.blocked = false;
+  customized.values = {{"GazeStrength", .5f}, {"ConversationGaze", 1}};
+  Toggle("ConversationGaze", false);
+  SetNpcOverride(customized);
+  Draw(true, .5f);  // per-NPC gaze and strength override the global controls
+  customized.values["ConversationGaze"] = 0;
+  SetNpcOverride(customized);
+  Toggle("ConversationGaze", true);
+  Draw(false);
+  RemoveNpcOverride(customized);
+  Draw(true);
   Strength(0);
   Draw(false);  // zero strength keeps the game's gaze
   Strength(2);

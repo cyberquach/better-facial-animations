@@ -45,6 +45,12 @@ std::vector<std::string> DiagnoseNet(bool gpu, const std::string& err,
   };
   std::vector<std::string> out;
   char b[400];
+  if (gpu && has("GPU disabled until restart")) {
+    out.push_back("GPU context unavailable; using CPU fallback if available.");
+    out.push_back("Restart the game to retry the GPU. Switching models will "
+                  "not recreate a failed graphics device.");
+    return out;
+  }
   if (gpu && has("independent device:")) {
     out.push_back("Independent GPU device failed; using CPU fallback if available.");
     out.push_back("This mode requires a supporting D3D12 runtime and driver. "

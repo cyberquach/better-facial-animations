@@ -49,6 +49,31 @@ bool mapper_started;
 // after; filled once at data loaded, empty if the forms didn't look right.
 auto& head_part_types = *new std::unordered_map<std::string, uint32_t>;
 auto& mouth_extras = *new std::unordered_set<std::string>;
+auto& hair_parts = *new std::unordered_set<std::string>;
+
+bool FacialHairName(const std::string& name) {
+  for (const char* word :
+       {"facialhair", "facial_hair", "facial hair", "beard", "mustache",
+        "moustache", "goatee", "stubble", "sideburn"})
+    if (name.find(word) != std::string::npos) return true;
+  return false;
+}
+
+// Fallback for unregistered shapes and Misc/custom hair slots. Explicit
+// facial-hair names remain facial followers, not scalp hair.
+bool HairName(const std::string& name) {
+  // Invisible SMP support meshes must also stay with their hair.
+  if (name.find("virtualhead") != std::string::npos ||
+      name.find("virtualbody") != std::string::npos)
+    return true;
+  if (name.find("scalp") != std::string::npos) return true;
+  if (name.find("hair") == std::string::npos) return false;
+  return !FacialHairName(name);
+}
+
+bool HairFallbackType(uint32_t type) {
+  return type == kHpMisc || type > kHpEyebrows;
+}
 
 bool JewelryName(const std::string& name) {
   for (const char* word : {"pierc", "ring", "stud", "pendant", "necklace"})
@@ -68,11 +93,12 @@ bool MouthName(const std::string& name) {
 
 // Extra parts (long beards' _1bit meshes, Khajiit mustache alphas, lashes,
 // hairlines, blind eyes) are mostly Misc: they take their parent's type.
-// Hair extras stay Misc (ear tufts, ear pieces); primary hair is excluded.
+// Hair and all linked extras are excluded, including nested/shared extras.
 // Custom slots (e.g. piercings) keep their full 32-bit type.
 void LoadHeadPartTypes() {
   head_part_types.clear();
   mouth_extras.clear();
+  hair_parts.clear();
   const BSTArray* parts = FormArray(kFtHeadPart);
   if (!parts) {
     Log("head parts: no form array, using shape names");
@@ -94,18 +120,31 @@ void LoadHeadPartTypes() {
     const char* name = name_of(hp);
     if (name && *name) types[Lower(name)] = type;
   }
-  uint32_t inherited = 0;
+  // Exclusion takes precedence over every inherited type and mouth hint.
+  // Follow the complete graph, including unnamed intermediates, custom slots,
+  // shared extras and cycles. A hair-owned accessory must not move separately
+  // from the primary hair, even when another part also references it.
+  std::vector<uint8_t*> hair_pending;
+  std::unordered_set<uint8_t*> hair_visited;
   for (uint32_t i = 0; i < parts->n; ++i) {
-    uint32_t type = type_of(parts->items[i]);
-    const auto& extras = Field<BSTArray>(parts->items[i], kHeadPartExtras);
-    if (type == kHpMisc || type == kHpHair || !extras.Ok()) continue;
+    uint8_t* hp = parts->items[i];
+    const char* name = name_of(hp);
+    if (type_of(hp) == kHpHair ||
+        (HairFallbackType(type_of(hp)) && name && HairName(Lower(name))))
+      hair_pending.push_back(hp);
+  }
+  while (!hair_pending.empty()) {
+    uint8_t* hp = hair_pending.back();
+    hair_pending.pop_back();
+    if (!hair_visited.insert(hp).second) continue;
+    const char* name = name_of(hp);
+    if (name && *name) hair_parts.insert(Lower(name));
+    const auto& extras = Field<BSTArray>(hp, kHeadPartExtras);
+    if (!extras.Ok()) continue;
     for (uint32_t j = 0; j < extras.n; ++j) {
-      uint8_t* x = extras.items[j];
-      const char* name =
-          x && x[kFormType] == kFtHeadPart ? name_of(x) : nullptr;
-      if (!name || !*name || type_of(x) != kHpMisc) continue;
-      types[Lower(name)] = type;
-      ++inherited;
+      uint8_t* extra = extras.items[j];
+      if (extra && extra[kFormType] == kFtHeadPart)
+        hair_pending.push_back(extra);
     }
   }
   // Mouths have no dedicated engine slot. Propagate a candidate hint along
@@ -130,9 +169,27 @@ void LoadHeadPartTypes() {
       if (!extra || extra[kFormType] != kFtHeadPart ||
           type_of(extra) != kHpMisc) continue;
       const char* name = name_of(extra);
-      if (!name || !*name || JewelryName(Lower(name))) continue;
-      mouth_extras.insert(Lower(name));
+      if (name && JewelryName(Lower(name))) continue;
+      if (name && *name) mouth_extras.insert(Lower(name));
       pending.push_back(extra);
+    }
+  }
+  uint32_t inherited = 0;
+  for (uint32_t i = 0; i < parts->n; ++i) {
+    uint32_t type = type_of(parts->items[i]);
+    const auto& extras = Field<BSTArray>(parts->items[i], kHeadPartExtras);
+    if (type == kHpMisc || type == kHpHair || !extras.Ok()) continue;
+    for (uint32_t j = 0; j < extras.n; ++j) {
+      uint8_t* x = extras.items[j];
+      const char* name =
+          x && x[kFormType] == kFtHeadPart ? name_of(x) : nullptr;
+      if (!name || !*name || type_of(x) != kHpMisc) continue;
+      // Oral Misc parts retain their identity even when owned/shared by a
+      // face, beard or eye part. Ambiguous names still need geometry approval.
+      const std::string n = Lower(name);
+      if (MouthName(n) || mouth_extras.count(n)) continue;
+      types[n] = type;
+      ++inherited;
     }
   }
   head_part_types = std::move(types);
@@ -147,18 +204,30 @@ static uint32_t HeadPartTypeOf(const std::string& n) {
   return it == head_part_types.end() ? kHpUnknown : it->second;
 }
 
-bool MouthCandidate(const char* name) {
-  const std::string n = Lower(name);
-  const uint32_t type = HeadPartTypeOf(n);
+bool ExcludedHair(const std::string& n, uint32_t type) {
+  return type == kHpHair || hair_parts.count(n) != 0 ||
+         (HairFallbackType(type) && HairName(n));
+}
+
+// MouthCandidate for an already lowered name and its registered type.
+bool OralCandidate(const std::string& n, uint32_t type) {
+  if (ExcludedHair(n, type)) return false;
   if (type != kHpUnknown && type != kHpMisc) return false;
   // Explicit jewelry names win even when attached as mouth extras.
   if (JewelryName(n)) return false;
   return MouthName(n) || mouth_extras.count(n) != 0;
 }
 
+bool MouthCandidate(const char* name) {
+  const std::string n = Lower(name);
+  return OralCandidate(n, HeadPartTypeOf(n));
+}
+
 direct::Part Classify(const char* name, bool& skin) {
   std::string n = Lower(name);
   uint32_t type = HeadPartTypeOf(n);
+  skin = false;
+  if (ExcludedHair(n, type)) return direct::Part::kNone;
   skin = type != kHpUnknown ? type == kHpFace
                             : n.find("head") != std::string::npos &&
                                   n.find("brow") == std::string::npos &&
@@ -182,7 +251,16 @@ direct::Part Classify(const char* name, bool& skin) {
   if (JewelryName(n))
     return type != kHpUnknown ? direct::Part::kPinned : direct::Part::kNone;
   // Misc (mouths, stray parts) or unknown: by name
-  if (n.find("mouth") != std::string::npos) return direct::Part::kMouth;
+  if (n.find("mouth") != std::string::npos) {
+    skin = false;
+    return direct::Part::kMouth;
+  }
+  // Teeth/tongue names and unnamed oral descendants can contain head/eye
+  // words too. Keep them out of skin selection until geometry confirms them.
+  if (OralCandidate(n, type)) {
+    skin = false;
+    return type != kHpUnknown ? direct::Part::kPinned : direct::Part::kNone;
+  }
   if (n.find("eyes") != std::string::npos) return direct::Part::kEyes;
   for (const char* w : {"head", "brow", "beard", "mustache", "moustache",
                         "goatee", "stubble", "sideburn", "scar", "lash"})
@@ -190,6 +268,25 @@ direct::Part Classify(const char* name, bool& skin) {
   // A registered Misc part named like none of those is an accessory, pinned
   // like the piercings; geometry that is no head part at all is left alone.
   return type != kHpUnknown ? direct::Part::kPinned : direct::Part::kNone;
+}
+
+bool HairGeometry(uint8_t* shape, const char* name) {
+  uint8_t* property = Field<uint8_t*>(shape, kGeomShaderProperty.Get());
+  if (!property || !(Field<uint64_t>(property, kShaderFlags) & kShaderHairTint))
+    return false;
+  // NIF shape names can differ from HDPT editor IDs (e.g. KS Scarlet).
+  // The shader flag closes that gap without changing materials or rendering.
+  const std::string n = Lower(name);
+  const uint32_t type = HeadPartTypeOf(n);
+  if (ExcludedHair(n, type)) return true;
+  // The flag alone only excludes slots that can hold scalp hair (Misc,
+  // custom, unregistered): tinted faces, scars, eyes and lashes, facial hair
+  // and brows keep their controls.
+  if (type != kHpUnknown && !HairFallbackType(type)) return false;
+  if (FacialHairName(n)) return false;
+  for (const char* word : {"brow", "lash"})
+    if (n.find(word) != std::string::npos) return false;
+  return true;
 }
 
 const float* BaseVerts(uint8_t* shape, uint32_t& nv) {

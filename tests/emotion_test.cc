@@ -48,6 +48,7 @@ int main() {
              at(t, 100, kJoy) == 0,
          "the game's emotion: value / 100 times the strength, steady");
 
+  e.maximum.fill(2);  // exercise volume swell with the optional legacy limit
   e.swell = 1;
   a2f::EmotionTrack(pcm.data(), pcm.size(), frames, e, t);
   printf("  swell 1: quiet %.3f, loud %.3f\n", at(t, 60, kAnger),
@@ -83,7 +84,8 @@ int main() {
     }
   }
 
-  // Independent expected Skyrim mapping: default caps preserve legacy input.
+  // Independent expected Skyrim mapping: default caps limit each mapped
+  // channel to full intensity.
   constexpr float kExpected[8][a2f::kNumMod] = {
       {}, {0, 1}, {0, 0, 0, 1}, {0, 0, 0, 0, 1},
       {0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
@@ -99,11 +101,11 @@ int main() {
       bool unchanged = true;
       for (int frame = 0; frame < frames; ++frame) {
         for (int c = 0; c < a2f::kNumMod; ++c) {
-          const float expected = std::min(gain * kExpected[type][c], 2.f);
+          const float expected = std::min(gain * kExpected[type][c], 1.f);
           unchanged &= std::fabs(at(t, frame, c) - expected) < 1e-6f;
         }
       }
-      Expect(unchanged, "default caps preserve legacy emotion inputs");
+      Expect(unchanged, "default caps limit every mapped emotion to one");
     }
   }
 

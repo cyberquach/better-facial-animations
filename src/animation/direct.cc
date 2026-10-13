@@ -1415,7 +1415,8 @@ bool Coefficients(const Head& h, const a2f::Line* line, float frame,
 bool Evaluate(const Head& h, const float* coefficients, const float* scales,
               const float* expressions, const float* phonemes,
               TongueMode tongue_mode, std::vector<std::vector<float>>& out,
-              float upper_lip, float lower_lip) {
+              float upper_lip, float lower_lip, float smile_eyes,
+              float speech_joy) {
   // Keep the authored tongue default at 1 in the user settings.
   constexpr float kAuthoredTongueGain = 1.5f;
   // The authored cues' total: overlapping phonemes share it instead of
@@ -1447,6 +1448,17 @@ bool Evaluate(const Head& h, const float* coefficients, const float* scales,
       for (int j = 0; j < 3; ++j) skin[v * 3 + j] = sv * d[j];
     }
   }
+  // Use the head's authored happy shape, restricted to the eye region.
+  // No blink or general eye gain: neutral speech retains its original pose.
+  const auto& happy = h.shapes[h.skin].expr[kHappy - kExpression];
+  if (speaking && smile_eyes > 0 && speech_joy > 0 && !happy.empty()) {
+    const float gain =
+        smile_eyes * std::clamp(speech_joy, 0.f, 1.f) * scales[kEyes];
+    for (uint32_t v = 0; v < h.nv; ++v) {
+      const float w = gain * h.region_w[v * kNumSkinRegions + kEyes];
+      for (int j = 0; j < 3; ++j) skin[v * 3 + j] += w * happy[v * 3 + j];
+    }
+  }
   // Copy only speech at shared oral borders. Native expressions still use
   // each part's authored morph, including during expression-only playback.
   if (speaking)
@@ -1459,7 +1471,9 @@ bool Evaluate(const Head& h, const float* coefficients, const float* scales,
     const std::vector<float>& d = h.shapes[h.skin].expr[e];
     if (expressions[e] <= 0 || d.empty()) continue;
     for (uint32_t v = 0; v < h.nv; ++v) {
-      const float sv = expressions[e] * RegionScale(h, v, kExpressionScale);
+      float sv = expressions[e] * RegionScale(h, v, kExpressionScale);
+      if (e == kDialogueHappy - kExpression || e == kHappy - kExpression)
+        sv *= 1 + smile_eyes * h.region_w[v * kNumSkinRegions + kEyes];
       for (int j = 0; j < 3; ++j) skin[v * 3 + j] += sv * d[v * 3 + j];
     }
   }

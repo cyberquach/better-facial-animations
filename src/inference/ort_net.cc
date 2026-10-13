@@ -580,15 +580,100 @@ ComPtr<ID3D12Device> MakeIndependentDevice(independent::GetInterface get,
   return device;
 }
 
+// Only the inference worker accesses this context. Model sessions borrow COM
+// references, but never own the last reference. Keep exactly one context until
+// process exit, including across CPU fallback and idle model unloading. Do not
+// run its destructor during DLL/process teardown: driver destruction can block
+// Skyrim's renderer even when called on the inference worker.
+struct IndependentContext {
+  ComPtr<ID3D12Device> device;
+  ComPtr<IUnknown> dml;
+  ComPtr<ID3D12CommandQueue> queue;
+  bool attempted = false;
+  std::string failure;
+
+  bool Reject(const std::string& reason, std::string& err) {
+    failure = reason + "; GPU disabled until restart";
+    err = failure;
+    if (ort_log) ort_log(failure);
+    return false;
+  }
+
+  bool Healthy(std::string& err) {
+    if (!failure.empty()) { err = failure; return false; }
+    const auto reason = RemovedReason(device.get(), dml.get());
+    if (!reason.empty()) return Reject("independent context:" + reason, err);
+    return true;
+  }
+
+  ComPtr<ID3D12Device> Acquire(independent::GetInterface get, std::string& err) {
+    if (!Healthy(err)) return nullptr;
+    if (!attempted) {
+      attempted = true;
+      device = MakeIndependentDevice(get, err);
+      if (!device) { Reject(err, err); return nullptr; }
+      if (ort_log) ort_log("independent GPU device retained until process exit");
+    }
+    device->AddRef();
+    return ComPtr<ID3D12Device>(device.get());
+  }
+};
+
+IndependentContext& IndependentGpu() {
+  static auto* context = new IndependentContext;
+  return *context;
+}
+
 ComPtr<ID3D12Device> OpenIndependentDevice(std::string& err) {
-  return MakeIndependentDevice(reinterpret_cast<independent::GetInterface>(
+  return IndependentGpu().Acquire(reinterpret_cast<independent::GetInterface>(
       reinterpret_cast<void*>(D3d12Export("D3D12GetInterface"))), err);
+}
+
+// Initialize the shared DML device and queue once. Keep partial initialization
+// too: retrying must not destroy a device or accumulate abandoned contexts.
+bool InitializeIndependentProvider(IndependentContext& context,
+                                   independent::CreateDml create,
+                                   std::string& err) {
+  if (!context.Healthy(err)) return false;
+  if (context.queue) return true;
+  if (!create) {
+    GraphicsCheck(E_NOINTERFACE, "DMLCreateDevice unavailable", err);
+    return context.Reject(err, err);
+  }
+  IUnknown* raw_dml = nullptr;
+  const HRESULT made = create(context.device.get(), 0, independent::kDmlDevice,
+                              reinterpret_cast<void**>(&raw_dml));
+  context.dml.reset(raw_dml);
+  if (!GraphicsCheck(made, "DMLCreateDevice", err))
+    return context.Reject(err, err);
+  if (!context.dml) {
+    GraphicsCheck(E_NOINTERFACE, "null DirectML device", err);
+    return context.Reject(err, err);
+  }
+  D3D12_COMMAND_QUEUE_DESC desc{};
+  desc.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
+  desc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+  // Keep normal GPU timeout behavior. Do not request DISABLE_GPU_TIMEOUT.
+  ID3D12CommandQueue* raw_queue = nullptr;
+  const HRESULT queued = context.device->CreateCommandQueue(&desc,
+      __uuidof(ID3D12CommandQueue), reinterpret_cast<void**>(&raw_queue));
+  context.queue.reset(raw_queue);
+  if (!GraphicsCheck(queued, "CreateCommandQueue", err))
+    return context.Reject(err, err);
+  if (!context.queue) {
+    GraphicsCheck(E_NOINTERFACE, "null compute queue", err);
+    return context.Reject(err, err);
+  }
+  if (ort_log) ort_log("independent DirectML device and compute queue retained");
+  return true;
 }
 
 bool AppendIndependentProvider(const std::wstring& dll_dir,
                                 const OrtDmlApi* dml, OrtSessionOptions* so,
                                 ID3D12Device* device,
                                 ComPtr<IUnknown>& dml_device, std::string& err) {
+  auto& context = IndependentGpu();
+  if (!context.Healthy(err)) return false;
   if (!dml || !dml->SessionOptionsAppendExecutionProvider_DML1) {
     GraphicsCheck(E_NOINTERFACE, "ONNX Runtime DML1 unavailable", err);
     return false;
@@ -600,35 +685,23 @@ bool AppendIndependentProvider(const std::wstring& dll_dir,
       LOAD_WITH_ALTERED_SEARCH_PATH);
   const auto create = module ? reinterpret_cast<independent::CreateDml>(
       reinterpret_cast<void*>(GetProcAddress(module, "DMLCreateDevice"))) : nullptr;
-  if (!create) {
-    GraphicsCheck(E_NOINTERFACE, "DMLCreateDevice unavailable", err);
+  if (!InitializeIndependentProvider(context, create, err)) return false;
+  if (device != context.device.get()) {
+    err = "independent provider: unexpected device";
     return false;
   }
-  IUnknown* raw_dml = nullptr;
-  const HRESULT made = create(device, 0, independent::kDmlDevice,
-                              reinterpret_cast<void**>(&raw_dml));
-  dml_device.reset(raw_dml);
-  if (!GraphicsCheck(made, "DMLCreateDevice", err)) return false;
-  if (!dml_device) return GraphicsCheck(E_NOINTERFACE, "null DirectML device", err);
-  D3D12_COMMAND_QUEUE_DESC desc{};
-  desc.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
-  desc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
-  // Keep normal GPU timeout behavior. Do not request DISABLE_GPU_TIMEOUT.
-  ID3D12CommandQueue* raw_queue = nullptr;
-  const HRESULT queued = device->CreateCommandQueue(&desc,
-      __uuidof(ID3D12CommandQueue), reinterpret_cast<void**>(&raw_queue));
-  const ComPtr<ID3D12CommandQueue> queue(raw_queue);
-  if (!GraphicsCheck(queued, "CreateCommandQueue", err)) return false;
-  if (!queue) return GraphicsCheck(E_NOINTERFACE, "null compute queue", err);
-  // ORT retains the DML device and queue. Session teardown precedes our
-  // retained device references, including on partial initialization failure.
+  context.dml->AddRef();
+  dml_device.reset(context.dml.get());
+  // ORT retains these too; releasing a session frees its model and buffers,
+  // while the process context keeps the device and queue alive.
   return Check(dml->SessionOptionsAppendExecutionProvider_DML1(
-                   so, dml_device.get(), queue.get()), err,
+                   so, context.dml.get(), context.queue.get()), err,
                "independent device: DirectML DML1");
 }
 
 // What a session is made of. Destroyed in reverse: the session first, the
-// device after it and the wrappers the devices came out of last.
+// borrowed device references after it and wrappers last. The independent
+// context retains its own references regardless of this session's lifetime.
 struct Session {
   Wrappers wrappers;  // of device and of the device onnxruntime made
   ComPtr<ID3D12Device> device;  // held to ask why it was lost; null on the CPU
@@ -799,7 +872,7 @@ std::unique_ptr<Net> CreatePerformanceNet(const std::wstring& dll_dir,
       motion(kPerformanceWindowFrames * kPerformanceChannels);
   if (!net->RunPerformance(mel.data(), 0, emotion.data(), motion.data(), err))
     return nullptr;
-  info = std::string("Performance Thin96, 55,385 parameters, 30 fps") +
+  info = std::string("Performance Thin120, 80,729 parameters, 30 fps") +
          DescribeProvider(o);
   return net;
 }
