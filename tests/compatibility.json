@@ -2,6 +2,51 @@
   "schema": 1,
   "contracts": [
     {
+      "id": "gpu-startup",
+      "test": "gpu_startup_test",
+      "sources": [
+        "tests/gpu_startup_test.cc"
+      ],
+      "covers": [
+        "interrupted startup survives object destruction and blocks next attempt",
+        "IO failure selects CPU and successful completion clears only owned marker"
+      ]
+    },
+    {
+      "id": "gpu-fallback",
+      "test": "net_keeper_test",
+      "sources": [
+        "tests/net_keeper_test.cc",
+        "src/inference/net_keeper.cc"
+      ],
+      "covers": [
+        "one GPU attempt and CPU fallback after creation or run failure",
+        "latched failure across model and ForceCPU changes; bounded CPU retries"
+      ]
+    },
+    {
+      "id": "ort-output",
+      "test": "ort_output_test",
+      "sources": [
+        "tests/ort_output_test.cc"
+      ],
+      "link": [
+        "-ldxgi"
+      ],
+      "covers": [
+        "output count/type and finite values before copying",
+        "both GPU routes arm startup guard; GPU failure blocks all GPU factories but permits CPU"
+      ]
+    },
+    {
+      "id": "installer",
+      "python": "tests/installer_test.py",
+      "covers": [
+        "all 8 independent/shared, GPU/CPU startup and model combinations resolve exactly one INI",
+        "independent GPU default; CPU startup preserves route for opt-in; installed help/version"
+      ]
+    },
+    {
       "id": "npc-blacklist",
       "test": "npc_blacklist_test",
       "sources": [
@@ -66,8 +111,7 @@
         "live V3/Performance/Old selection and CPU preference",
         "old session destruction before replacement and retained playback mappings",
         "pending cancellation, rapid changes, disabled mode and per-model statistics",
-        "mapping load failure recovery and GPU CPU fallback",
-        "metacommand verdict reset for the new session"
+        "mapping load failure recovery and GPU CPU fallback"
       ]
     },
     {
@@ -114,8 +158,8 @@
       ],
       "plugin_objects": true,
       "covers": [
-        "v2/v3/Performance independent GPU selection without legacy retries",
-        "CPU selection and legacy-default preservation"
+        "v2/v3/Performance explicit independent or shared GPU without route retries; CPU fallback preserves the selected model",
+        "IndependentGpuDevice persists and overrides retired Auto/GpuDevice keys; explicit CPU honors model"
       ]
     },
     {
@@ -148,25 +192,9 @@
         "-ldxgi"
       ],
       "covers": [
-        "wrapper/native reference ownership",
-        "nested and independent thread scopes",
-        "v2/v3 and partial session teardown",
-        "one-time D3D12CreateDevice import redirect on the shared-device path only"
-      ]
-    },
-    {
-      "id": "gpu-fallback",
-      "test": "net_keeper_test",
-      "sources": [
-        "src/inference/net_keeper.cc",
-        "tests/net_keeper_test.cc"
-      ],
-      "covers": [
-        "GPU session retried with a doubling wait, CPU fallback meanwhile",
-        "lost session replaced at once",
-        "driver metacommands fallback",
-        "switch to the graphics hook's device wrapper when the device inside is lost",
-        "GPU failure diagnosis and advice"
+        "wrapper/native reference ownership and nested/thread scopes",
+        "healthy teardown ordering; failed GPU session retains ORT, device, DML and wrappers",
+        "one-time import redirect on the shared path only"
       ]
     },
     {
@@ -255,6 +283,22 @@
       ]
     },
     {
+      "id": "worker-start",
+      "test": "worker_start_test",
+      "sources": [
+        "tests/worker_start_test.cc"
+      ],
+      "plugin_objects": true,
+      "link": [
+        "-Wl,--wrap=_ZN4skse4AddrEy"
+      ],
+      "covers": [
+        "inference starts after startup broadcast in either logger order",
+        "successful save load and new game, CPU and GPU",
+        "failed load exclusion, once-only worker and thread creation failure"
+      ]
+    },
+    {
       "id": "load-lifecycle",
       "test": "load_game_test",
       "sources": [
@@ -293,6 +337,14 @@
       ],
       "covers": [
         "speech start/stop timing"
+      ]
+    },
+    {
+      "id": "game-cpu-gate",
+      "python": "tests/test_game_cpu_regression.py",
+      "covers": [
+        "CPU regression rejection",
+        "incomplete and duplicate launch evidence rejected"
       ]
     },
     {
@@ -499,6 +551,20 @@
         "scale, translation, axis and vertex-order invariance",
         "native fallback when a required calibration channel survives only on debris",
         "mapped head unchanged by excluded debris; sub-threshold clusters are fitted"
+      ]
+    },
+    {
+      "id": "sentiment-lifecycle",
+      "test": "sentiment_lifecycle_test",
+      "sources": [
+        "tests/sentiment_lifecycle_test.cc"
+      ],
+      "plugin_objects": true,
+      "covers": [
+        "Sentiment Analysis disabled or optional model absent skips model loading",
+        "sentiment failure falls back and backs off",
+        "disable during inference cancels and releases weights",
+        "idle worker unloads weights without another line"
       ]
     }
   ],

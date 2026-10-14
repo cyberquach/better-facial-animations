@@ -25,36 +25,33 @@ int main() {
   auto write = [&](const char* section, const char* key, const char* value) {
     CHECK(WritePrivateProfileStringA(section, key, value, ini));
   };
-  LoadIni();
-  CHECK(config.independent_device && config.gpu_device == 0);
-  write("General", "IndependentGpuDevice", "1");
-  LoadIni();
-  CHECK(config.independent_device);
-  SaveIni();
-  LoadIni();
-  CHECK(config.independent_device);
-  write("General", "IndependentGpuDevice", "0");
-  LoadIni();
-  CHECK(config.independent_device && config.gpu_device == 0);
-  write("Debug", "UseDeviceWrapper", "1");
-  LoadIni();
-  CHECK(config.gpu_device == 1 && config.use_device_wrapper);
+  // Retired GPU route keys cannot restore shared-device initialization.
   for (const char* mode : {"0", "1", "2", "3", "99"}) {
     write("General", "GpuDevice", mode);
+    write("General", "AutoGpuDevice", mode);
+    write("General", "IndependentGpuDevice", "0");
+    write("Debug", "UseDeviceWrapper", "1");
     LoadIni();
-    const int expected = atoi(mode) == 99 ? 0 : atoi(mode);
-    CHECK(config.gpu_device == expected);
-    CHECK(config.independent_device == (expected == 0 || expected == 3));
-    CHECK(config.use_device_wrapper == (expected == 1));
     SaveIni();
     LoadIni();
-    CHECK(config.gpu_device == expected);
+    CHECK(config.gpu == !SnapshotTune().force_cpu);
   }
   CHECK(DeleteFileA(ini));  // keep the migration fixture independent of SaveIni above
   LoadIni();
   CHECK(SnapshotTune().male.upper_lip == 1 &&
         SnapshotTune().female.lower_lip == 1);
   CHECK(SnapshotTune().conversation_gaze && SnapshotTune().gaze_strength == 1);
+  CHECK(SnapshotTune().vanilla_emotions);
+  write("General", "VanillaEmotions", "0");
+  LoadIni();
+  CHECK(!SnapshotTune().vanilla_emotions);
+  SaveIni();
+  ResetTune();
+  CHECK(SnapshotTune().vanilla_emotions);
+  LoadIni();
+  CHECK(!SnapshotTune().vanilla_emotions);
+  CHECK(DeleteFileA(ini));  // isolate the legacy migration fixture below
+  LoadIni();
   write("General", "IniVersion", "3");
   write("General", "UseOldModel", "1");
   write("Debug", "Logging", "0");
@@ -69,7 +66,7 @@ int main() {
   CHECK(t.male.time_offset == .12f && t.female.time_offset == .12f);
   CHECK(t.male.voice_emotion == .375f && t.female.voice_emotion == .375f);
   CHECK(t.old_model && !t.logging);
-  CHECK(GetPrivateProfileIntA("General", "IniVersion", 0, ini) == 7);
+  CHECK(GetPrivateProfileIntA("General", "IniVersion", 0, ini) == 8);
   CHECK(t.player_face.upper_lip == 1 && t.player_face.lower_lip == 1);
   CHECK(t.player_face.voice_emotion == 1 && t.player_face.time_offset == 0);
   CHECK(&t.ForActor(false, true) == &t.player_face);
@@ -152,6 +149,22 @@ int main() {
   LoadIni();
   t = SnapshotTune();
   CHECK(t.male.upper_lip == 1 && t.female.lower_lip == 3);
+  CHECK(!t.sentiment_analysis);
+  // A 4.2 ini with the retired per-profile key is migrated at load.
+  write("General", "IniVersion", "7");
+  for (const char* section : {"Emotion", "EmotionMale", "EmotionFemale", "EmotionPlayer"})
+    write(section, "Sentiment", "0");
+  LoadIni();
+  CHECK(SnapshotTune().sentiment_multiplier == t.sentiment_multiplier);
+  SaveIni();
+  for (const char* section : {"Emotion", "EmotionMale", "EmotionFemale", "EmotionPlayer"}) {
+    char legacy[32];
+    GetPrivateProfileStringA(section, "Sentiment", "missing", legacy, sizeof legacy, ini);
+    CHECK(!strcmp(legacy, "missing"));
+  }
+  for (const Param& p : kParams) CHECK(strcmp(p.key, "Sentiment"));
+  config.sentiment_available = true;
+  t.sentiment_analysis = true;
   // The old model shares geometry, but must still honor sex-specific emotion.
   model.faces.resize(1);
   auto male = Request("profile_test", 1, 50, false, false, t, 0, world_epoch);
@@ -236,6 +249,49 @@ int main() {
   CHECK(SnapshotTune().male.max_emotion == a2f::kDefaultEmotionCaps);
   CHECK(SnapshotTune().female.max_emotion == a2f::kDefaultEmotionCaps);
   CHECK(SnapshotTune().player_face.max_emotion == a2f::kDefaultEmotionCaps);
+  config.sentiment_available = true;
+  CHECK(queue[0].emotion.sentiment_multiplier == t.sentiment_multiplier);
+  CHECK(queue[1].emotion.sentiment_multiplier == t.sentiment_multiplier);
+  CHECK(queue[2].emotion.sentiment_multiplier == t.sentiment_multiplier);
+  t.male.voice_emotion = 0;
+  auto sentiment_only =
+      Request("profile_test", 1, 50, false, false, t, 0, world_epoch);
+  CHECK(sentiment_only != male && queue.back().emotion.gain == 0 &&
+        queue.back().emotion.sentiment_multiplier == t.sentiment_multiplier);
+  t.sentiment_analysis = false;
+  auto off = Request("profile_test", 1, 50, false, false, t, 0, world_epoch);
+  CHECK(off != sentiment_only && queue.back().emotion.sentiment_multiplier == 0);
+  t.sentiment_analysis = true;
+  t.sentiment_multiplier = .5f;
+  auto scaled = Request("profile_test", 1, 50, false, false, t, 0, world_epoch);
+  CHECK(scaled != sentiment_only && queue.back().emotion.sentiment_multiplier == .5f);
+  t.sentiment_multiplier = .501f;
+  CHECK(Request("profile_test", 1, 50, false, false, t, 0, world_epoch) != scaled);
+  // The shared source toggle suppresses both native and explicit authored
+  // inputs while preserving independent sentiment and the configured limits.
+  Tune sources;
+  sources.sentiment_analysis = true;
+  auto authored = Request("source_toggle", 1, 50, false, false, sources, 0, world_epoch);
+  CHECK(authored && queue.back().emotion.gain == 1);
+  sources.vanilla_emotions = false;
+  auto without_authored = Request("source_toggle", 1, 50, false, false, sources, 0, world_epoch);
+  CHECK(without_authored != authored && queue.back().emotion.gain == 0 &&
+        queue.back().emotion.type == 0 && queue.back().emotion.swell == 0);
+  CHECK(queue.back().emotion.sentiment_multiplier == 1 &&
+        queue.back().emotion.maximum == sources.male.max_emotion);
+  a2f::Emotion provider;
+  provider.type = a2f::kExplicitEmotion;
+  provider.channels[a2f::kAnger] = .75f;
+  CHECK(Request("provider_source_toggle", 0, 0, false, false, sources, 0,
+                world_epoch, false, &provider));
+  CHECK(queue.back().emotion.gain == 0 && queue.back().emotion.channels[a2f::kAnger] == 0);
+  sources.sentiment_analysis = false;
+  CHECK(Request("both_sources_off", 1, 50, false, false, sources, 0, world_epoch));
+  CHECK(queue.back().emotion.gain == 0 && queue.back().emotion.sentiment_multiplier == 0);
+  sources.vanilla_emotions = true;
+  CHECK(Request("provider_source_toggle", 0, 0, false, false, sources, 0,
+                world_epoch, false, &provider));
+  CHECK(queue.back().emotion.gain == 1 && queue.back().emotion.channels[a2f::kAnger] == .75f);
   Param const* upper = nullptr;
   for (const Param& p : kParams)
     if (p.value && p.profile == 0 && !strcmp(p.key, "UpperLip")) upper = &p;
@@ -303,8 +359,6 @@ int main() {
       SaveIni();
       LoadIni();
       CHECK(config.network == selected);
-      CHECK(config.independent_device);
-      CHECK(config.gpu_device == (independent[0] == '1' ? 3 : 0));
       CHECK(config.gpu == !SnapshotTune().force_cpu);
       CHECK(config.direct ==
             (selected == 2 ? L"A2FDirect.bin" : L"A2FDirect3.bin"));

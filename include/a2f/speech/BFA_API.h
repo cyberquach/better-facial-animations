@@ -60,7 +60,7 @@ enum BFA_ResultCode {
   BFA_kResultNoDevice = 15,  // no inference device available
   BFA_kResultUnsupportedRuntime = 16,  // actor lookup unsupported (VR)
   BFA_kResultAudioFailed = 17,  // decode failed or audio silent
-  BFA_kResultNotInDialogue = 18,  // excluded by Potato mode
+  BFA_kResultNotInDialogue = 18,  // excluded by Potato mode (checked first)
   BFA_kResultInternalError = 19,
   BFA_kResultInferenceFailed = 20,  // animation generation failed
   BFA_kResultCancelled = 21,

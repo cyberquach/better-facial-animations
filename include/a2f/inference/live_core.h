@@ -97,6 +97,21 @@ class Net {
   bool failed = false;
 };
 
+// Audio2Emotion v2.2: 3.75 seconds of 16 kHz audio -> six logits.
+constexpr int kVoiceWindow = 60000;
+constexpr int kNumVoiceEmo = 6;
+class EmotionNet {
+ public:
+  virtual ~EmotionNet() = default;
+  virtual bool Run(const float* pcm, float* logits, std::string& err) = 0;
+};
+
+// Produces a 30 fps explicit emotion track; failure/cancellation leaves it
+// empty.
+bool AnalyzeSentiment(EmotionNet& net, const float* pcm, size_t n,
+                      std::vector<float>& track, std::string& err,
+                      const std::function<bool()>& allowed = {});
+
 struct Line {
   uint32_t frames = 0, direct_dim = 0;
   float fps = kFps;  // of direct
@@ -149,6 +164,7 @@ bool HasAudibleAudio(const float* pcm, size_t n);
 
 // The emotion the network is given with a line, per frame:
 //   gain x the game's x (1 + swell x loudness)
+//     + sentiment x sentiment_multiplier
 // for each explicit emotion, capped by its maximum (at most kMaxEmotion).
 // The game's is the line's Skyrim emotion type (0..7) at value / 100,
 // constant; loudness is the voice's level, 0..1 within the line.
@@ -177,6 +193,8 @@ struct Emotion {
   float gain = 1, swell = 0;
   EmotionCaps maximum = kDefaultEmotionCaps;
   EmotionCaps channels = {};
+  float sentiment_multiplier = 1;
+  std::vector<float> sentiment;  // 30 fps x kNumMod, prepared once per line
 };
 
 // Per frame, with d = y - rest (rest: kNumOut), the k skin coefficients

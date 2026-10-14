@@ -32,7 +32,11 @@ including Steam 1.6.353 and GOG 1.6.659.
 
 `conversation-gaze` checks v2/v3 eye-track alignment, additive look controls,
 late-start sync, player-target/scene/runtime gating, restoration and hook coexistence.
-`independent-device` and `independent-routing` check strict factory isolation, retained GPU context ownership across model/CPU transitions, latched device failures and both model routes without GPU hardware. They do not establish driver or graphics-hook compatibility.
+`independent-device` and `independent-routing` check strict factory isolation, retained GPU context ownership across model/CPU transitions, latched device failures and all model routes without GPU hardware. They do not establish driver or graphics-hook compatibility.
+`gpu-startup` checks persistent startup protection and file errors; `gpu-fallback` checks one GPU attempt, CPU recovery and persistence across settings changes. `ort-output` checks tensor validation and the shared facial/sentiment GPU failure gate. `installer` checks the FOMOD presets and GPU-first default.
+`sentiment-lifecycle` checks optional-model gating, GPU-to-CPU fallback, CPU failure backoff and unloading.
+`npc-menu` checks disabled sentiment controls; `build.sh test` checks additive caps and the local sentiment model when present.
+`worker-start` checks that CPU/GPU workers wait for successful game entry, with either startup listener order, failed loads, repeated events and thread creation failure.
 Settings persistence is covered by `sex-settings`; eye-mesh calibration still needs
 in-game review. `provider-api` runs the provider interface (`include/a2f/speech/BFA_API.h`)
 over the production plugin with mocked engine lookups and a synthetic generation;
@@ -143,6 +147,20 @@ count, silence floor, tone placement, cancellation); `performance_features_test`
 for comparison with the training frontend. `audio-fallback` runs a performance
 line through `Process`, including a model switch during a line. Model selection/migration/persistence is covered by
 `sex_settings_test`. These are offline tests, not in-game or Steam Deck certification.
+
+`race-settings` also bounds native-expression rebuild work at 30/60/120 Hz and
+checks that gradual native ramps leave no smoothing tail. These are operation
+budgets, not measured game CPU performance. For repeated game captures:
+
+```sh
+python3 tools/game_cpu_regression.py --baseline <4.0-run1> <4.0-run2> <4.0-run3> --candidate <run1> <run2> <run3>
+```
+
+Capture format is described in the tool. The gate requires matching initial INI,
+modlist and measurement windows; it resamples whole launches and requires the
+one-sided CPU-delta bound to be nonpositive for every window. Missing evidence
+returns 2; CPU parity not demonstrated returns 1. Review raw stalls, effective
+GPU routing, scene/system-load comparability and visual/API behavior separately.
 
 `face-update` checks zero-time pose refreshes, native hook chaining, nested and
 concurrent update contexts, and unchanged timing for normal facial updates.

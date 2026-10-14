@@ -112,7 +112,6 @@ std::shared_ptr<const ModelState> SnapshotModel() {
 
 namespace {
 
-constexpr wchar_t kPluginDir[] = L"Data\\SKSE\\Plugins\\BetterFacialAnimations";
 // A line ready later than this after its start is blended in.
 constexpr float kLateStart = 0.1f;
 // An unmapped head's expressions play on the engine's keyframes, which have
@@ -130,6 +129,9 @@ struct Entry {
   State state = State::kPending;
   std::shared_ptr<const a2f::Line> line;
   uint64_t last_use = 0;
+  // Generated without voice sentiment while that was unavailable: generated
+  // again once the worker would try sentiment again (sentiment_retry_at).
+  bool degraded = false;
   struct Requester {
     uint32_t handle;
     bool player;
@@ -266,6 +268,8 @@ struct Face {
   bool female = false;
   bool player = false;
   a2f::PoseTransition transition;
+  std::shared_ptr<const direct::Model> pose_model;
+  int pose_face = 0;
   // Provider lines that left the face, told (their terminal event) once it
   // is handed back: their utterance no longer holds it and the engine's
   // expressions have faded back in, or another line took it. The provider's
@@ -282,7 +286,7 @@ constexpr double kPlayStep = 0.25;  // the most play_clock advances at once
 // s for the plugin to take a face's expressions over from the engine and to
 // give them back
 constexpr float kOwnIn = 0.25f, kOwnOut = 1;
-// s for the shown expressions to follow a change of the engine's (Face::shown)
+// Maximum seconds for a full-scale (0..1) native expression change.
 constexpr float kSrcFollow = 0.3f;
 constexpr size_t kMaxFaces = 8;
 
@@ -306,6 +310,9 @@ std::atomic<bool> partner_female{false};
 // a face look abandoned.
 double play_clock, play_wall;
 uint64_t use_clock;
+// When the worker next tries the sentiment model after a failure (Now()); 0:
+// no failure pending. Worker-written, read by Request.
+std::atomic<double> sentiment_retry_at{0};
 // The world the game is in, counted up whenever it is replaced (a save
 // loaded, a new game), and whether a load is under way. A hook notes the
 // epoch when it starts and gives up once CurrentWorld says it has passed:
@@ -635,7 +642,7 @@ std::shared_ptr<Entry> Request(
     emo = given->type;
     val = given->value;
   }
-  const float factor = given ? given->gain : 1;
+  const float factor = tune.vanilla_emotions ? (given ? given->gain : 1) : 0;
   // neutral: no emotion to feed, or none wanted
   if (settings.voice_emotion <= 0 || factor <= 0 ||
       (!channels && (emo < 1 || emo > 7))) {
@@ -651,6 +658,9 @@ std::shared_ptr<Entry> Request(
   em.swell = em.gain > 0 ? settings.voice_swell : 0;
   em.maximum = settings.max_emotion;
   if (em.type == a2f::kExplicitEmotion) em.channels = given->channels;
+  const Tune shared = NpcSharedTune(tune, player ? nullptr : actor);
+  em.sentiment_multiplier = shared.sentiment_analysis && config.sentiment_available
+                                ? shared.sentiment_multiplier : 0;
   auto part = [&key](double v) {
     key += '|';
     key += std::to_string(std::lround(v));
@@ -660,11 +670,13 @@ std::shared_ptr<Entry> Request(
   if (em.type == a2f::kExplicitEmotion)
     for (float level : em.channels) part(level * 1000.);
   // Preserve every stored cap value: even a small edit must bypass old work.
-  for (float cap : em.maximum) {
+  const auto cap_part = [&](float cap) {
     uint32_t cap_bits;
     std::memcpy(&cap_bits, &cap, sizeof cap_bits);
     key += "|cap=" + std::to_string(cap_bits);
-  }
+  };
+  for (float cap : em.maximum) cap_part(cap);
+  cap_part(em.sentiment_multiplier);
   const auto selection = SnapshotModel();
   part(selection->network);
   if (selection->mapping->faces.size() > 1) key += female ? "|f" : "|m";
@@ -678,6 +690,9 @@ std::shared_ptr<Entry> Request(
     cache.erase(previous);
   }
   auto& e = cache[key];
+  if (e && e->degraded && e->state != State::kPending &&
+      Now() >= sentiment_retry_at)
+    e.reset();  // a playing line keeps its own reference
   if (!e) {
     e = std::make_shared<Entry>();
     e->epoch = epoch;
@@ -775,62 +790,17 @@ void LoadExpressiveFaces() {
 }
 
 // ---------------- worker ----------------
-std::wstring PluginDir() {
-  wchar_t full[MAX_PATH];
-  GetFullPathNameW(kPluginDir, MAX_PATH, full, nullptr);
-  return full;
-}
-
 // Network events go to the log.
 void NetEvent(const std::string& text) { skse::Report("%s", text.c_str()); }
-
-// Worker thread only: what the GPU sessions found out about the driver's
-// metacommands and about the device they run on.
-a2f::Metacommands metacommands;
-a2f::Device device;
-bool device_checked = false;
-bool independent_device = false;
-
-bool IndependentGpuSelected() {
-  return device_checked ? independent_device : config.independent_device;
-}
-
-void SelectGpuDevice() {
-  if (device_checked) return;
-  device_checked = true;
-  independent_device = config.independent_device;
-  if (config.gpu_device == 0) {
-    std::string reason;
-    independent_device = a2f::IndependentDeviceSupported(reason);
-    if (independent_device)
-      skse::Report("GpuDevice=Auto: independent device and private queue");
-    else
-      skse::Report("GpuDevice=Auto: shared device; probe: %s", reason.c_str());
-  }
-  device.wrapper = config.use_device_wrapper;
-  device.fixed = config.gpu_device == 1 || config.gpu_device == 2;
-  a2f::SetUseDeviceWrapper(device.wrapper);
-}
 
 std::unique_ptr<a2f::Net> CreateNet(bool gpu, std::string& err,
                                     std::string& info) {
   const auto selection = SnapshotModel();
   const std::wstring dir = PluginDir(), file = dir + L"\\" + selection->file;
-  if (gpu) SelectGpuDevice();
-  static bool dml_loaded;
-  if (gpu && !IndependentGpuSelected() && !dml_loaded) {
-    // onnxruntime delay-loads DirectML.dll by name: load ours first so that
-    // is the one it gets
-    dml_loaded = LoadLibraryExW((dir + L"\\DirectML.dll").c_str(), nullptr,
-                                LOAD_WITH_ALTERED_SEARCH_PATH) != nullptr;
-    if (!dml_loaded)
-      skse::Report("DirectML.dll not loaded from %ls (error %lu)", dir.c_str(),
-                   GetLastError());
-  }
   a2f::OrtOptions o;
   o.gpu = gpu;
   o.batch = config.batch;
-  o.independent_device = IndependentGpuSelected();
+  o.independent_device = config.independent_device;
   if (selection->mapping->network !=
       ModelFor(selection->network).mapping_network) {
     err = "the A2FDirect bin is of the other network";
@@ -854,50 +824,27 @@ std::unique_ptr<a2f::Net> CreateNet(bool gpu, std::string& err,
     }
   };
   if (!gpu) return create(err, info);
-  // The independent device has no metacommand or wrapper retries: DML1 takes
-  // our device and queue as they are.
-  if (independent_device) {
-    auto net = create(err, info);
-    if (!net && err.find("independent device:") != 0)
-      err = "independent device: " + err;
-    return net;
-  }
-  // with the driver's metacommands, and without them when that fails; on the
-  // device inside a graphics hook's wrapper, and on the wrapper when that is
-  // lost
-  return a2f::CreateDeviceNet(
-      [&](bool wrapper, std::string& e, std::string& i) {
-        a2f::SetUseDeviceWrapper(wrapper);
-        return a2f::CreateGpuNet(
-            [&](bool with, std::string& err_meta, std::string& info_meta) {
-              o.metacommands = with;
-              const double t = Now();
-              auto net = create(err_meta, info_meta);
-              skse::Report(
-                  "GPU session with metacommands %s on %s: %s after %.0f ms",
-                  with ? "on" : "off", wrapper ? "the wrapper" : "the device",
-                  net ? "loaded" : "failed", (Now() - t) * 1e3);
-              return net;
-            },
-            metacommands, e, i, NetEvent);
-      },
-      device, a2f::DeviceWrapped, err, info, NetEvent);
+  auto net = create(err, info);
+  if (!net && config.independent_device && err.find("independent device:") != 0)
+    err = "independent device: " + err;
+  return net;
 }
 
 // Copies the keeper's state to the settings window.
 void PublishNet(const a2f::NetKeeper& keeper) {
   const auto selection = SnapshotModel();
-  static int diagnosed;  // attempts the diagnosis was made for
+  static std::string diagnosed;  // the error the diagnosis was made for
   static auto& why = *new std::vector<std::string>;
   if (keeper.error().empty()) {
-    diagnosed = 0;
+    diagnosed.clear();
     why.clear();
-  } else if (keeper.attempts() != diagnosed) {
-    diagnosed = keeper.attempts();
-    // The VRAM as the GPU session failed (DXGI only; no device is made).
+  } else if (keeper.error() != diagnosed) {
+    diagnosed = keeper.error();
+    // The VRAM as the session failed, by DXGI alone: on the shared route
+    // that is the game's device; the independent one is not probed.
     why = a2f::DiagnoseNet(
-        selection->gpu, keeper.error(), diagnosed,
-        selection->gpu && !IndependentGpuSelected() ? a2f::QueryGpu()
+        selection->gpu, keeper.error(),
+        selection->gpu && !config.independent_device ? a2f::QueryGpu()
                                                      : a2f::GpuState{},
         ModelFor(selection->network).vram_mb);
     for (const auto& line : why) skse::Report("%s", line.c_str());
@@ -907,20 +854,103 @@ void PublishNet(const a2f::NetKeeper& keeper) {
     if (selection->gpu && !reported) {
       reported = true;
       skse::Report("-- at the first failure");
-      for (const auto& line : a2f::GpuReport(!IndependentGpuSelected()))
+      for (const auto& line : a2f::GpuReport(false))
         skse::Report("%s", line.c_str());
     }
   }
   net_loaded = keeper.loaded();
   ScopedLock guard(lock);
-  stats.network = selection->network;
+  stats.network = keeper.loaded() ? keeper.version() : selection->network;
   stats.want_gpu = selection->gpu;
   stats.net_info = keeper.info();
   stats.net_error = why;
   stats.net_detail = keeper.error();
-  stats.net_attempts = keeper.attempts();
   stats.net_retry_at = keeper.retry_at();
   stats.net_gpu = keeper.on_gpu();
+}
+
+// Worker-owned: never accessed by the UI. Disabling Sentiment Analysis releases
+// the session on the worker after an already submitted inference returns.
+std::unique_ptr<a2f::EmotionNet> sentiment_net;
+bool sentiment_gpu = false;
+
+void SentimentStatus(const std::string& message) {
+  static std::string shown;  // worker only
+  if (message == shown) return;
+  shown = message;
+  ScopedLock guard(lock);
+  stats.sentiment_info = message;
+}
+
+std::string IdleSentimentStatus() {
+  return config.sentiment_available
+             ? "off (sentiment model unloaded)"
+             : "unavailable (optional sentiment model not installed)";
+}
+
+void UnloadSentiment() {
+  sentiment_net.reset();
+  sentiment_retry_at = 0;
+  SentimentStatus(IdleSentimentStatus());
+}
+
+enum class Sentiment {
+  kReady,        // in emotion.sentiment (empty: none wanted)
+  kCancelled,    // the line is no longer wanted
+  kUnavailable,  // the model failed or is in its retry wait: dialogue only
+};
+
+// The line's voice sentiment. Unavailable leaves dialogue usable: the line
+// is generated without it and marked degraded (Entry). A cancelled line
+// keeps a healthy session for the next one.
+Sentiment PrepareSentiment(const Job& job, const std::vector<float>& pcm,
+                           a2f::Emotion& emotion) {
+  // 0 without the model (Request)
+  if (emotion.sentiment_multiplier <= 0) {
+    emotion.sentiment.clear();
+    return Sentiment::kReady;
+  }
+  const auto allowed = [&] {
+    return JobAllowed(job) && SnapshotTune().sentiment_analysis;
+  };
+  if (!allowed()) return Sentiment::kCancelled;
+  std::string err;
+  // Facial and sentiment failures share one process-wide GPU gate. Neither
+  // model may re-enter a driver that the other has already rejected.
+  if (sentiment_gpu && !a2f::GpuAllowed(err)) sentiment_net.reset();
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    if (!sentiment_net) {
+      if (Now() < sentiment_retry_at) return Sentiment::kUnavailable;
+      a2f::OrtOptions options;
+      options.gpu = !SnapshotTune().force_cpu &&
+                    a2f::GpuAllowed(err);
+      options.independent_device = config.independent_device;
+      sentiment_gpu = options.gpu;
+      const std::wstring dir = PluginDir();
+      sentiment_net = a2f::CreateOrtEmotionNet(
+          dir, dir + L"\\" + kSentimentModel, options, err);
+      if (sentiment_net)
+        SentimentStatus(options.gpu ? "sentiment ready (GPU)"
+                                    : "sentiment ready (CPU)");
+    }
+    if (sentiment_net && a2f::AnalyzeSentiment(*sentiment_net, pcm.data(),
+          pcm.size(), emotion.sentiment, err, allowed))
+      return Sentiment::kReady;
+    if (!allowed()) return Sentiment::kCancelled;
+    if (sentiment_gpu) {
+      a2f::DisableGpu(err);
+      sentiment_net.reset();
+      sentiment_gpu = false;
+      skse::Report("Audio2Emotion GPU disabled until restart: %s", err.c_str());
+      continue;  // one CPU attempt, without another GPU or legacy provider
+    }
+    sentiment_net.reset();
+    sentiment_retry_at = Now() + 60;
+    SentimentStatus("dialogue only; CPU sentiment retry in 60s: " + err);
+    skse::Report("Audio2Emotion unavailable: %s", err.c_str());
+    return Sentiment::kUnavailable;
+  }
+  return Sentiment::kUnavailable;
 }
 
 // Generates one queued line and stores the result in the cache.
@@ -948,7 +978,9 @@ void Process(const Job& j, a2f::NetKeeper& keeper) {
   std::shared_ptr<a2f::Line> line;
   double t = Now(), audio_sec = 0;
   bool inference_attempted = false;
+  int generated_network = j.entry->model_state->network;
   bool no_net = false;  // not this line's fault: generate it again next time
+  Sentiment sentiment = Sentiment::kReady;
   bool silent = false;  // nothing to animate: vanilla, not a failure
   if (file.empty()) {
     err = "no voice file";
@@ -960,27 +992,30 @@ void Process(const Job& j, a2f::NetKeeper& keeper) {
       if (silent) {
         err = "silent or unusable audio; keeping vanilla facial animation";
       } else {
+        a2f::Emotion emotion = j.emotion;
+        sentiment = PrepareSentiment(j, pcm, emotion);
         line = std::make_shared<a2f::Line>();
         inference_attempted = true;
         if (!keeper.Run(
                 [&](a2f::Net& net, std::string& e) {
+                  generated_network = net.Version();
                   const direct::Mark& face =
                       j.entry->model_state->mapping->Face(j.female);
                   if (net.Version() == a2f::kNetPerformance)
                     return a2f::GeneratePerformance(net, pcm.data(),
-                                                    pcm.size(), j.emotion,
+                                                    pcm.size(), emotion,
                                                     j.female, *line, e,
                                                     allowed);
                   if (net.Version() != a2f::kNetV3)
-                    return a2f::Generate(net, pcm.data(), pcm.size(), j.emotion,
+                    return a2f::Generate(net, pcm.data(), pcm.size(), emotion,
                                          face.proj.data(), face.rest.data(),
                                          face.k, *line, e, allowed);
                   // Claire speaks the women's lines, Mark the men's
                   const a2f::Face3 f{j.female ? 0 : 2, face.proj.data(),
                                      face.tongue_proj.data(), face.rest.data(),
                                      face.k};
-                  return a2f::Generate3(net, pcm.data(), pcm.size(),
-                                        j.emotion, f, *line, e, allowed);
+                  return a2f::Generate3(net, pcm.data(), pcm.size(), emotion, f,
+                                        *line, e, allowed);
                 },
                 err, no_net, allowed))
           line.reset();
@@ -1026,6 +1061,7 @@ void Process(const Job& j, a2f::NetKeeper& keeper) {
          ++i)
       cache.erase(v[i].second);
   }
+  j.entry->degraded = sentiment == Sentiment::kUnavailable;
   guard.Unlock();
   if (LogMore(logged)) {
     if (line) {
@@ -1043,8 +1079,8 @@ void Process(const Job& j, a2f::NetKeeper& keeper) {
         }
       Log("gen %s (%s) emo %d/%d: %.2f s audio, %u frames in %.0f ms; fed%s",
           file.c_str(),
-          j.entry->model_state->network == a2f::kNetPerformance ? "Performance"
-          : j.entry->model_state->network == a2f::kNetV2        ? "Mark"
+          generated_network == a2f::kNetPerformance ? "Performance"
+          : generated_network == a2f::kNetV2        ? "Mark"
           : j.female                                            ? "Claire"
                                                                 : "Mark 3.0",
           j.emotion.type, j.emotion.value, audio_sec, line->frames, ms,
@@ -1064,6 +1100,7 @@ void SwitchModel(a2f::NetKeeper& keeper, const Tune& tune) {
   const int network = tune.SelectedModel();
   const bool gpu = !tune.force_cpu;
   if (old->network == network && old->gpu == gpu) return;
+  UnloadSentiment();
   {
     ScopedLock guard(lock);
     stats.switching_model = true;
@@ -1095,7 +1132,6 @@ void SwitchModel(a2f::NetKeeper& keeper, const Tune& tune) {
     next->mapping = std::move(mapping);
   }
   keeper.Reconfigure(gpu);
-  metacommands = {};
   {
     ScopedLock guard(lock);
     for (const auto& job : queue) CancelJob(job);
@@ -1126,9 +1162,13 @@ DWORD WorkerStep(a2f::NetKeeper& keeper, bool wait = true) {
   }
   const Tune tune = SnapshotTune();
   SwitchModel(keeper, tune);
+  if (!tune.sentiment_analysis || !tune.enabled || !config.sentiment_available)
+    UnloadSentiment();
+  else if (!sentiment_net && sentiment_retry_at == 0)
+    SentimentStatus("waiting for speech");
   // Keep the session ready in both modes; Potato mode restricts speakers,
-  // not residency. Without the wanted session: try it again.
-  if (tune.enabled && !keeper.Wanted()) {
+  // not residency. A working CPU fallback needs no retry wakeups.
+  if (tune.enabled && !keeper.loaded()) {
     keeper.Ensure();
     PublishNet(keeper);
   }
@@ -1143,7 +1183,7 @@ DWORD WorkerStep(a2f::NetKeeper& keeper, bool wait = true) {
   }
   if (queue.empty()) {
     const DWORD timeout =
-        tune.enabled && !keeper.Wanted() ? 1000 : INFINITE;
+        tune.enabled && !keeper.loaded() ? 1000 : INFINITE;
     if (revision != settings_revision) return 0;
     if (wait) SleepConditionVariableSRW(&queue_cv, &lock, timeout, 0);
     return timeout;
@@ -1175,14 +1215,12 @@ DWORD WINAPI Worker(void*) {
   ready = true;
   skse::Report("settings: GPU=%d, batch %d, model %ls", config.gpu,
                config.batch, config.model.c_str());
-  skse::Report("GpuDevice=%d (0 auto, 1 wrapper, 2 no wrapper, 3 independent)",
-               config.gpu_device);
-  if (config.gpu) SelectGpuDevice();
-  const bool report_gpu =
-      config.gpu && !IndependentGpuSelected() && SnapshotTune().enabled;
-  for (const auto& line : a2f::GpuReport(report_gpu))
-    skse::Report("%s", line.c_str());
+  skse::Report("GPU route: %s; CPU on failure, no other GPU route is tried",
+               config.independent_device
+                   ? "independent device, private compute queue"
+                   : "4.0-style shared device");
   a2f::SetOrtLog([](const std::string& s) { skse::Report("%s", s.c_str()); });
+  a2f::SetGpuStartupMarker(PluginDir() + L"\\gpu-startup.pending");
   a2f::NetKeeper keeper(config.gpu, CreateNet, Now, NetEvent);
   for (;;) WorkerStep(keeper);
 }
@@ -1294,10 +1332,10 @@ uint32_t BeginSpeech(uint8_t* actor, const std::string& stem,
                      int emo_value, const Tune& tune, uint64_t epoch,
                      PlayerSpeechPtr external = {}) {
   if (!CurrentWorld(epoch)) return BFA_kResultNoFaceGenHead;
-  if (!RaceAllowed(actor)) return BFA_kResultRaceDisabled;
-  if (!NpcAllowed(actor)) return BFA_kResultDisabled;
   if (!DialogueAllows(tune, HandleOf(actor), IsPlayer(actor)))
     return BFA_kResultNotInDialogue;
+  if (!RaceAllowed(actor)) return BFA_kResultRaceDisabled;
+  if (!NpcAllowed(actor)) return BFA_kResultDisabled;
   const uint32_t form_id = FormIdOf(actor);
   const bool provider = external && external->handle != 0;
   static std::atomic<int> logged;
@@ -1622,6 +1660,17 @@ struct FaceActor {
   uint8_t* actor = nullptr;
   uint32_t handle = 0;
 };
+// Include retained faces even after dialogue closes: they still need their
+// final restoration. Global counts alone admit every nearby NPC while one
+// face is active. The idle case needs no lock or actor/settings lookup.
+bool FaceNeedsUpdate(uint8_t* fg) {
+  if (!fg) return false;
+  if (fg == partner_fg) return true;
+  if (!num_faces && !num_playing) return false;
+  ScopedLock guard(lock, ScopedLock::kShared);
+  return faces.count(fg) || playing.count(fg);
+}
+
 FaceActor FaceActorOf(uint8_t* fg) {
   ScopedLock guard(lock, ScopedLock::kShared);
   const auto line = playing.find(fg);
@@ -1918,8 +1967,8 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene,
   // Exclusive scenes own the face immediately, including paused frames.
   // The original update has already produced their keyframes. Do not fade
   // our expressions or speech pose over those values.
-  if (in_scene || !RaceAllowed(actor) || !NpcAllowed(actor) ||
-      !DialogueAllows(tune, actor_handle, actor && IsPlayer(actor))) {
+  if (!DialogueAllows(tune, actor_handle, actor && IsPlayer(actor)) ||
+      in_scene || !RaceAllowed(actor) || !NpcAllowed(actor)) {
     ScopedLock guard(lock);
     bool changed = faces.count(fg) != 0;
     auto line = playing.find(fg);
@@ -1931,6 +1980,8 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene,
     DropFace(fg);
     return changed ? kFaceChanged : kNoUpdate;
   }
+  // Also for callers other than the hook (which checked FaceNeedsUpdate): a
+  // face of a world that is gone must not be read.
   if (fg != partner_fg && !num_faces && !num_playing) return kNoUpdate;
   auto& ex = Field<skse::KeyframeMultiple>(fg, skse::kFgExpr3);
   const bool has_ex = ex.values && ex.count >= direct::kNumExpressions;
@@ -1963,16 +2014,17 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene,
   SweepFaces(fg, clock);
   if (f.parked) f = Face();  // back: its keyframe was restored
   f.seen = clock;
-  const float follow =
-      f.shown_set ? std::min(1.f, std::max(dt, 0.f) / kSrcFollow) : 1.f;
+  // Pass native gradual changes through; bound abrupt overrides without an
+  // asymptotic tail that keeps rebuilding an otherwise idle face for seconds.
+  const float step = std::max(dt, 0.f) / kSrcFollow;
   bool following = false;
   for (int i = 0; i < direct::kNumExpressions; ++i) {
     f.src[i] = has_ex && direct::PlaysExpression(i) ? ex.values[i] : 0.f;
     const float before = f.shown[i];
-    f.shown[i] += (f.src[i] - f.shown[i]) * follow;
-    // Finish the asymptotic tail so an idle face can stop scheduling updates.
-    if (std::fabs(f.src[i] - f.shown[i]) <= 1e-4f)
-      f.shown[i] = f.src[i];
+    const float delta = f.src[i] - before;
+    f.shown[i] = f.shown_set && std::fabs(delta) > step
+                     ? before + std::copysign(step, delta)
+                     : f.src[i];
     following |= before != f.shown[i] || f.shown[i] != f.src[i];
   }
   f.shown_set = true;
@@ -2063,8 +2115,12 @@ using FaceNodeUpdateFn = void (*)(uint8_t*, NiUpdateData*, uint32_t);
 FaceNodeUpdateFn face_node_update_original = nullptr;
 
 void FaceNodeUpdateHook(uint8_t* node, NiUpdateData* data, uint32_t flags) {
-  const ScopedFaceUpdate update(Field<uint8_t*>(node, kNodeFg.Get()),
-                                data->time);
+  auto* fg = Field<uint8_t*>(node, kNodeFg.Get());
+  if (!FaceNeedsUpdate(fg)) {
+    face_node_update_original(node, data, flags);
+    return;
+  }
+  const ScopedFaceUpdate update(fg, data->time);
   face_node_update_original(node, data, flags);
 }
 
@@ -2090,15 +2146,15 @@ __attribute__((noinline)) bool AnimUpdateHook(uint8_t* fg, float dt,
                                               uint64_t flag) {
   auto orig =
       SiteOrig<AnimUpdateFn>(__builtin_return_address(0), kIdFaceAnimUpdate);
+  if (!FaceNeedsUpdate(fg)) return orig(fg, dt, flag);
   // Skyrim uses the global frame delta even for zero-time pose refreshes
   // (for example Fluid Motion's second pass). Still recompute the keyframes.
   dt = ScopedFaceUpdate::Delta(fg, dt);
   const uint64_t epoch = world_epoch;
-  if (fg && num_faces && ready && CurrentWorld(epoch))
+  if (num_faces && ready && CurrentWorld(epoch))
     RestoreFaceKeyframes(fg, epoch);
   bool changed = orig(fg, dt, flag);
-  if (fg && ready && CurrentWorld(epoch) &&
-      (num_playing || num_faces || fg == partner_fg)) {
+  if (ready && CurrentWorld(epoch)) {
     // The actor is held until the face's lock is released: letting go of
     // the last reference destroys it.
     const FaceActor known = FaceActorOf(fg);
@@ -2205,12 +2261,13 @@ void AddDirect(uint8_t* node, bool reset) {
   // Morph calls can arrive without an intervening animation update. Query
   // the retained actor outside our locks before reading or applying a pose.
   TrackPartner(node, fg);
+  if (!FaceNeedsUpdate(fg)) return;
   const FaceActor known = FaceActorOf(fg);
   ScopedReference reference(known.handle);
   // The retained actor, when it is still the face's; null otherwise.
   uint8_t* actor = reference.get() == known.actor ? reference.get() : nullptr;
-  const Tune tune = NpcDirectTune(SnapshotTune(), actor);
-  if (!DialogueAllows(tune, known.handle, actor && IsPlayer(actor)) ||
+  const Tune base_tune = SnapshotTune();
+  if (!DialogueAllows(base_tune, known.handle, actor && IsPlayer(actor)) ||
       (actor &&
        (InScene(actor) || !RaceAllowed(actor) || !NpcAllowed(actor)))) {
     {
@@ -2231,6 +2288,7 @@ void AddDirect(uint8_t* node, bool reset) {
     fg[kFgDirty] = 1;
     return;
   }
+  const Tune tune = NpcSharedTune(base_tune, actor);
   if (FailedSpeech(fg)) {
     skse::ScopedFaceLock face_guard(Field<skse::SpinLock>(fg, skse::kFgLock));
     ScopedLock guard(lock);
@@ -2280,21 +2338,12 @@ void AddDirect(uint8_t* node, bool reset) {
       face->head_key = key;
       face->head_state = State::kPending;
       face->head.reset();
-      face->transition = a2f::PoseTransition();
-      std::fill_n(face->level, direct::kNumExpressions, 0.f);
+      // Geometry changes invalidate the mapping, not the model-space pose
+      // or expression ownership. Never apply the old mapping to new vertices.
     }
     state = face->head_state;
     head = face->head;
     std::copy_n(face->level, direct::kNumExpressions, levels);
-    auto it = playing.find(fg);
-    if (enabled && state == State::kReady && it != playing.end() &&
-        it->second.direct_frame >= 0) {
-      line = it->second.entry->line;
-      frame = it->second.direct_frame;
-      late = it->second.late;
-      std::copy_n(it->second.tongue_phonemes, direct::kNumPhonemes,
-                  tongue_phonemes);
-    }
   }
   if (state == State::kPending) {
     state = FindHead(node, key, female, head, selection->mapping);
@@ -2308,6 +2357,22 @@ void AddDirect(uint8_t* node, bool reset) {
     }
   }
   if (!reset || state != State::kReady || !head) return;
+  {
+    ScopedLock guard(lock);
+    Face* face = LiveFace(fg);
+    if (!face || face->head_key != key || PlayingEntry(fg) != expected_entry)
+      return;
+    // A cached replacement can become ready in this very call. Sample its
+    // current speech now rather than submitting a spurious end-of-line pose.
+    auto it = playing.find(fg);
+    if (enabled && it != playing.end() && it->second.direct_frame >= 0) {
+      line = it->second.entry->line;
+      frame = it->second.direct_frame;
+      late = it->second.late;
+      std::copy_n(it->second.tongue_phonemes, direct::kNumPhonemes,
+                  tongue_phonemes);
+    }
+  }
   // at its last frame the line is over: the pose eases out from there
   if (line && frame >= static_cast<float>(line->frames - 1)) line.reset();
   thread_local std::vector<float> coefficients;
@@ -2330,6 +2395,13 @@ void AddDirect(uint8_t* node, bool reset) {
     auto it = playing.find(fg);
     const bool snap = line && it != playing.end() && it->second.snap;
     if (snap) it->second.snap = false;
+    const int model_face = selection->mapping->FaceIndex(female);
+    if (face->pose_model != selection->mapping ||
+        face->pose_face != model_face) {
+      face->transition = a2f::PoseTransition();
+      face->pose_model = selection->mapping;
+      face->pose_face = model_face;
+    }
     const float fade = !line  ? settings.face_out
                        : late ? settings.blend_in
                               : settings.face_in;
@@ -2364,9 +2436,10 @@ void AddDirect(uint8_t* node, bool reset) {
 // accumulate and nothing has to be restored when the actor goes away.
 uint64_t GazeMorphs(ApplyMorphsFn orig, uint8_t* node, uint8_t force,
                     bool& reset, uint64_t epoch) {
-  Tune tune = SnapshotTune();
   auto* fg = Field<uint8_t*>(node, kNodeFg.Get());
-  if (!CurrentWorld(epoch) || !ready || !fg || !tune.enabled || skse::IsVr())
+  if (!fg || !PartnerHandle()) return orig(node, force);
+  Tune tune = SnapshotTune();
+  if (!CurrentWorld(epoch) || !ready || !tune.enabled || skse::IsVr())
     return orig(node, force);
   // Globally off, and no NPC override can turn it on: skip the handle work.
   const bool gaze_off = !tune.conversation_gaze || tune.gaze_strength <= 0;
@@ -2378,7 +2451,7 @@ uint64_t GazeMorphs(ApplyMorphsFn orig, uint8_t* node, uint8_t force,
   if (!actor.get() || actor.get() != known.actor || IsPlayer(actor.get()) ||
       InScene(actor.get()) || !NpcAllowed(actor.get()))
     return orig(node, force);
-  tune = NpcDirectTune(std::move(tune), actor.get());
+  tune = NpcSharedTune(std::move(tune), actor.get());
   if (!tune.conversation_gaze || tune.gaze_strength <= 0)
     return orig(node, force);
   // Use the priority-resolved target: scripts/packages can override dialogue.
@@ -2463,6 +2536,36 @@ __attribute__((noinline)) uint64_t ApplyMorphsHook(uint8_t* node,
 }
 
 // ---------------- SKSE ----------------
+std::atomic<bool> startup_data_loaded{false}, worker_started{false};
+
+void StartWorkerAfterStartup(const skse::SKSEMessage& message) {
+  const bool entered_game =
+      message.type == skse::kMessageNewGame ||
+      (message.type == skse::kMessagePostLoadGame && message.data);
+  if (!entered_game || !startup_data_loaded.load() ||
+      worker_started.exchange(true))
+    return;
+  // Crash Logger scans modules synchronously in its kDataLoaded callback.
+  // Starting a worker from ours can overlap that scan regardless of whether
+  // ours has returned. A later game-entry event avoids that startup broadcast;
+  // it does not synchronize with manual dumps or exception-time scans.
+  skse::Report("game entered: starting inference after startup module scans");
+  HANDLE h = CreateThread(nullptr, 0, Worker, nullptr, 0, nullptr);
+  const DWORD error = h ? 0 : GetLastError();
+  if (h) {
+    SetThreadPriority(h, THREAD_PRIORITY_BELOW_NORMAL);
+    CloseHandle(h);
+  } else {
+    worker_started = false;
+    skse::Report("cannot start inference worker (error %lu)", error);
+  }
+  ScopedLock guard(lock);
+  stats.waiting_for_game = !h;
+  stats.startup_error =
+      h ? "" : "cannot start inference worker (error " +
+                   std::to_string(error) + ")";
+}
+
 void OnMessage(skse::SKSEMessage* m) {
   if (!m) return;
   if (m->type == skse::kMessagePreLoadGame ||
@@ -2480,6 +2583,7 @@ void OnMessage(skse::SKSEMessage* m) {
   MenuMessage(m->type);
   PlayerSpeechMessage(m->type);
   ProviderMessage(m->type);
+  StartWorkerAfterStartup(*m);
   if (m->type == skse::kMessagePostLoad && DbvoInstalled() &&
       !native_speech_original) {
     if (NativeSpeechRuntimeSupported(skse::Runtime()))
@@ -2499,11 +2603,13 @@ void OnMessage(skse::SKSEMessage* m) {
   LoadNpcSettings();
   RetakeSites();
   RegisterMenu();
-  HANDLE h = CreateThread(nullptr, 0, Worker, nullptr, 0, nullptr);
-  if (h) {
-    SetThreadPriority(h, THREAD_PRIORITY_BELOW_NORMAL);
-    CloseHandle(h);
+  {
+    ScopedLock guard(lock);
+    stats.waiting_for_game = true;
+    stats.sentiment_info = IdleSentimentStatus();
   }
+  startup_data_loaded = true;
+  skse::Report("inference waits for a successful save load or new game");
 }
 
 bool Load(const skse::SKSEInterface* iface) {
