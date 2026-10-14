@@ -13,6 +13,12 @@ spec.loader.exec_module(installer)
 with tempfile.TemporaryDirectory() as directory:
     out = Path(directory)
     installer.assemble(out, '4.3.0.7')
+    # Vortex validates a UTF-16 copy; a retained UTF-8 declaration makes its
+    # XmlReader fail before schema validation (Nexus-Mods/Vortex#17957).
+    for name in ('ModuleConfig.xml', 'info.xml'):
+        data = (out / 'fomod' / name).read_bytes()
+        assert data.startswith(b'<config' if name == 'ModuleConfig.xml' else b'<fomod')
+        assert b'<?xml' not in data
     assert ET.parse(out / 'fomod/info.xml').findtext('Version') == '4.3.0.7'
     config = ET.parse(out / 'fomod/ModuleConfig.xml')
     core = config.find('requiredInstallFiles/folder')
