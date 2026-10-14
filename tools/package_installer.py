@@ -61,7 +61,9 @@ def assemble(out, version):
                       priority='10')
     ET.register_namespace('xsi', 'http://www.w3.org/2001/XMLSchema-instance')
     ET.indent(config, space='  ')
-    config.write(out / 'fomod/ModuleConfig.xml', encoding='utf-8', xml_declaration=True)
+    # Vortex re-encodes validation input as UTF-16 but only strips double-quoted
+    # encoding attributes. ElementTree's single-quoted declaration breaks it.
+    config.write(out / 'fomod/ModuleConfig.xml', encoding='utf-8', xml_declaration=False)
     info = ET.Element('fomod')
     for key, value in [('Name', 'Better Facial Animations'), ('Version', version),
                        ('Website', 'https://www.nexusmods.com/skyrimspecialedition/mods/193598')]:
