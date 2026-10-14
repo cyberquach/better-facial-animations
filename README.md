@@ -79,4 +79,4 @@ JOBS=4 ./build.sh          # Limit parallel compilation
 
 ## License
 
-[GPL-3.0](LICENSE), with required attribution: “Based on Better Facial Animations by Cyberquach”. See [NOTICE.txt](dist/NOTICE.txt) and [third-party licenses](dist/licenses/).
+The plugin source code is [GPL-3.0](LICENSE), with required attribution: “Based on Better Facial Animations by Cyberquach”. Bundled third-party libraries and NVIDIA models retain their separate licenses; the GPL does not replace those terms. Audio2Emotion is governed by its [specific Audio2Face-only license](dist/licenses/NVIDIA-Audio2Emotion-License.txt), which prohibits use for emotion recognition. See [NOTICE.txt](dist/NOTICE.txt) and [third-party licenses](dist/licenses/).
