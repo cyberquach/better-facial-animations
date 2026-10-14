@@ -126,8 +126,11 @@ Contents of this folder
   network_fp16.onnx                                    Audio2Face-3D v2.3 Mark, FP16 (NOTICE.txt): UseOldModel=1
   A2FDirect.bin                                        its face (Mark)
 BetterFacialAnimations.dll statically links FFmpeg 8.0.1 (LGPL 2.1): wmav1/wmav2/pcm decoders, xwma/wav demuxers, swresample.
-Better Facial Animations is free software under the GNU GPL v3 (licenses/BetterFacialAnimations-GPL-3.0.txt).
+Better Facial Animations plugin source code is free software under the GNU GPL v3 (licenses/BetterFacialAnimations-GPL-3.0.txt).
 Additional term under GPL v3 section 7(b): any copy or modified version must keep the attribution "Based on Better Facial Animations by Cyberquach" in its documentation and on any page it is distributed from.
+Bundled third-party libraries and NVIDIA models retain their separate licenses; the GPL does not replace those terms.
+Audio2Emotion, when included, is governed by licenses/NVIDIA-Audio2Emotion-License.txt: Audio2Face project use only,
+not for the purpose of emotion recognition. See NOTICE.txt for model attribution and modifications.
 Source code: https://gitlab.com/cyberquach/better-facial-animations
 
 DBVO 2 EXPERIMENTAL PROTOTYPE

@@ -12,6 +12,8 @@ Its author permits use, modification and redistribution, including in closed-sou
 The original notice is retained in include/a2f/speech/DBReV_API.h.
 
 emotion_fp16.onnx (NVIDIA Audio2Emotion v2.2, converted to FP16):
-Licensed by NVIDIA Corporation under the License Agreement for NVIDIA Audio2Emotion Model for Use with Audio2Face Project
+Licensed by NVIDIA Corporation under the NVIDIA Open Model License
+The attribution above is required by section 3.1 of the License Agreement for NVIDIA Audio2Emotion Model for Use with
+Audio2Face Project. That specific agreement governs this model, including its use restrictions.
 See licenses/NVIDIA-Audio2Emotion-License.txt and https://huggingface.co/nvidia/Audio2Emotion-v2.2
 The model may only be used with the NVIDIA Audio2Face project, and not for the purpose of emotion recognition.
