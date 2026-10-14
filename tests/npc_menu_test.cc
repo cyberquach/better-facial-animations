@@ -1,5 +1,6 @@
 // Exercise production UI/input code with a fake framework and game dispatcher.
 #include <array>
+#include <cstdarg>
 #include <cstdlib>
 #include <cstring>
 
@@ -15,7 +16,8 @@
 namespace bfa {
 const char kVersion[] = "test";
 std::atomic<bool> ready{false}, net_loaded{false};
-double Now() { return 0; }
+double menu_time = 0;
+double Now() { return menu_time; }
 Stats SnapshotStats(size_t& cached, size_t& queued) {
   cached = queued = 0;
   return {};
@@ -55,24 +57,44 @@ void RunTasks() {
     task->Dispose();
   }
 }
+bool widgets_disabled = false, last_item_disabled = false, hovering = false;
+std::string tooltip;
+void BeginDisabled(bool disabled) { widgets_disabled = disabled; }
+void EndDisabled() { widgets_disabled = false; }
 std::string click;
+std::vector<std::string> drawn_sliders;
+std::map<std::string, float> slider_values;
 bool Button(const char* label, bfa::ImVec2) { return click == label; }
 bool Checkbox(const char* label, bool* value) {
-  if (click != label) return false;
+  last_item_disabled = widgets_disabled;
+  if (widgets_disabled || click != label) return false;
   *value = !*value;
   return true;
 }
 bool Slider(const char* label, float* value, float, float, const char*, int) {
-  if (click != label) return false;
+  last_item_disabled = widgets_disabled;
+  drawn_sliders.emplace_back(label);
+  slider_values[label] = *value;
+  if (widgets_disabled || click != label) return false;
   *value = .4f;
   return true;
 }
 bool Begin(const char*, bool*, int) { return true; }
 void End() {}
-void Text(const char*, ...) {}
+void Text(const char*, ...) { last_item_disabled = false; }
 void Separator(const char*) {}
 void SameLine(float, float) {}
-bool Hovered(int) { return false; }
+bool Hovered(int flags) {
+  return hovering && (!last_item_disabled || (flags & (1 << 10)));
+}
+void Tooltip(const char* format, ...) {
+  char text[4096];
+  va_list args;
+  va_start(args, format);
+  vsnprintf(text, sizeof(text), format, args);
+  va_end(args);
+  tooltip = text;
+}
 }  // namespace
 extern "C" void __wrap__ZN3bfa15ScheduleSaveIniEv() { ++saves; }
 extern "C" uint64_t __wrap__ZN4skse4AddrEy(uint64_t id) {
@@ -103,6 +125,79 @@ int main() {
   ig.SeparatorText = Separator;
   ig.SameLine = SameLine;
   ig.IsItemHovered = Hovered;
+  ig.SetTooltip = Tooltip;
+  for (const auto& p : kParams) {
+    if (strcmp(p.key, "SentimentAnalysis") &&
+        strcmp(p.key, "SentimentMultiplier")) continue;
+    bool flag = false;
+    float value = .8f;
+    click = "optional-control";
+    config.sentiment_available = false;
+    CHECK(!ParamControl(p, click.c_str(), p.flag ? &flag : nullptr, &value));
+    CHECK(!flag && value == .8f);
+    ig.BeginDisabled = BeginDisabled;
+    ig.EndDisabled = EndDisabled;
+    CHECK(!ParamControl(p, click.c_str(), p.flag ? &flag : nullptr, &value));
+    CHECK(!flag && value == .8f && !widgets_disabled);
+    // A disabled checkbox/slider must still explain the missing download.
+    hovering = true;
+    tooltip.clear();
+    Tip(&p, ParamTip(p), kHoverDisabled);
+    for (int frame = 0; frame < 10; ++frame) {
+      menu_time += .05;
+      Tip(&p, ParamTip(p), kHoverDisabled);
+    }
+    CHECK(tooltip.find("not installed") != std::string::npos);
+    CHECK(tooltip.find("emotion_fp16.onnx") != std::string::npos);
+    CHECK(tooltip.find("Restart Skyrim") != std::string::npos);
+    CHECK(!strcmp(ParamTip(p), ParamTip(p, true)));
+    // Older frameworks draw an inert text label; it keeps the same help.
+    ig.BeginDisabled = nullptr;
+    ig.EndDisabled = nullptr;
+    CHECK(!ParamControl(p, click.c_str(), p.flag ? &flag : nullptr, &value));
+    CHECK(Hovered(kHoverDisabled));
+    hovering = false;
+    ig.BeginDisabled = BeginDisabled;
+    ig.EndDisabled = EndDisabled;
+    config.sentiment_available = true;
+    CHECK(ParamTip(p) == p.tip);
+    if (!strcmp(p.key, "SentimentMultiplier")) {
+      CHECK(!ParamControl(p, click.c_str(), nullptr, &value, false));
+      CHECK(value == .8f && !widgets_disabled);
+    }
+    CHECK(ParamControl(p, click.c_str(), p.flag ? &flag : nullptr, &value));
+    CHECK(p.flag ? flag : value == .4f);
+    ig.BeginDisabled = nullptr;
+    ig.EndDisabled = nullptr;
+  }
+  click.clear();
+  for (const auto& p : kParams) {
+    if (strcmp(p.key, "VoiceEmotion") && strcmp(p.key, "VoiceSwell")) continue;
+    float value = .8f;
+    click = "scene-input";
+    ig.BeginDisabled = BeginDisabled;
+    ig.EndDisabled = EndDisabled;
+    CHECK(!ParamControl(p, click.c_str(), nullptr, &value, true, false));
+    CHECK(value == .8f);
+    CHECK(ParamControl(p, click.c_str(), nullptr, &value, true, true));
+    CHECK(value == .4f);
+  }
+  ig.BeginDisabled = BeginDisabled;
+  ig.EndDisabled = EndDisabled;
+  const char* profiles[] = {"Male NPCs", "Female NPCs", "Player"};
+  for (int selected = 0; selected < 3; ++selected) {
+    click = profiles[selected];
+    drawn_sliders.clear();
+    RenderMenu();
+    for (size_t i = 0; i < kNumParams; ++i) {
+      const auto& p = kParams[i];
+      if (!p.value || p.profile < 0) continue;
+      const std::string label = std::string(p.label) + "##" + std::to_string(i);
+      const bool drawn = std::find(drawn_sliders.begin(), drawn_sliders.end(), label) != drawn_sliders.end();
+      CHECK(drawn == (p.profile == selected));
+    }
+  }
+  click.clear();
   // Independent ABI fixtures: 1.6.1130 added a ControlMap context pointer,
   // shifting linkedMappings and all following fields by eight bytes.
   for (const auto runtime : {skse::Version(1, 5, 97),
@@ -247,6 +342,61 @@ int main() {
   RenderNpcWindow();
   click.clear();
   CHECK(DescribeNpc(actor).values.empty() && saves == 5);
+  const char* sentiment_label =
+      "Sentiment addition multiplier##npc_SentimentMultiplier";
+  const Param* sentiment_toggle = nullptr;
+  for (const auto& p : kParams)
+    if (!strcmp(p.key, "SentimentAnalysis")) sentiment_toggle = &p;
+  CHECK(sentiment_toggle);
+  *sentiment_toggle->flag = false;
+  click = sentiment_label;
+  RenderNpcWindow();
+  CHECK(DescribeNpc(actor).values.empty());
+  *sentiment_toggle->flag = true;
+  config.sentiment_available = false;
+  RenderNpcWindow();
+  CHECK(DescribeNpc(actor).values.empty());
+  config.sentiment_available = true;
+  RenderNpcWindow();
+  CHECK(slider_values.at(sentiment_label) == SnapshotTune().sentiment_multiplier);
+  CHECK(DescribeNpc(actor).values.at("SentimentMultiplier") == .4f);
+  click = "Close";
+  RenderNpcWindow();
+  click = "Edit##follower.esp|001234";
+  RenderOverrides();
+  click.clear();
+  RenderNpcWindow();
+  CHECK(slider_values.at(sentiment_label) == .4f);
+  click = "Sentiment Analysis##npc_SentimentAnalysis";
+  RenderNpcWindow();
+  CHECK(DescribeNpc(actor).values.at("SentimentAnalysis") == 0);
+  CHECK(DescribeNpc(actor).values.at("SentimentMultiplier") == .4f);
+  const int saved_before_disabled = saves;
+  click = sentiment_label;
+  RenderNpcWindow();
+  CHECK(saves == saved_before_disabled);
+  click = "Sentiment Analysis##npc_SentimentAnalysis";
+  RenderNpcWindow();
+  CHECK(DescribeNpc(actor).values.at("SentimentAnalysis") == 1);
+  *sentiment_toggle->flag = false;
+  RenderNpcWindow();
+  CHECK(DescribeNpc(actor).values.at("SentimentAnalysis") == 1);
+  *sentiment_toggle->flag = true;
+  click = "Use global##SentimentAnalysis";
+  RenderNpcWindow();
+  CHECK(!DescribeNpc(actor).values.count("SentimentAnalysis"));
+  // Global changes apply after clearing the NPC's saved value.
+  for (const auto& p : kParams)
+    if (!strcmp(p.key, "SentimentMultiplier")) *p.value = 1.5f;
+  click = "Use global##SentimentMultiplier";
+  RenderNpcWindow();
+  CHECK(DescribeNpc(actor).values.empty());
+  click.clear();
+  RenderNpcWindow();
+  CHECK(slider_values.at(sentiment_label) == 1.5f);
+  click = sentiment_label;
+  RenderNpcWindow();
+  CHECK(DescribeNpc(actor).values.at("SentimentMultiplier") == .4f);
   click = "Smile reaches eyes##npc_SmileEyes";
   RenderNpcWindow();
   click.clear();

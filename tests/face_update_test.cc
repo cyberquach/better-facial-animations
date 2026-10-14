@@ -70,6 +70,7 @@ extern "C" uint64_t __wrap__ZN4skse4AddrEy(uint64_t id) {
 int main() {
   animate = MakeCaller();
   uint8_t face;
+  bfa::partner_fg = &face;
   // Independent expected node offsets and virtual slots for SE, AE and VR.
   for (uint32_t runtime :
        {skse::Version(1, 5, 97), skse::Version(1, 6, 1170), skse::kVrRuntime}) {
@@ -107,6 +108,18 @@ int main() {
       CHECK(bfa::ScopedFaceUpdate::Delta(&face, dt) == dt);
     }
     CHECK(calls == 15);  // zero-time passes still run the native hook chain
+    // An unrelated NPC is untouched even while the partner remains active.
+    bfa::Field<uint8_t*>(node.data(), vr ? 0x178 : 0x150) = &other_face;
+    delta = .25f;
+    const float before = elapsed;
+    bfa::NiUpdateData refresh{0, 13};
+    (*slot)(node.data(), &refresh, 42);
+    CHECK(elapsed == before + delta && calls == 16);
+    // With no active faces the same native-only path remains available.
+    bfa::partner_fg = nullptr;
+    (*slot)(node.data(), &refresh, 42);
+    CHECK(elapsed == before + delta + delta && calls == 17);
+    bfa::partner_fg = &face;
     CHECK(VirtualFree(vtable, 0, MEM_RELEASE));
   }
   {

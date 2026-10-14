@@ -5,7 +5,20 @@ is run through NVIDIA Audio2Face-3D v3.0 on your GPU (women speak with its Clair
 everyone with UseOldModel=1 in the ini), which deforms the face mesh directly: skin, lips,
 brows and eyelids, with the lower teeth and gums on Audio2Face's jaw. The tongue follows half the jaw movement with reduced, overlap-limited tongue cues from the game's speech track. The game's own emotion
 expressions (dialogue, mood, combat) fade out while a line plays, when Audio2Face alone shapes the face, and back
-in after it. A line's emotion comes from the game's emotion for it.
+in after it. Sentiment Analysis can add Audio2Emotion voice sentiment to the game's dialogue emotion.
+Vanilla / scene emotion inputs (on by default) passes authored scene and dialogue-mod emotions to the model.
+This toggle is independent of Sentiment Analysis; both off keeps audio-driven lip-sync without these emotion inputs.
+The settings menu groups shared controls separately from selectable Male NPCs, Female NPCs and Player profiles.
+Maximum emotion inputs are ceilings on what the model receives, not fixed emotion levels or movement strength.
+Sentiment Analysis (off by default) enables sentiment; disabling it unloads the extra model after any current run.
+Sentiment Analysis only adds voice-detected emotion to the facial model inputs on top of the scene's
+authored emotions. The Sentiment addition multiplier (0-2, default 1) scales only that extra input: 0 =
+none, 0.5 = half, 1 = normal, 2 = double. It is available when Sentiment Analysis is enabled and does not replace, reduce
+or blend away authored emotion. Zero skips sentiment inference; changes apply next line. The combined scene and multiplied sentiment inputs obey the Max emotion caps; there is no separate sentiment cap. Sentiment Analysis is a HEAVY FEATURE: its additional emotion_fp16.onnx model
+requires 600 MB of EXTRA VRAM on GPU, on top of the facial animation model. It requires substantial additional
+processing power and increases animation generation time. Controls are greyed out without it and normal animation
+still works. ForceCPU uses system memory and additional CPU processing instead.
+Release archives are provided with and without the sentiment model. Restart after adding or removing it.
 Each head is fitted to the animated face the first time it speaks, from its own expression morphs, so custom heads,
 NPC replacers and High Poly Head animate like vanilla ones; a head whose .tri lacks one of the morphs it needs keeps
 vanilla lip-sync. Works with Creation Engine Raytracing. Per-region scales and the
@@ -20,28 +33,46 @@ Requirements
   V3/Old GPU inference needs DirectX 12 (~250 MB VRAM / ~100 MB respectively).
   Settings -> Model offers mutually exclusive V3, Performance and Old model checkboxes.
   Hover for tradeoffs. Model changes apply live; playing lines finish with their
-  original animation. Performance (81k Thin120) uses the GPU by default or CPU with ForceCPU=1:
+  original animation. Performance (81k Thin120) runs on GPU, or CPU with ForceCPU=1:
   smaller, but less emotive, 30 fps, no eye gaze feature.
   It is experimental and Skyrim-trained; not yet verified on Steam Deck.
-  UsePerformanceModel=1 selects it; ForceCPU applies to all three models. PotatoMode=1 processes only the active
+  UsePerformanceModel=1 selects it; ForceCPU applies to all three models. Potato Mode (PotatoMode=1) processes only the active
   conversation NPC and the player (DBReV or experimental DBVO 2 support). Other NPC speech stays vanilla.
-  Both modes keep the model loaded from the main menu until exit. An already submitted GPU run must finish
+  Both modes initialize inference after the first successful save load or new game, then keep the model
+  loaded until exit. Early lines use vanilla animation while it warms up. An already submitted GPU run must finish
   before cancellation. PotatoMode=0 (default) processes all speakers. If the model cannot
-  be loaded on the GPU the settings window says why, it is retried and lines run on the CPU meanwhile (slow).
-  [General] GpuDevice=0 (Auto) prefers an independent D3D12 device and private compute queue
-  when the installed runtime and driver pass a capability probe, without relying on DLL dates.
-  Otherwise it uses the device inside ReShade's wrapper, switching to the wrapper on device loss.
-  Overrides: 1 = force wrapper, 2 = force no wrapper, 3 = force independent GPU. Restart after changing.
-  Selected independent mode keeps metacommands enabled and uses CPU fallback on failure.
-  Old IndependentGpuDevice=1 / Debug UseDeviceWrapper=1 apply when GpuDevice is absent;
-  old zeros now select Auto. ForceCPU takes precedence. No helper EXE is launched.
+  be loaded on the GPU the settings window says why; CPU is used for the rest of the game process.
+  GPU inference defaults to an independent device/private queue (IndependentGpuDevice=1).
+  This requires D3D12 Independent Devices (Windows updates from August 2023 or a
+  supporting Proton runtime) and a supporting driver. IndependentGpuDevice=0 explicitly
+  selects 4.0-style shared GPU compatibility for Deck/older runtimes or troubleshooting
+  failures with independent mode. Shared can also conflict with graphics mods.
+  Change the installer/INI and restart to switch routes. Either route tries once;
+  returned failures select CPU until restart, across models and sentiment. No automatic
+  GPU route, wrapper or metacommand retry. GPU-first V3 is the normal preset.
+  GPU failure falls back to CPU without changing your selected model.
+  Explicit ForceCPU=1 also uses your selected model.
+  The FOMOD separately selects GPU route, GPU/CPU startup and starting settings. Force CPU
+  makes no GPU attempt and keeps your chosen route for later opt-in by unchecking
+  Force CPU in-game. It persists until changed, including after the first launch.
+  Choose a starting model and independently enable Potato Mode, player
+  animation and early dialogue preparation. Change these in game with SKSE Menu
+  Framework; no reinstall needed. Manual installation defaults to independent GPU
+  + V3 after game entry.
+  GPU-SETUP.txt in this folder has the installer guide: Windows/driver and Proton
+  requirements, exact CPU recovery INI edits, and how to try GPU from a working CPU session.
+  An interrupted GPU startup leaves SKSE/Plugins/BetterFacialAnimations/gpu-startup.pending,
+  blocking the next GPU attempt. Close Skyrim before deleting it to deliberately retry; MO2 may
+  put it in Overwrite. Failure to write the guard also selects CPU. This only guards startup/warmup,
+  not later inference. A driver hang cannot safely be cancelled inside Skyrim. No helper is launched.
+  Old GpuDevice, AutoGpuDevice and UseDeviceWrapper keys are ignored.
   Optional: SKSE Menu Framework, for the in-game settings page (Better Facial Animations -> Settings).
 
 Player dialogue (optional)
   Dragonborn ReVoiced (DBReV) 1.4.4+ with a compatible voice pack animates the player through BFA.
   Select the voice in DBReV's MCM. A third-person/cinematic camera lets you see the player's face.
   General -> Player facial animations toggles this separately from NPC faces; the INI equivalent is
-  [General] PlayerFacialAnimations=0. Player animation also works in Potato mode. The master Enabled setting still applies.
+  [General] PlayerFacialAnimations=0. Player animation also works with Potato Mode. The master Enabled setting still applies.
   With Cinematic Conversation Camera, use [Performance] bSynthLipSync=0 in SKSE/Plugins/SD_user.ini
   to disable its synthesized fallback lips. Turning off BFA's player feature leaves DBReV's own lip sync.
   The same supported-head/race requirements apply. DBReV is optional, and its DLL is not patched.
@@ -67,6 +98,9 @@ Settings
   Older shared settings seed both NPC profiles; older lip values convert to preserve their effect.
   Overrides page: assign an unused keyboard hotkey, close settings, aim at an NPC and press it
   to edit their playback, strength, tongue, gaze and emotion settings. Edits save automatically.
+  Sentiment addition multiplier (0..2) overrides the shared amount for that NPC.
+  The NPC Sentiment Analysis checkbox turns it off while keeping their multiplier saved.
+  Global Sentiment Analysis must be enabled; a zero multiplier also skips it for the NPC.
   Hotkeys require Menu Framework 3 and SE/AE; initially unbound. Escape closes or cancels binding.
   Select NPC under crosshair also works with older frameworks. Edit reopens saved NPC settings.
   Use global clears one control; Reset NPC to global settings or Remove clears all NPC overrides.

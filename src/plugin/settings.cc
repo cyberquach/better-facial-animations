@@ -60,7 +60,7 @@ SRWLOCK settings_lock = SRWLOCK_INIT;
 
 extern const std::vector<Param> kParams = [] {
   std::vector<Param> params = {
-      {"Enabled", nullptr, 0, 0, "Enabled",
+      {"Enabled", nullptr, 0, 0, "Enable facial animations",
        "Untick for the game's own lip-sync, instantly (A/B).", Sec::kGeneral,
        &tune.enabled},
       {"PlayerFacialAnimations", nullptr, 0, 0, "Player facial animations",
@@ -68,11 +68,31 @@ extern const std::vector<Param> kParams = [] {
        "DBVO2 prototype for Skyrim. Untick to keep the voice mod's own "
        "animation.",
        Sec::kGeneral, &tune.player},
-      {"PotatoMode", nullptr, 0, 0, "Potato mode",
-       "Animate the player and the NPC actively in dialogue with you; "
-       "keep the model loaded.",
+      {"PotatoMode", nullptr, 0, 0, "Potato Mode",
+       "Only animate the player and NPC in an active dialogue window with one another.",
        Sec::kGeneral, &tune.potato_mode},
-      {"Prefetch", nullptr, 0, 0, "Prefetch",
+      {"VanillaEmotions", nullptr, 0, 0, "Vanilla / scene emotion inputs",
+       "Pass authored scene and dialogue-mod emotions to the facial model. "
+       "On by default. Sentiment Analysis works independently. "
+       "Applies during BFA speech.",
+       Sec::kGeneral, &tune.vanilla_emotions, -1, true, Param::kNone,
+       Group::kSources},
+      {"SentimentAnalysis", nullptr, 0, 0, "Sentiment Analysis",
+       "Sentiment Analysis is a HEAVY FEATURE: its additional model needs "
+       "600 MB of EXTRA VRAM on GPU, substantial processing power and longer "
+       "animation generation time. Adds voice-detected emotion to the model "
+       "inputs alongside authored scene emotion. Requires emotion_fp16.onnx. "
+       "Off by default. Disabling unloads it after current inference. "
+       "Force CPU uses system memory and additional CPU processing.",
+       Sec::kGeneral, &tune.sentiment_analysis, -1, true, Param::kSentiment,
+       Group::kSources},
+      {"SentimentMultiplier", &tune.sentiment_multiplier, 0, 2,
+       "Sentiment addition multiplier",
+       "Scales sentiment added to the model inputs: 0 = none, 0.5 = half, "
+       "1 = normal, 2 = double. Requires Sentiment Analysis. Final emotion "
+       "limits apply. 0 skips sentiment inference. Applies next line.",
+       Sec::kGeneral, nullptr, -1, true, Param::kSentiment, Group::kSources},
+      {"Prefetch", nullptr, 0, 0, "Prepare dialogue in advance",
        "Generate a line when its dialogue response is created, before it is "
        "spoken.",
        Sec::kGeneral, &tune.prefetch},
@@ -91,7 +111,7 @@ extern const std::vector<Param> kParams = [] {
        "lip syncing on modded dialogue may be degraded. Runs at 30 fps. "
        "About 80 MB of VRAM on GPU; usage "
        "varies by system. Switches live; already playing lines finish with their "
-       "current animation. Does not support eye gaze feature.",
+       "current animation. Eye gaze is unavailable with this model.",
        Sec::kModel, &tune.performance_model},
       {"UseOldModel", nullptr, 0, 0, "Old model",
        "Audio2Face v2.3. Less expressive than V3 and the slowest to run: "
@@ -102,7 +122,7 @@ extern const std::vector<Param> kParams = [] {
        "with their current animation.",
        Sec::kModel, &tune.old_model},
       {"ForceCPU", nullptr, 0, 0, "Force CPU",
-       "Run any selected model on the CPU instead of the GPU. V3 and Old "
+       "Run the selected model on CPU. V3 and Old "
        "run much slower on CPU; long lines can start late.\n"
        "Applies live after the current inference call finishes.",
        Sec::kModel, &tune.force_cpu},
@@ -121,8 +141,8 @@ extern const std::vector<Param> kParams = [] {
   };
   static char mouth_tip[160];
   snprintf(mouth_tip, sizeof mouth_tip,
-           "Lip and mouth skin movement. 1 uses %g strength when this "
-           "sex's Expressive Facial Animation is detected, otherwise 1.0.",
+           "Lip and mouth skin movement. Default strength: 1.0; %g with "
+           "this sex's Expressive Facial Animation edition detected.",
            kExpressiveMouthScale);
   for (int profile = 0; profile < 3; ++profile) {
     FaceTune& face =
@@ -198,34 +218,34 @@ extern const std::vector<Param> kParams = [] {
                         [](FaceTune& f, size_t) { return &f.lower_lip; }),
              // all of these apply from the next line spoken
              face_param(
-                 {"VoiceEmotion", nullptr, 0, 3, "Strength",
-                  "How strongly a line's emotion (the game's) drives the "
-                  "brows, "
-                  "eyes, "
-                  "cheeks and mouth. 1 = as given. Applies from the next line.",
-                  Sec::kEmotion, nullptr},
+                 {"VoiceEmotion", nullptr, 0, 3,
+                  "Scene emotion input multiplier",
+                  "Multiply authored scene emotion before it enters the model. "
+                  "1 = unchanged; 0 = none. Requires Vanilla / scene emotion "
+                  "inputs enabled. Applies next line.",
+                  Sec::kEmotion, nullptr, -1, true, Param::kScene},
                  [](FaceTune& f, size_t) { return &f.voice_emotion; }),
-             face_param({"VoiceSwell", nullptr, 0, 2, "Swell with volume",
-                         "How much the emotion grows where the voice is loud. "
-                         "0 = steady. "
-                         "Applies from the next line.",
-                         Sec::kEmotion, nullptr},
+             face_param({"VoiceSwell", nullptr, 0, 2,
+                         "Scene emotion boost from voice volume",
+                         "Boost authored scene emotion where the voice is "
+                         "loud. 0 = steady. Applies from the next line.",
+                         Sec::kEmotion, nullptr, -1, true, Param::kScene},
                         [](FaceTune& f, size_t) { return &f.voice_swell; }),
              face_param(
-                 {"FaceFadeIn", nullptr, 0, 3, "Fade to the mod's face (s)",
+                 {"FaceFadeIn", nullptr, 0, 3,
+                  "Fade into generated expressions (s)",
                   "When a line starts: how long the game's own expressions "
-                  "take to "
-                  "fade "
-                  "out, leaving the face to Audio2Face.",
-                  Sec::kEmotion, nullptr},
+                  "take to fade out, leaving the face to Audio2Face.",
+                  Sec::kEmotion, nullptr, -1, true, Param::kNone,
+                  Group::kTransitions},
                  [](FaceTune& f, size_t) { return &f.face_in; }),
              face_param(
-                 {"FaceFadeOut", nullptr, 0, 3, "Fade to the game's face (s)",
+                 {"FaceFadeOut", nullptr, 0, 3,
+                  "Restore game expressions after speech (s)",
                   "After a line: how long the game's own expressions take to "
-                  "fade "
-                  "back "
-                  "in.",
-                  Sec::kEmotion, nullptr},
+                  "fade back in.",
+                  Sec::kEmotion, nullptr, -1, true, Param::kNone,
+                  Group::kTransitions},
                  [](FaceTune& f, size_t) { return &f.face_out; }),
          }) {
       params.push_back(p);
@@ -234,24 +254,26 @@ extern const std::vector<Param> kParams = [] {
         "MaxAmazement", "MaxAnger", "MaxCheekiness", "MaxDisgust", "MaxFear",
         "MaxGrief", "MaxJoy", "MaxOutOfBreath", "MaxPain", "MaxSadness"};
     static const char* const kLabels[a2f::kNumMod] = {
-        "Max amazement / surprise", "Max anger", "Max cheekiness", "Max disgust",
-        "Max fear", "Max grief", "Max joy / happiness", "Max out of breath",
-        "Max pain", "Max sadness"};
+        "Maximum surprise input",       "Maximum anger input",
+        "Maximum cheekiness input",     "Maximum disgust input",
+        "Maximum fear input",           "Maximum grief input",
+        "Maximum happiness input",      "Maximum breathlessness input",
+        "Maximum pain input",           "Maximum sadness input"};
     for (int c = 0; c < a2f::kNumMod; ++c) {
       const bool unused =
           c == a2f::kGrief || c == a2f::kOutOfBreath || c == a2f::kPain;
       Param p = face_param(
           {kKeys[c], nullptr, 0, 2, kLabels[c],
            unused
-               ? "Caps this model emotion channel. The current Skyrim emotion "
-                 "mapping does not feed this channel, so this slider currently "
-                 "has no visible effect. 2 = original limit."
-               : "Caps only this emotion after Strength and Swell with volume. "
-                 "0 = off, 1 = full game intensity, 2 = original limit. "
-                 "Lower Joy / happiness to soften wide smiles. Applies from "
-                 "the next line; other emotions and lip-sync remain active.",
+               ? "Maximum input for this emotion, supplied explicitly by "
+                 "dialogue mods. 0 blocks this input; 2 is the highest limit."
+               : "MAXIMUM amount of this emotion the model can receive after "
+                 "scene multipliers, volume boost and added sentiment are "
+                 "combined. This is a ceiling. 0 blocks this input; 1 is the "
+                 "default; 2 is the highest limit.",
            Sec::kEmotion, nullptr},
           [](FaceTune& f, size_t index) { return &f.max_emotion[index]; }, c);
+      p.group = Group::kLimits;
       params.push_back(p);
     }
   }
@@ -348,7 +370,7 @@ std::string NpcLabel(uint8_t* base) {
 // Version 5 adds a player profile and normalizes lips to backend calibration.
 // Version 6 turns Argonians on by default and drops their saved off state.
 // Version 7 lowers the emotion caps' default to 1 and adds NPC overrides.
-constexpr int kIniVersion = 7;
+constexpr int kIniVersion = 8;
 
 std::string Section(const Param& p) {
   static const char* const kNames[] = {"General",  "General",
@@ -524,10 +546,12 @@ bool NpcAllowed(uint8_t* actor) {
 
 bool NpcParamSupported(const Param& param) {
   return (param.profile == 0 && param.face_value) ||
-         (param.profile == -1 && param.sec == Sec::kDirect);
+         (param.profile == -1 && (param.sec == Sec::kDirect ||
+                                 !strcmp(param.key, "SentimentMultiplier") ||
+                                 !strcmp(param.key, "SentimentAnalysis")));
 }
 
-Tune NpcDirectTune(Tune result, uint8_t* actor) {
+Tune NpcSharedTune(Tune result, uint8_t* actor) {
   if (!npc_overrides || !actor ||
       Field<uint32_t>(actor, kFormId) == kPlayerFormId)
     return result;
@@ -545,6 +569,10 @@ Tune NpcDirectTune(Tune result, uint8_t* actor) {
   result.conversation_gaze =
       get("ConversationGaze", result.conversation_gaze) != 0;
   result.gaze_strength = get("GazeStrength", result.gaze_strength);
+  result.sentiment_analysis =
+      result.sentiment_analysis && get("SentimentAnalysis", result.sentiment_analysis) != 0;
+  result.sentiment_multiplier =
+      get("SentimentMultiplier", result.sentiment_multiplier);
   return result;
 }
 
@@ -659,7 +687,17 @@ bool LogMore(std::atomic<int>& written) {
   return SnapshotTune().logging && ++written <= config.log_lines;
 }
 
+std::wstring PluginDir() {
+  wchar_t full[MAX_PATH];
+  GetFullPathNameW(kPluginDir, MAX_PATH, full, nullptr);
+  return full;
+}
+
 void LoadIni() {
+  const DWORD sentiment_file =
+      GetFileAttributesW((PluginDir() + L"\\" + kSentimentModel).c_str());
+  config.sentiment_available = sentiment_file != INVALID_FILE_ATTRIBUTES &&
+                               !(sentiment_file & FILE_ATTRIBUTE_DIRECTORY);
   // Startup only: no readers or menu callbacks exist yet.
   tune = Tune();
   SetNpcHotkey(GetPrivateProfileIntA(
@@ -675,21 +713,14 @@ void LoadIni() {
   config.cache_lines = std::max(8, static_cast<int>(GetPrivateProfileIntA(
                                        "General", "CacheLines", 300, kIni)));
   config.log_lines = GetPrivateProfileIntA("Debug", "LogLines", 400, kIni);
-  // The old opt-ins stand in for a missing GpuDevice; old zeros mean auto.
-  int legacy = 0;
-  if (GetPrivateProfileIntA("General", "IndependentGpuDevice", 0, kIni))
-    legacy = 3;
-  else if (GetPrivateProfileIntA("Debug", "UseDeviceWrapper", 0, kIni))
-    legacy = 1;
-  config.gpu_device =
-      GetPrivateProfileIntA("General", "GpuDevice", legacy, kIni);
-  if (config.gpu_device < 0 || config.gpu_device > 3) config.gpu_device = 0;
-  config.independent_device = config.gpu_device == 0 || config.gpu_device == 3;
-  config.use_device_wrapper = config.gpu_device == 1;
   // UseOldModel was Network=2 (3: v3.0) in earlier 3.0 builds, and ForceCPU
   // GPU=0
   tune.old_model = GetPrivateProfileIntA("General", "Network", 3, kIni) == 2;
   tune.force_cpu = GetPrivateProfileIntA("General", "GPU", 1, kIni) == 0;
+  // Explicit route, as in 4.0. No Auto probe or GPU-to-GPU fallback. This
+  // key takes precedence over retired GpuDevice/AutoGpuDevice settings.
+  config.independent_device =
+      GetPrivateProfileIntA("General", "IndependentGpuDevice", 1, kIni) != 0;
   char b[128], d[128];
   for (size_t i = 0; i < kNumParams; ++i) {
     const Param& p = kParams[i];
@@ -739,6 +770,13 @@ void LoadIni() {
     WritePrivateProfileStringA("Races", "Skyrim.esm|013740", nullptr, kIni);
     WritePrivateProfileStringA("Races", "Skyrim.esm|08883A", nullptr, kIni);
   }
+  if (version < 8) {  // 4.3: one fixed GPU route; sentiment is shared
+    WritePrivateProfileStringA("General", "GpuDevice", nullptr, kIni);
+    WritePrivateProfileStringA("General", "AutoGpuDevice", nullptr, kIni);
+    for (const char* section :
+         {"Emotion", "EmotionMale", "EmotionFemale", "EmotionPlayer"})
+      WritePrivateProfileStringA(section, "Sentiment", nullptr, kIni);
+  }
   if (version < kIniVersion) SaveIni();
   if (migrate) WritePrivateProfileStringA("Direct", nullptr, nullptr, kIni);
   ApplyLogging();
@@ -784,6 +822,8 @@ void SaveIni() {
   char b[64];
   snprintf(b, sizeof b, "%d", kIniVersion);
   WritePrivateProfileStringA("General", "IniVersion", b, kIni);
+  WritePrivateProfileStringA("General", "IndependentGpuDevice",
+                             config.independent_device ? "1" : "0", kIni);
   snprintf(b, sizeof b, "%d", saved_hotkey);
   WritePrivateProfileStringA("General", "OverridesHotkey", b, kIni);
   WritePrivateProfileStringA("General", "BlacklistHotkey", nullptr, kIni);
