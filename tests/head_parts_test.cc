@@ -90,7 +90,15 @@ void HairExclusion() {
                {"FacialHair", kHpMisc, false},
                {"Facial_Hair", kHpMisc, false},
                {"Facial Hair", 434, false},
-               {"HairOwnedFacialHair", kHpMisc, true}};
+               {"HairOwnedFacialHair", kHpMisc, true},
+               // Maids II 5.1.6 HDPT names/types: the Misc hairline is a
+               // linked hair extra, while Ashen facial anatomy must stay.
+               {"SMSApachiiHair01", kHpHair, true},
+               {"SMSApachiiHairLine01", kHpMisc, true},
+               {"SMSHeadAshenFemale", kHpFace, false},
+               {"SMSBrowsAshenFemale25", kHpEyebrows, false},
+               {"SMSEyesAshenFemaleBlue", kHpEyes, false},
+               {"FemaleMouthHumanoidDefault", kHpMisc, false}};
   std::vector<std::array<uint8_t, 0x120>> forms(std::size(specs));
   std::vector<uint8_t*> ptrs;
   for (size_t i = 0; i < forms.size(); ++i) {
@@ -107,6 +115,7 @@ void HairExclusion() {
   uint8_t* shared[] = {ptrs[2], ptrs[3]};
   uint8_t* fallback[] = {ptrs[15]};
   uint8_t* eye_lashes[] = {ptrs[12]};
+  uint8_t* ashen_hairline[] = {ptrs[25]};
   Field<BSTArray>(ptrs[0], kHeadPartExtras) = {root, 5, 0, 5};
   Field<BSTArray>(ptrs[1], kHeadPartExtras) = {nested, 2, 0, 2};
   Field<BSTArray>(ptrs[2], kHeadPartExtras) = {cycle, 1, 0, 1};
@@ -115,6 +124,7 @@ void HairExclusion() {
   Field<BSTArray>(ptrs[8], kHeadPartExtras) = {shared, 2, 0, 2};
   Field<BSTArray>(ptrs[13], kHeadPartExtras) = {fallback, 1, 0, 1};
   Field<BSTArray>(ptrs[17], kHeadPartExtras) = {eye_lashes, 1, 0, 1};
+  Field<BSTArray>(ptrs[24], kHeadPartExtras) = {ashen_hairline, 1, 0, 1};
   Field<BSTArray>(handler, kDhFormArrays + kFtHeadPart * sizeof(BSTArray)) = {
       ptrs.data(), uint32_t(ptrs.size()), 0, uint32_t(ptrs.size())};
 
@@ -154,6 +164,7 @@ void HairExclusion() {
     check("UnregisteredHairMouth", true);
     check("UnregisteredScalpHead", true);
     check("UnregisteredBeardHair", false);
+    check("SMSApachiiHairLine36", true);  // fallback without a registry entry
     std::reverse(ptrs.begin(), ptrs.end());
   }
   // Independent CommonLib layout fixtures for SE, AE and VR. Hair tint is
@@ -181,6 +192,17 @@ void HairExclusion() {
                                      uint32_t, const float*) { ++seen; });
       return seen != 0;
     };
+    // Replay the fresh KS/SMP resource inventory through the fallback path
+    // on each runtime layout. None may enter facial capture or playback.
+    const struct { const char* name; uint64_t flags; } ks_shapes[] = {
+#include "ks_hair_shapes.inc"
+    };
+    static_assert(std::size(ks_shapes) == 495);
+    for (const auto& ks : ks_shapes) {
+      Field<uint64_t>(shader.data(), 0x38) = ks.flags;
+      assert(!admitted(ks.name));
+    }
+    Field<uint64_t>(shader.data(), 0x38) = uint64_t{1} << 18;
     // Actual KS Hairdos shape alias; "scar" used to admit it as a scar.
     assert(!admitted("Scarlet"));
     assert(!admitted("VirtualBody"));
@@ -202,6 +224,12 @@ void HairExclusion() {
     assert(admitted("IndependentEyes"));
     assert(!admitted("Style01"));
     assert(!admitted("Underlayer"));
+    assert(!admitted("SMSApachiiHair01"));
+    assert(!admitted("SMSApachiiHairLine01"));
+    assert(admitted("SMSHeadAshenFemale"));
+    assert(admitted("SMSBrowsAshenFemale25"));
+    assert(admitted("SMSEyesAshenFemaleBlue"));
+    assert(!admitted("FemaleMouthHumanoidDefault"));  // hypothetical hair shader
     // No shader or a different flag must not disable ordinary face parts.
     Field<uint64_t>(shader.data(), 0x38) = uint64_t{1} << 17;
     assert(admitted("UnknownHeadOverlay"));

@@ -97,11 +97,10 @@ int main() {
     CHECK(f != INVALID_HANDLE_VALUE);
     CloseHandle(f);
   }
+  Select(3, false); // Explicitly exercise GPU-to-CPU transitions.
   config.network = 3;
   config.gpu = true;
   config.model = L"a2f3_fp16.onnx";
-  config.independent_device = true;
-  config.gpu_device = 3;
   std::string error;
   CHECK(model.Load(PluginDir() + L"\\A2FDirect3.bin", error));
   std::atomic_store(&active_model, SnapshotModel());
@@ -117,16 +116,11 @@ int main() {
       Request("pending", 0, 0, false, false, SnapshotTune(), 0, world_epoch);
   const Job obsolete = queue.front();
   auto old_mapping = completed->model_state->mapping;
-  metacommands.state = a2f::Metacommands::kOff;
-  metacommands.error = "previous session";
   Select(4);
   CHECK(!JobAllowed(obsolete));
   WorkerStep(keeper, false);
   CHECK(SnapshotModel()->network == 4 && keeper.on_gpu() && keeper.loaded());
   CHECK(a2f::destroyed == 1 && a2f::alive == 1);
-  // The new session decides metacommands for itself.
-  CHECK(metacommands.state == a2f::Metacommands::kUntried &&
-        metacommands.error.empty());
   CHECK(queue.empty() && cache.empty() && pending->state == State::kFailed);
   CHECK(completed->state == State::kReady &&
         completed->model_state->network == 3);
@@ -179,11 +173,12 @@ int main() {
   Select(3);
   WorkerStep(keeper, false);
   CHECK(SnapshotModel()->network == 3 && keeper.loaded() && !keeper.on_gpu());
+  CHECK(keeper.version() == 3 && stats.network == 3); // preserve selected model
   CHECK(!stats.net_error.empty() && !stats.switching_model);
   a2f::fail_gpu = false;
   Select(4);
   WorkerStep(keeper, false);
-  CHECK(stats.net_error.empty() && stats.lines == 0 && stats.gen_sec == 0);
+  CHECK(!stats.net_error.empty() && !keeper.on_gpu() && stats.lines == 0 && stats.gen_sec == 0);
   // Disabled switches never load a session until enabled again.
   for (const Param& p : kParams)
     if (!strcmp(p.key, "Enabled")) *p.flag = false;

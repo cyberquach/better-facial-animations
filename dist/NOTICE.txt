@@ -10,3 +10,8 @@ See licenses/NVIDIA-Open-Model-License.txt and https://huggingface.co/nvidia/Aud
 DBReV_API.h: public integration header supplied with Dragonborn ReVoiced 1.4.4+.
 Its author permits use, modification and redistribution, including in closed-source projects.
 The original notice is retained in include/a2f/speech/DBReV_API.h.
+
+emotion_fp16.onnx (NVIDIA Audio2Emotion v2.2, converted to FP16):
+Licensed by NVIDIA Corporation under the License Agreement for NVIDIA Audio2Emotion Model for Use with Audio2Face Project
+See licenses/NVIDIA-Audio2Emotion-License.txt and https://huggingface.co/nvidia/Audio2Emotion-v2.2
+The model may only be used with the NVIDIA Audio2Face project, and not for the purpose of emotion recognition.

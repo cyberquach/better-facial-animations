@@ -21,8 +21,8 @@ struct OrtOptions {
   // Frames per run; fixed shape (the last batch of a line is padded). 2 =
   // least VRAM.
   int batch = 2;
-  // Require an independent device and a private compute queue; failure goes
-  // to CPU in NetKeeper, never to the shared-device path. GPU only.
+  // True: independent device/private queue. False: 4.0-style shared device.
+  // The caller selects one route; failures go to CPU, never another GPU route.
   bool independent_device = false;
 };
 
@@ -47,6 +47,11 @@ std::unique_ptr<Net> CreatePerformanceNet(const std::wstring& dll_dir,
                                           const std::wstring& model,
                                           const OrtOptions& o, std::string& err,
                                           std::string& info);
+// Audio2Emotion v2.2, fixed 60000-sample windows, warmed before return.
+std::unique_ptr<EmotionNet> CreateOrtEmotionNet(const std::wstring& dll_dir,
+                                                const std::wstring& model,
+                                                const OrtOptions& options,
+                                                std::string& err);
 
 // Adapter 0 (the one DirectML uses) and this process's video memory there.
 GpuState QueryGpu();
@@ -62,20 +67,16 @@ std::vector<std::string> GpuReport(bool probe_gpu);
 // (the test checks the import is still there).
 bool DeviceRedirected();
 
-// true: sessions run on the wrapper of the Direct3D 12 device that ReShade (or
-// the like) hands out, not on the device inside it. Set before the first
-// session and GpuReport; may be changed between sessions.
-void SetUseDeviceWrapper(bool use);
-// True once D3D12CreateDevice handed out a wrapper of the device.
-bool DeviceWrapped();
-// Try strict device creation against the installed runtime and driver.
-// Retains the independent context until process exit, including on failure;
-// later sessions reuse it. Never touches the shared device. Worker thread only.
-bool IndependentDeviceSupported(std::string& err);
-
 // Where onnxruntime's own warnings and errors go (the first 200; any
 // thread). Set before the first session.
 void SetOrtLog(void (*log)(const std::string&));
+
+// Worker only, before creating any session. The marker covers initialization
+// and warmup, not later runs. An interrupted attempt makes the next launch CPU.
+void SetGpuStartupMarker(const std::wstring& path);
+// Shared by both GPU routes and all facial/sentiment models. No driver calls.
+bool GpuAllowed(std::string& err);
+void DisableGpu(const std::string& reason);
 
 }  // namespace a2f
 

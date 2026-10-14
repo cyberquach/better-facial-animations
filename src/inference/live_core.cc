@@ -282,6 +282,84 @@ std::vector<double> Loudness(const float* pcm, size_t n, int frames) {
 
 }  // namespace
 
+bool AnalyzeSentiment(EmotionNet& net, const float* pcm, size_t n,
+                      std::vector<float>& track, std::string& err,
+                      const std::function<bool()>& allowed) {
+  track.clear();
+  if (!n) {
+    err = "empty sentiment audio";
+    return false;
+  }
+  // The network reads the window (kVoiceWindow) centred on every half
+  // second; frames in between interpolate the two readings around them.
+  constexpr int stride = kFps / 2;
+  // The network's classes (anger, disgust, fear, happiness, neutral,
+  // sadness) onto the explicit emotions (Anger, Disgust, Fear, Joy, none,
+  // Sadness).
+  constexpr int mapping[kNumVoiceEmo] = {1, 3, 4, 6, -1, 9};
+  const int frames =
+      static_cast<int>((n * kFps + kSampleRate - 1) / kSampleRate);
+  // Readings: one per stride and one past the last frame.
+  const int count = (frames - 1) / stride + 2;
+  std::vector<std::vector<double>> readings(kNumMod,
+                                            std::vector<double>(count));
+  std::vector<float> x(kVoiceWindow);
+  double probabilities[kNumVoiceEmo] = {};
+  // Windows are kept inside the audio (start at most last, the window's
+  // start when it ends with the audio); a short clip pads with silence. The
+  // network runs again only when the window moved (heard: its last start).
+  int64_t heard = -1;
+  const int64_t last =
+      std::max<int64_t>(0, static_cast<int64_t>(n) - kVoiceWindow);
+  for (int i = 0; i < count; ++i) {
+    if (allowed && !allowed()) {
+      err = "sentiment cancelled";
+      return false;
+    }
+    const int64_t start = std::clamp<int64_t>(
+        static_cast<int64_t>(i) * stride * kSampleRate / kFps -
+            kVoiceWindow / 2,
+        0, last);
+    if (start != heard) {
+      heard = start;
+      const size_t m = std::min<size_t>(kVoiceWindow, n - start);
+      std::copy_n(pcm + start, m, x.begin());
+      std::fill(x.begin() + m, x.end(), 0.f);
+      float logits[kNumVoiceEmo];
+      if (!net.Run(x.data(), logits, err)) return false;
+      for (float v : logits) {
+        if (!std::isfinite(v)) {
+          err = "nonfinite sentiment output";
+          return false;
+        }
+      }
+      const double top = *std::max_element(logits, logits + kNumVoiceEmo);
+      double sum = 0;
+      for (int e = 0; e < kNumVoiceEmo; ++e)
+        sum += probabilities[e] =
+            std::exp(static_cast<double>(logits[e]) - top);
+      for (double& v : probabilities) v /= sum;
+    }
+    for (int e = 0; e < kNumVoiceEmo; ++e)
+      if (mapping[e] >= 0) readings[mapping[e]][i] = probabilities[e];
+  }
+  if (allowed && !allowed()) {
+    err = "sentiment cancelled";
+    return false;
+  }
+  track.resize(static_cast<size_t>(frames) * kNumMod);
+  for (int c = 0; c < kNumMod; ++c) {
+    ZeroPhase(readings[c], 0.5, 1);
+    for (int t = 0; t < frames; ++t) {
+      const int i = t / stride;
+      const double a = static_cast<double>(t % stride) / stride;
+      track[static_cast<size_t>(t) * kNumMod + c] =
+          (1 - a) * readings[c][i] + a * readings[c][i + 1];
+    }
+  }
+  return true;
+}
+
 void EmotionTrack(const float* pcm, size_t n, int frames,
                   const Emotion& emotion, std::vector<float>& track) {
   double game[kNumMod] = {};
@@ -304,13 +382,21 @@ void EmotionTrack(const float* pcm, size_t n, int frames,
                      ? std::clamp(static_cast<double>(emotion.maximum[c]), 0.0,
                                   kMaxEmotion)
                      : kMaxEmotion;
+  const double sentiment_multiplier =
+      std::isfinite(emotion.sentiment_multiplier)
+          ? std::clamp<double>(emotion.sentiment_multiplier, 0, 2)
+          : 0;
   track.resize(static_cast<size_t>(frames) * kNumMod);
+  const bool with_sentiment = emotion.sentiment.size() == track.size();
   for (int t = 0; t < frames; ++t) {
     const double g =
         emotion.gain * (loud.empty() ? 1 : 1 + emotion.swell * loud[t]);
-    for (int c = 0; c < kNumMod; ++c)
-      track[static_cast<size_t>(t) * kNumMod + c] =
-          static_cast<float>(std::clamp(g * game[c], 0.0, maximum[c]));
+    for (int c = 0; c < kNumMod; ++c) {
+      const size_t i = static_cast<size_t>(t) * kNumMod + c;
+      const double sentiment = with_sentiment ? emotion.sentiment[i] : 0;
+      track[i] = static_cast<float>(std::clamp(
+          g * game[c] + sentiment * sentiment_multiplier, 0.0, maximum[c]));
+    }
   }
 }
 

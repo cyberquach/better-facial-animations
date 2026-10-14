@@ -231,6 +231,7 @@ def main():
     inputs += sorted((ROOT / 'src').rglob('*.cc'))
     inputs += sorted((ROOT / 'include').rglob('*.h'))
     inputs += sorted((ROOT / 'tests').glob('*.cc'))
+    inputs += sorted((ROOT / 'tests').glob('*.inc'))
     inputs += sorted((ROOT / 'tests').glob('*.py'))
     inputs += [ROOT / c['python'] for c in selected if c.get('python')]
     inputs += [ROOT / 'tests/follower_teeth.json', ROOT / 'tests/hair_assets.json']

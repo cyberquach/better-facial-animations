@@ -73,10 +73,9 @@ int main() {
       ScopedLock guard(settings_lock);
       CHECK(!*kParams[i].flag);
       *kParams[i].flag = true;
-      CHECK(!strcmp(kParams[i].label, "Potato mode"));
+      CHECK(!strcmp(kParams[i].label, "Potato Mode"));
       CHECK(!strcmp(kParams[i].tip,
-                    "Animate the player and the NPC actively in dialogue with you; "
-                    "keep the model loaded."));
+                    "Only animate the player and NPC in an active dialogue window with one another."));
     }
   CHECK(!DialogueAllows(t, 42));
   // lastSpeaker persists after close but must never admit work.
@@ -205,6 +204,7 @@ int main() {
   Field<uint8_t*>(idle_node.data(), kNodeFg.Get()) = idle_fg.data();
   AddDirect(idle_node.data(), true);
   CHECK(!idle_fg[kFgDirty]);
+  CHECK(!FaceNeedsUpdate(idle_fg.data()));
   // Direct-only handoff restores the engine's expressions with no extra pose.
   std::array<uint8_t, 0x400> fg{}, node{};
   float values[direct::kNumExpressions]{};
@@ -217,9 +217,13 @@ int main() {
   std::fill_n(f.src, direct::kNumExpressions, 0.4f);
   faces[fg.data()] = f;
   Count();
+  // Retained cleanup is admitted, but an unrelated NPC is still skipped.
+  CHECK(FaceNeedsUpdate(fg.data()));
+  CHECK(!FaceNeedsUpdate(idle_fg.data()));
   Field<uint8_t*>(node.data(), kNodeFg.Get()) = fg.data();
   AddDirect(node.data(), true);
   CHECK(faces.empty() && fg[kFgDirty]);
+  CHECK(!FaceNeedsUpdate(fg.data()));
   for (int i = 0; i < direct::kNumExpressions; ++i)
     CHECK(values[i] == (direct::PlaysExpression(i) ? 0.4f : 0.f));
   faces[fg.data()] = f;
@@ -264,8 +268,7 @@ int main() {
       }, [] { return 0.; });
   CHECK(WorkerStep(changed, false) == 0);
   CHECK(WorkerStep(changed, false) == INFINITE && changed.loaded());
-  // A failed GPU is retried with a doubling wait while the CPU fallback runs
-  // the lines, in both modes; the worker polls for the retry meanwhile.
+  // CPU fallback is final in both modes: no GPU retries or idle polling.
   int gpu_creates = 0, cpu_creates = 0;
   double clock = 0;
   a2f::NetKeeper fallback(true,
@@ -279,28 +282,26 @@ int main() {
         return std::make_unique<FakeNet>();
       }, [&] { return clock; });
   flag("PotatoMode", false);
-  CHECK(WorkerStep(fallback, false) == 1000);
+  CHECK(WorkerStep(fallback, false) == INFINITE);
   CHECK(!fallback.Wanted() && fallback.loaded() && !fallback.on_gpu());
   CHECK(gpu_creates == 1 && cpu_creates == 1 && !stats.net_gpu &&
-        stats.net_attempts == 1 && stats.net_retry_at == 2);
+        stats.net_retry_at == 0);
   for (int conversation = 0; conversation < 3; ++conversation) {
     flag("PotatoMode", true);
     Field<uint32_t>(mtm, kMtmSpeaker) = 0;
-    // before the wait is over: no new attempt
-    CHECK(WorkerStep(fallback, false) == 1000 && fallback.loaded());
-    CHECK(gpu_creates == 1 + conversation &&
+    // Changing conversation state cannot re-arm GPU initialization.
+    CHECK(WorkerStep(fallback, false) == INFINITE && fallback.loaded());
+    CHECK(gpu_creates == 1 &&
           fallback.error() == "GPU startup failure" &&
           stats.net_detail == fallback.error());
-    // A new admitted line runs on the CPU fallback and retries the GPU once
-    // the wait is over.
+    // A new admitted line stays on CPU even much later.
     Field<uint32_t>(mtm, kMtmSpeaker) = 42;
     clock += 100000;
     CHECK(fallback.Run([](a2f::Net&, std::string&) { return true; }, err,
                        no_net, [&] { return DialogueAllows(SnapshotTune(), 42); }));
-    CHECK(gpu_creates == 2 + conversation && cpu_creates == 1 &&
-          fallback.attempts() == gpu_creates);
+    CHECK(gpu_creates == 1 && cpu_creates == 1);
     flag("PotatoMode", false);
-    CHECK(WorkerStep(fallback, false) == 1000);
+    CHECK(WorkerStep(fallback, false) == INFINITE);
   }
   // Both real player entry paths must reach generation without a dialogue
   // partner. NPCs remain restricted and player/master settings still apply.
@@ -388,7 +389,7 @@ int main() {
   CHECK(native() == 3.5f && queue.empty());
   // CPU creation retries also run while Potato mode is idle.
   CHECK(WorkerStep(failed, false) == 1000);
-  // A lost GPU session is dropped and the GPU tried again at once.
+  // Cancellation after GPU loss delays CPU creation, never resets the GPU gate.
   gpu_creates = cpu_creates = 0;
   a2f::NetKeeper lost(true,
       [&](bool gpu, std::string&, std::string&) -> std::unique_ptr<a2f::Net> {
@@ -403,6 +404,6 @@ int main() {
           return false;
         }, err, no_net, [&] { return admitted; }));
   CHECK(!lost.loaded() && gpu_creates == 1 && cpu_creates == 0);
-  CHECK(lost.Ensure() && lost.on_gpu() && gpu_creates == 2 && cpu_creates == 0);
+  CHECK(lost.Ensure() && !lost.on_gpu() && gpu_creates == 1 && cpu_creates == 1);
   puts("potato mode, GPU fallback and worker lifecycle contracts passed");
 }

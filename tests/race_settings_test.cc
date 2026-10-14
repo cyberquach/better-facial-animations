@@ -183,9 +183,9 @@ int main() {
       CHECK(f.ownership_blend == 1 && f.speech_blend == 0);
       CHECK(std::fabs(f.shown[idx] - 0.65f) < 1e-4f);
       frame(0);  // override: neutral at once
-      CHECK(f.src[idx] == 0 && f.shown[idx] > 0.4f && f.shown[idx] < 0.47f);
+      CHECK(f.src[idx] == 0 && f.shown[idx] > 0.30f && f.shown[idx] < 0.33f);
       frame(0);
-      CHECK(f.shown[idx] > 0.25f && f.shown[idx] < 0.32f);
+      CHECK(f.shown[idx] == 0.f);
       for (int i = 0; i < 30; ++i) frame(0);
       CHECK(f.shown[idx] < 0.01f);
       frame(0.9f);  // override: a full expression at once
@@ -229,6 +229,38 @@ int main() {
       CHECK(frame() & kKeepUpdating);  // speech pose still easing to zero
       f.transition = a2f::PoseTransition();
       CHECK(!(frame() & kKeepUpdating));
+    }
+    // Work budget: a one-frame override must settle within the advertised
+    // full-scale fade, rather than forcing seconds of idle mesh rebuilds.
+    for (int hz : {30, 60, 120}) {
+      Face& f = faces.at(fg);
+      f.head_state = State::kReady;
+      f.ownership_blend = 1;
+      f.speech_blend = 0;
+      f.transition = a2f::PoseTransition();
+      f.shown_set = true;
+      std::fill_n(f.shown, direct::kNumExpressions, 0.f);
+      std::fill_n(f.level, direct::kNumExpressions, 0.f);
+      int updates = 0;
+      auto frame = [&](float target, float dt) {
+        std::fill_n(values, direct::kNumExpressions, target);
+        return Expressions(fg, dt, Tune(), false, actor, 42);
+      };
+      for (int i = 0; i < hz * 5; ++i)
+        updates += (frame(0.9f, 1.f / hz) & kKeepUpdating) != 0;
+      CHECK(updates > 1);  // preserve smoothing for abrupt overrides
+      CHECK(updates <= static_cast<int>(std::ceil(0.3f * hz)));
+      CHECK(frame(0.9f, 1.f / hz) == kNoUpdate);
+      // Small native changes already have an engine-provided ramp. Following
+      // them must not introduce a second fade or leave idle work afterward.
+      float target = 0;
+      for (int i = 1; i <= hz; ++i) {
+        target = 0.9f - 0.6f * i / hz;
+        frame(target, 1.f / hz);
+        for (int j = 0; j < direct::kNumExpressions; ++j)
+          if (direct::PlaysExpression(j)) CHECK(f.shown[j] == target);
+      }
+      CHECK(frame(target, 1.f / hz) == kNoUpdate);
     }
     // Disabling a race must release every live animation path.
     SetRaceEnabled(0x06000800, false);

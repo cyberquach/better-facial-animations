@@ -232,11 +232,12 @@ int main() {
         !dml_device);
   // An unsupported metacommand mode must fail before touching any graphics API.
   Session session;
-  CHECK(!CreateSession(L"", true, false, true, L"", {}, 1, session, err));
+  CHECK(!CreateSession(L"", true, false, true, L"", {}, session, err));
   CHECK(err.find("does not support disabling metacommands") != std::string::npos);
   CHECK(!DeviceRedirected());
   // Failed initialization is sticky, including partial DML/queue creation.
   for (int stage = 0; stage < 3; ++stage) {
+    gpu_failure.clear();  // the process-wide gate, per stage
     IndependentContext failed;
     const int creates_before = factory.creates;
     factory.create_result = stage == 0 ? E_FAIL : S_OK;
@@ -265,7 +266,7 @@ int main() {
   // never resets this context. The successful context below is left alive.
   auto& context = IndependentGpu();
   CHECK(!context.device && !context.dml && !context.queue);
-  context.failure.clear();
+  gpu_failure.clear();
   const int creates_before = factory.creates;
   auto probe = context.Acquire(Get, err);
   CHECK(probe.get() == &device && device.refs == 2);
@@ -287,7 +288,7 @@ int main() {
     CHECK(device.refs == 1 && fake_dml.refs == 1 && queue.refs == 1);
     CHECK(!device.final_releases && !fake_dml.final_releases && !queue.final_releases);
     { Session cpu; }  // no model/device reference exists during CPU operation
-    CHECK(IndependentDeviceSupported(err));  // probe reuses the same device
+    CHECK(OpenIndependentDevice(err));  // reopening reuses the same device
   }
   CHECK(attachments == 12 && factory.creates == creates_before + 1);
   CHECK(dml_creates == creates_dml_before && device.queues == creates_queue_before);
@@ -304,6 +305,7 @@ int main() {
   CHECK(!device.final_releases && !fake_dml.final_releases && !queue.final_releases);
   // Independently exercise D3D12 removal before any DirectML allocation.
   {
+    gpu_failure.clear();
     IndependentContext lost;
     auto ref = lost.Acquire(Get, err);
     CHECK(ref);
