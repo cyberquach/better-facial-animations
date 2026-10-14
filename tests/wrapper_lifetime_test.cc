@@ -39,24 +39,20 @@ void ORT_API_CALL ReleaseMemory(OrtMemoryInfo*) {
 
 void TestSelection() {
   using namespace a2f;
-  for (bool keep_wrapper : {false, true}) {
-    SetUseDeviceWrapper(keep_wrapper);
+  {
     Object wrapped, real;
     Wrappers wrappers;
     {
       const ScopedWrappers scope(wrappers);
       void* result = &wrapped;
       SelectDevice(ComPtr<IUnknown>(&real), &result);
-      CHECK(result == (keep_wrapper ? &wrapped : &real));
-      CHECK(wrappers.size() == (keep_wrapper ? 0u : 1u));
+      CHECK(result == &real && wrappers.size() == 1u);
       static_cast<IUnknown*>(result)->Release();
-      CHECK(real.refs == 0);
-      CHECK(wrapped.refs == (keep_wrapper ? 0u : 1u));
+      CHECK(real.refs == 0 && wrapped.refs == 1u);
     }
     wrappers.clear();
     CHECK(wrapped.refs == 0);
   }
-  SetUseDeviceWrapper(false);
   Object wrapped, real;
   void* result = &wrapped;
   SelectDevice(ComPtr<IUnknown>(&real), &result);
@@ -120,11 +116,11 @@ void TestRedirect() {
   SetOrtLog(Log);
   std::string err;
   Session s;
-  CHECK(!CreateSession(L"", true, true, true, L"", {}, 1, s, err));
+  CHECK(!CreateSession(L"", true, true, true, L"", {}, s, err));
   CHECK(redirect_logs == 0 && !DeviceRedirected());
-  CHECK(!CreateSession(L"", true, true, false, L"", {}, 1, s, err));
+  CHECK(!CreateSession(L"", true, true, false, L"", {}, s, err));
   CHECK(redirect_logs == 1 && !DeviceRedirected());
-  CHECK(!CreateSession(L"", true, true, false, L"", {}, 1, s, err));
+  CHECK(!CreateSession(L"", true, true, false, L"", {}, s, err));
   CHECK(redirect_logs == 1);
   SetOrtLog(nullptr);
   ort_module = nullptr;
@@ -148,17 +144,37 @@ void TestTeardown() {
       s.sess.reset(reinterpret_cast<OrtSession*>(1));
       s.mem.reset(reinterpret_cast<OrtMemoryInfo*>(1));
       if (version == 2) {
-        OrtNet net(std::move(s.sess), std::move(s.mem), 1,
-                   std::move(s.device), std::move(s.dml_device),
-                   std::move(s.wrappers));
+        OrtNet net(std::move(s), 1);
       } else if (version == 3) {
-        OrtNet3 net(std::move(s.sess), std::move(s.mem),
-                    std::move(s.device), std::move(s.dml_device),
-                    std::move(s.wrappers));
+        OrtNet3 net(std::move(s));
       }
     }
     CHECK(releases == 2 && wrapper.refs == 0);
   }
+  api = nullptr;
+}
+
+void TestFailedRetention() {
+  using namespace a2f;
+  OrtApi mock{};
+  mock.ReleaseSession = ReleaseSession;
+  mock.ReleaseMemoryInfo = ReleaseMemory;
+  api = &mock;
+  Object device, dml;
+  wrapper.refs = 1;
+  releases = 0;
+  DisableGpu("injected shared GPU failure");
+  {
+    // Only IUnknown ownership is exercised; no D3D12 methods are invoked.
+    Session s;
+    s.device.reset(reinterpret_cast<ID3D12Device*>(&device));
+    s.dml_device.reset(&dml);
+    s.wrappers.emplace_back(&wrapper);
+    s.sess.reset(reinterpret_cast<OrtSession*>(1));
+    s.mem.reset(reinterpret_cast<OrtMemoryInfo*>(1));
+    OrtNet3 net(std::move(s));
+  }
+  CHECK(releases == 0 && wrapper.refs == 1 && device.refs == 1 && dml.refs == 1);
   api = nullptr;
 }
 }  // namespace
@@ -168,6 +184,7 @@ int main() {
   TestSelection();
   TestTeardown();
   TestRedirect();
-  puts("wrapper selection, nested/thread scopes, model teardown and "
+  TestFailedRetention();
+  puts("wrapper unwrapping, nested/thread scopes, model teardown and "
        "one-time import redirect passed");
 }

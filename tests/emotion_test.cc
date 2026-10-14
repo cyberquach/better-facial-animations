@@ -17,6 +17,20 @@ void Expect(bool ok, const char* what) {
   printf("%s %s\n", ok ? "ok" : "FAIL", what);
 }
 
+struct Voice : a2f::EmotionNet {
+  int calls = 0, selected = 3;
+  bool fail = false, nonfinite = false;
+  bool Run(const float*, float* logits, std::string& err) override {
+    ++calls;
+    if (fail) {
+      err = "test failure";
+      return false;
+    }
+    std::fill_n(logits, a2f::kNumVoiceEmo, -100.f);
+    logits[selected] = nonfinite ? std::numeric_limits<float>::infinity() : 100;
+    return true;
+  }
+};
 constexpr int kJoy = 6, kAnger = 1;
 }  // namespace
 
@@ -127,6 +141,113 @@ int main() {
   e.type = 4;
   a2f::EmotionTrack(pcm.data(), pcm.size(), frames, e, t);
   Expect(at(t, 0, a2f::kSadness) == 1, "joy cap leaves sadness unchanged");
+  Voice voice;
+  std::string err;
+  e = {};
+  e.type = 5;
+  e.value = 50;
+  e.gain = 1;
+  e.maximum.fill(2);
+  Expect(a2f::AnalyzeSentiment(voice, pcm.data(), 16000, e.sentiment, err),
+         "short audio produces sentiment");
+  Expect(voice.calls == 1 && e.sentiment.size() == 30 * a2f::kNumMod,
+         "short audio is heard once, not once per frame");
+  a2f::EmotionTrack(pcm.data(), 16000, 30, e, t);
+  Expect(std::fabs(at(t, 0, kJoy) - 1.5f) < .001f,
+         "sentiment ADDS to the same dialogue emotion, not max or replacement");
+  e.type = 1;
+  a2f::EmotionTrack(pcm.data(), 16000, 30, e, t);
+  Expect(at(t, 0, kJoy) == 1 && at(t, 0, kAnger) == .5f,
+         "different sentiment and dialogue channels coexist");
+  for (float multiplier : {0.f, .25f, .5f, 1.f}) {
+    e.sentiment_multiplier = multiplier;
+    a2f::EmotionTrack(pcm.data(), 16000, 30, e, t);
+    Expect(at(t, 0, kJoy) == multiplier && at(t, 0, kAnger) == .5f,
+           "multiplier scales only the added emotion; authored emotion is unchanged");
+  }
+  e.sentiment[kJoy] = .2f;
+  for (float multiplier : {1.5f, 2.f}) {
+    e.sentiment_multiplier = multiplier;
+    a2f::EmotionTrack(pcm.data(), 16000, 30, e, t);
+    Expect(std::fabs(at(t, 0, kJoy) - .2f * multiplier) < .0001f &&
+               at(t, 0, kAnger) == .5f,
+           "up to double sentiment leaves authored emotion unchanged");
+  }
+  e.sentiment[kJoy] = .8f;
+  a2f::EmotionTrack(pcm.data(), 16000, 30, e, t);
+  Expect(std::fabs(at(t, 0, kJoy) - 1.6f) < .0001f,
+         "0.8 sentiment times two reaches 1.6 before the final emotion limit");
+  e.sentiment[kJoy] = 1;
+  a2f::EmotionTrack(pcm.data(), 16000, 30, e, t);
+  Expect(at(t, 0, kJoy) == 2 && at(t, 0, kAnger) == .5f,
+         "double sentiment reaches two without an intermediate cap");
+  e.sentiment_multiplier = std::numeric_limits<float>::quiet_NaN();
+  a2f::EmotionTrack(pcm.data(), 16000, 30, e, t);
+  Expect(at(t, 0, kJoy) == 0 && at(t, 0, kAnger) == .5f,
+         "invalid multiplier suppresses only sentiment");
+  e.sentiment_multiplier = 1;
+  e.gain = 0;
+  a2f::EmotionTrack(pcm.data(), 16000, 30, e, t);
+  Expect(at(t, 0, kJoy) == 1 && at(t, 0, kAnger) == 0,
+         "dialogue at zero does not suppress sentiment");
+  e.type = 0;
+  a2f::EmotionTrack(pcm.data(), 16000, 30, e, t);
+  Expect(at(t, 0, kJoy) == 1,
+         "neutral dialogue can use sentiment; total retains safety cap");
+  e.type = 5;
+  e.value = 50;
+  e.gain = 1;
+  e.maximum[kJoy] = .6f;
+  a2f::EmotionTrack(pcm.data(), 16000, 30, e, t);
+  Expect(at(t, 0, kJoy) == .6f, "combined sentiment obeys the configured cap");
+  e.maximum[kJoy] = 0;
+  a2f::EmotionTrack(pcm.data(), 16000, 30, e, t);
+  Expect(at(t, 0, kJoy) == 0, "sentiment cannot revive a disabled emotion");
+  e.maximum.fill(2);
+  e.gain = 0;
+  e.sentiment[kJoy] = .1f;
+  a2f::EmotionTrack(pcm.data(), 16000, 30, e, t);
+  Expect(at(t, 0, kJoy) == .1f, "cap preserves probabilities below the limit");
+  e.sentiment_multiplier = std::numeric_limits<float>::quiet_NaN();
+  a2f::EmotionTrack(pcm.data(), 16000, 30, e, t);
+  Expect(at(t, 0, kJoy) == 0, "nonfinite sentiment multiplier is disabled");
+  e.sentiment_multiplier = 0;
+  a2f::EmotionTrack(pcm.data(), 16000, 30, e, t);
+  Expect(at(t, 0, kJoy) == 0, "zero disables the sentiment contribution");
+  const int mapping[] = {1, 3, 4, 6, -1, 9};
+  for (int label = 0; label < 6; ++label) {
+    voice.selected = label;
+    Expect(a2f::AnalyzeSentiment(voice, pcm.data(), 16000, e.sentiment, err),
+           "all six model labels accepted");
+    for (int c = 0; c < a2f::kNumMod; ++c)
+      Expect(
+          std::fabs(e.sentiment[c] - (c == mapping[label] ? 1.f : 0.f)) < 1e-6f,
+          "model labels map correctly and neutral contributes nothing");
+  }
+  voice.fail = true;
+  Expect(
+      !a2f::AnalyzeSentiment(voice, pcm.data(), pcm.size(), e.sentiment, err) &&
+          e.sentiment.empty(),
+      "failure discards sentiment output");
+  voice.fail = false;
+  voice.nonfinite = true;
+  Expect(
+      !a2f::AnalyzeSentiment(voice, pcm.data(), pcm.size(), e.sentiment, err) &&
+          e.sentiment.empty(),
+      "nonfinite logits rejected");
+  voice.nonfinite = false;
+  int calls = voice.calls;
+  Expect(!a2f::AnalyzeSentiment(voice, pcm.data(), pcm.size(), e.sentiment, err,
+                                [] { return false; }) &&
+             voice.calls == calls,
+         "cancelled work never runs the model");
+  Expect(!a2f::AnalyzeSentiment(voice, pcm.data(), 0, e.sentiment, err),
+         "empty input rejected");
+  Expect(
+      a2f::AnalyzeSentiment(voice, pcm.data(), pcm.size(), e.sentiment, err) &&
+          voice.calls > calls + 1 &&
+          e.sentiment.size() == frames * a2f::kNumMod,
+      "long audio is sampled across multiple windows");
 
   printf(failures ? "%d FAILED\n" : "all ok\n", failures);
   return failures != 0;

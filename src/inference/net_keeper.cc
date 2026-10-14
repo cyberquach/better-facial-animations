@@ -7,6 +7,17 @@
 #include <vector>
 
 namespace a2f {
+namespace {
+
+// The device was removed, hung or reset or the driver failed.
+bool LostDevice(const std::string& err) {
+  // DXGI device removed / hung / reset / driver internal error
+  for (const char* code : {"887A0005", "887A0006", "887A0007", "887A0020"})
+    if (err.find(code) != std::string::npos) return true;
+  return false;
+}
+
+}  // namespace
 
 // Problems that do not stop the model from loading, one line each.
 std::vector<std::string> GpuWarnings(const GpuState& g) {
@@ -15,19 +26,19 @@ std::vector<std::string> GpuWarnings(const GpuState& g) {
   if (!g.known) return out;
   if (!g.bigger_adapter.empty()) {
     snprintf(b, sizeof b,
-             "The game and the model run on \"%s\" (%.0f MB), not on \"%s\" "
-             "(%.0f MB). Set Skyrim to the high-performance GPU in Windows "
-             "Settings > Display > Graphics.",
+             "The model runs on \"%s\" (%.0f MB); \"%s\" (%.0f MB) is also "
+             "present. If Skyrim renders on the bigger one, set it as "
+             "Skyrim's high-performance GPU in Windows Settings > Display > "
+             "Graphics.",
              g.adapter.c_str(), g.dedicated_mb, g.bigger_adapter.c_str(),
              g.bigger_mb);
     out.push_back(b);
   }
   if (g.used_mb > g.budget_mb) {
     snprintf(b, sizeof b,
-             "The game uses %.0f MB of VRAM, %.0f MB over the %.0f MB Windows "
-             "grants it: textures are being moved to system memory (stutter) "
-             "and the graphics device can be lost. Use smaller textures or "
-             "close other programs that use the GPU.",
+             "This process uses %.0f MB of GPU memory, %.0f MB over the "
+             "%.0f MB budget of this adapter: expect stutter. Use smaller "
+             "textures or close other programs that use the GPU.",
              g.used_mb, g.used_mb - g.budget_mb, g.budget_mb);
     out.push_back(b);
   }
@@ -36,10 +47,8 @@ std::vector<std::string> GpuWarnings(const GpuState& g) {
 
 // What went wrong with a session that failed with err, for the settings
 // window: the problem first, then what Windows says caused it and what to do.
-// attempts: failures in a row.
 std::vector<std::string> DiagnoseNet(bool gpu, const std::string& err,
-                                     int attempts, const GpuState& g,
-                                     double need_mb) {
+                                     const GpuState& g, double need_mb) {
   auto has = [&err](const char* what) {
     return err.find(what) != std::string::npos;
   };
@@ -52,11 +61,13 @@ std::vector<std::string> DiagnoseNet(bool gpu, const std::string& err,
     return out;
   }
   if (gpu && has("independent device:")) {
-    out.push_back("Independent GPU device failed; using CPU fallback if available.");
+    out.push_back(
+        "Independent GPU device failed; using CPU fallback if available.");
     out.push_back("This mode requires a supporting D3D12 runtime and driver. "
                   "Shared-device and wrapper retries are disabled.");
-    out.push_back("See the detailed error and log. IndependentGpuDevice=0 "
-                  "restores the legacy path after restarting the game.");
+    out.push_back("Update Windows and the graphics driver, then restart. "
+                  "See the detailed error and log; ForceCPU=1 selects CPU "
+                  "only.");
     return out;
   }
   if (has("model file not found")) {
@@ -102,18 +113,21 @@ std::vector<std::string> DiagnoseNet(bool gpu, const std::string& err,
   if (at != std::string::npos)
     dml_reason = err.substr(at + sizeof kDmlReason - 1, 8);
   // E_OUTOFMEMORY; DXGI device removed / hung / reset / driver error
-  const bool oom = has("8007000E") || (g.known && free_mb < need_mb);
+  const bool oom = has("8007000E");
+  const bool pressure = g.known && free_mb < need_mb;
   const bool lost = LostDevice(err);
   if (!lost && !oom && (has("DML api") || has("DirectML:"))) {
     out.push_back("GPU FAILED: DirectML is not available.");
     out.push_back(
-        "It needs Windows 10 version 1903 or later and a DirectX 12 "
-        "graphics card with a current driver.");
+        "Keep the bundled runtime files together. The selected GPU route "
+        "needs a supporting runtime and driver; IndependentGpuDevice=1 "
+        "also requires the Independent Devices API. See GPU-SETUP.txt.");
     return out;
   }
   if (oom) {
     snprintf(b, sizeof b,
-             "GPU FAILED: no VRAM left (%s; the model needs about %.0f MB).",
+             "GPU FAILED: memory allocation failed (%s; the model usually "
+             "uses about %.0f MB).",
              vram, need_mb);
     out.push_back(b);
     out.push_back(
@@ -127,6 +141,9 @@ std::vector<std::string> DiagnoseNet(bool gpu, const std::string& err,
     snprintf(b, sizeof b, "GPU FAILED: the model did not load (%s).", vram);
     out.push_back(b);
   }
+  if (pressure && !oom)
+    out.push_back("Free VRAM is below what this model usually needs: memory "
+                  "pressure is a likely cause.");
   if (lost) {
     if (reason == "887A0006")
       out.push_back(
@@ -150,152 +167,47 @@ std::vector<std::string> DiagnoseNet(bool gpu, const std::string& err,
     else if (!reason.empty())
       out.push_back("Windows: device removed, reason " + reason + ".");
     else if (!dml_reason.empty())
-      out.push_back(
-          "Direct3D 12 reports its device as working: DirectML stopped by "
-          "itself (reason " + dml_reason + "), on a step that failed inside "
-          "DirectML or the graphics driver.");
+      out.push_back("DirectML reported device failure reason " + dml_reason +
+                    ".");
     else
       out.push_back(
-          "Direct3D 12 reports its device as working and DirectML gave no "
-          "reason: a step failed inside DirectML or the graphics driver.");
-    if (attempts >= 3 && !reason.empty()) {
-      snprintf(b, sizeof b,
-               "Still lost after %d attempts: restart the game to get the GPU "
-               "back.",
-               attempts);
-      out.push_back(b);
-    } else if (attempts >= 3) {
-      snprintf(b, sizeof b,
-               "Still failing after %d attempts, each on a new device: the "
-               "cause is in this system's driver, DirectML or a program that "
-               "hooks Direct3D 12, not in VRAM. Attach "
-               "BetterFacialAnimations.log to a bug report.",
-               attempts);
-      out.push_back(b);
-    }
+          "Windows gave no device-removal reason: the failure happened inside "
+          "DirectML, the graphics driver or a program that hooks Direct3D 12.");
+    out.push_back("Restart the game to retry the GPU; attach "
+                  "BetterFacialAnimations.log to a bug report if it recurs.");
   }
   return out;
 }
 
-std::string DescribeMetacommands(const Metacommands& m) {
-  switch (m.state) {
-    case Metacommands::kOn:
-      return "on (the GPU session loaded with them)";
-    case Metacommands::kOff:
-      return "off: the GPU session failed with them and loaded without them";
-    case Metacommands::kFailed:
-      return "not the cause: the GPU session fails with them and without "
-             "them";
-    default:
-      return "not tried yet";
-  }
-}
-
-std::unique_ptr<Net> CreateGpuNet(
-    const CreateGpu& create, Metacommands& meta, std::string& err,
-    std::string& info, const std::function<void(const std::string&)>& log) {
-  auto say = [&log](const std::string& s) {
-    if (log) log(s);
-  };
-  if (meta.state != Metacommands::kOff) {
-    if (auto net = create(true, err, info)) {
-      if (meta.state != Metacommands::kOn)
-        say("driver metacommands work: the GPU session loaded with them");
-      meta.state = Metacommands::kOn;
-      meta.error.clear();
-      return net;
-    }
-    // the runtime itself did not load: the same without them
-    for (const char* other :
-         {"cannot load onnxruntime.dll", "onnxruntime.dll: wrong version"})
-      if (err.find(other) != std::string::npos) return nullptr;
-    say("GPU session with driver metacommands failed (" + err +
-        "): trying without them");
-    meta.error = err;
-  }
-  std::string err_off;
-  if (auto net = create(false, err_off, info)) {
-    if (meta.state != Metacommands::kOff)
-      say("driver metacommands are off from now on: the GPU session loaded "
-          "without them");
-    meta.state = Metacommands::kOff;
-    return net;
-  }
-  if (meta.state == Metacommands::kOff) {
-    err = err_off;  // the only attempt
-  } else {
-    say("GPU session without driver metacommands failed too (" + err_off +
-        ")");
-    meta.state = Metacommands::kFailed;
-  }
-  return nullptr;
-}
-
-bool LostDevice(const std::string& err) {
-  // DXGI device removed / hung / reset / driver internal error
-  for (const char* code : {"887A0005", "887A0006", "887A0007", "887A0020"})
-    if (err.find(code) != std::string::npos) return true;
-  return false;
-}
-
-std::unique_ptr<Net> CreateDeviceNet(
-    const CreateOnDevice& create, Device& device,
-    const std::function<bool()>& wrapped, std::string& err, std::string& info,
-    const std::function<void(const std::string&)>& log) {
-  auto say = [&log](const std::string& s) {
-    if (log) log(s);
-  };
-  if (auto net = create(device.wrapper, err, info)) return net;
-  if (device.wrapper || device.fixed || !LostDevice(err) || !wrapped())
-    return nullptr;
-  say("the GPU session was lost on the device inside the wrapper (" + err +
-      "): trying the wrapper itself");
-  std::string err_wrapper;
-  if (auto net = create(true, err_wrapper, info)) {
-    say("the model runs on the wrapper from now on (as with "
-        "UseDeviceWrapper=1): the device inside it is lost under this "
-        "system's graphics hooks");
-    device.wrapper = true;
-    device.error = err;
-    return net;
-  }
-  say("the wrapper failed too (" + err_wrapper + ")");
-  return nullptr;
-}
-
 Net* NetKeeper::Ensure() {
-  if (Wanted()) return net_.get();
-  if (now_() >= retry_at_) {
+  if (loaded()) return net_.get();
+  if (want_gpu_ && gpu_error_.empty()) {
     std::string err, info;
-    if (auto n = create_(want_gpu_, err, info)) {
+    if (auto n = create_(true, err, info)) {
       net_ = std::move(n);
-      on_gpu_ = want_gpu_;
+      on_gpu_ = true;
       info_ = info;
-      attempts_ = 0;
-      retry_wait_ = 0;
       error_.clear();
       Log("network loaded: " + info);
     } else {
-      ++attempts_;
-      retry_wait_ =
-          retry_wait_ ? std::min(retry_wait_ * 2, kRetryMax) : kRetryMin;
-      retry_at_ = now_() + retry_wait_;
-      error_ = err;
-      Log("network not loaded (attempt " + std::to_string(attempts_) +
-          ", next in " + std::to_string(static_cast<int>(retry_wait_)) +
-          " s): " + err);
+      gpu_error_ = error_ = err.empty() ? "GPU initialization failed" : err;
+      Log("GPU disabled until restart: " + error_);
     }
   }
-  if (!net_ && want_gpu_ && now_() >= cpu_retry_at_) {
+  if (!net_ && now_() >= cpu_retry_at_) {
     std::string err, info;
     net_ = create_(false, err, info);
     on_gpu_ = false;
     if (net_) {
       info_ = info;
-      Log("network loaded as CPU fallback: " + info);
+      retry_at_ = 0;
+      error_ = want_gpu_ ? gpu_error_ : "";  // the GPU's failure stays shown
+      Log("network loaded on CPU: " + info);
     } else {
-      cpu_retry_at_ = now_() + kRetryMax;
-      Log("CPU fallback failed: " + err);
+      retry_at_ = cpu_retry_at_ = now_() + kCpuRetry;
+      error_ = want_gpu_ ? gpu_error_ + "; CPU: " + err : err;
+      Log("CPU unavailable; retry in " +
+          std::to_string(static_cast<int>(kCpuRetry)) + " s: " + err);
     }
   }
   if (!net_) info_ = "not loaded";

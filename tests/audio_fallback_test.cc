@@ -84,6 +84,8 @@ std::vector<uint8_t> Wav(bool audible) {
 }
 int runs = 0;
 int map_calls = 0;
+std::string head_key = "test head";
+bfa::State map_state = bfa::State::kReady;
 bool net_broken = false;  // the network fails every line
 const direct::Model* mapped_with = nullptr;  // the last HeadKey's mapping
 int perf_runs = 0;
@@ -149,7 +151,7 @@ extern "C" std::string
 __wrap__ZN3bfa7HeadKeyB5cxx11EPhbSt10shared_ptrIKN6direct5ModelEE(
     uint8_t*, bool, std::shared_ptr<const direct::Model> mapping) {
   mapped_with = mapping.get();
-  return "test head";
+  return head_key;
 }
 extern "C" bfa::State
 MapHead(uint8_t*, const std::string&, bool, std::shared_ptr<const direct::Head>&, std::shared_ptr<const direct::Model>) asm(
@@ -159,8 +161,96 @@ extern "C" bfa::State MapHead(uint8_t*, const std::string&, bool,
                               std::shared_ptr<const direct::Head>& head,
                               std::shared_ptr<const direct::Model>) {
   ++map_calls;
-  head = std::make_shared<direct::Head>();
-  return bfa::State::kReady;
+  head.reset();
+  if (map_state == bfa::State::kReady) {
+    auto mapped = std::make_shared<direct::Head>();
+    mapped->shapes.resize(1);
+    mapped->shapes[0].part = direct::Part::kHead;
+    head = mapped;
+  }
+  return map_state;
+}
+
+void TestHeadRebuild() {
+  using namespace bfa;
+  ResetPlayback(false);
+  auto line = std::make_shared<a2f::Line>();
+  line->frames = 3;
+  line->direct_dim = direct::kNumMouthCoef;
+  line->direct.assign(line->frames * line->direct_dim, .6f);
+  auto entry = std::make_shared<Entry>();
+  entry->state = State::kReady;
+  entry->line = line;
+  Playing p;
+  p.actor = actor;
+  p.actor_handle = 42;
+  p.entry = entry;
+  p.direct_frame = 1;
+  entry->model_state = SnapshotModel();
+  p.snap = true;
+  playing[fg] = p;
+  Face f;
+  f.actor = actor;
+  f.actor_handle = 42;
+  f.until = play_clock + 100;
+  f.level[2] = .8f;
+  faces[fg] = f;
+  Count();
+  head_key = "rebuild-0";
+  AddDirect(node.data(), true);
+  CHECK(!playing.at(fg).snap);  // mapping became ready on this call
+  CHECK(faces.at(fg).level[2] == .8f);
+  const size_t dim = line->direct_dim + direct::kNumPhonemes + 1;
+  auto retained = [&] {
+    std::vector<float> pose(dim, 0.f);
+    CHECK(faces.at(fg).transition.Blend(nullptr, Now(), 1, true, false, pose));
+    return pose[0];
+  };
+  // Cached head changes must not restart onset, erase expressions, or use
+  // the old geometry. Include repeated changes and an unchanged control.
+  for (int i = 0; i < 12; ++i) {
+    auto old_head = faces.at(fg).head;
+    head_key = "rebuild-" + std::to_string(i + 1);
+    const int before = map_calls;
+    AddDirect(node.data(), true);
+    CHECK(map_calls == before + 1);
+    CHECK(faces.at(fg).head != old_head);
+    CHECK(faces.at(fg).level[2] == .8f);
+    CHECK(std::fabs(retained() - .6f) < .01f);
+    AddDirect(node.data(), false);
+    CHECK(map_calls == before + 1);
+  }
+  // Pending and failed replacements discard the old mapping, preserving
+  // ownership bookkeeping. A later valid identity can recover.
+  for (State state : {State::kPending, State::kFailed}) {
+    map_state = state;
+    head_key += "-unavailable";
+    AddDirect(node.data(), true);
+    CHECK(faces.at(fg).head_state == state && !faces.at(fg).head);
+    CHECK(faces.at(fg).level[2] == .8f);
+  }
+  map_state = State::kReady;
+  head_key += "-recovered";
+  AddDirect(node.data(), true);
+  CHECK(std::fabs(retained() - .6f) < .01f);
+  // Even equal-sized coefficient vectors from different model objects
+  // must not carry a pose into an incompatible basis.
+  auto replacement = std::make_shared<ModelState>(*entry->model_state);
+  auto mapping = std::make_shared<direct::Model>(*replacement->mapping);
+  mapping->faces.resize(2);
+  replacement->mapping = mapping;
+  entry->model_state = replacement;
+  AddDirect(node.data(), true);
+  CHECK(retained() < .01f);
+  playing.at(fg).snap = true;
+  AddDirect(node.data(), true);
+  CHECK(std::fabs(retained() - .6f) < .01f);
+  // The two faces of v3 have different coefficient bases too.
+  playing.at(fg).female = !playing.at(fg).female;
+  AddDirect(node.data(), true);
+  CHECK(retained() < .01f);
+  head_key = "test head";
+  ResetPlayback(false);
 }
 void TestSilence() {
   // Quiet, short audio after silence must still pass; noise and DC must not.
@@ -578,6 +668,7 @@ void TestPlayback(uint32_t runtime, a2f::NetKeeper& keeper) {
   CHECK(!FailedSpeech(fg) && queue.size() == 2);
   TestPendingMapping(t, keeper, phon);
   TestPerformance(keeper, t);
+  TestHeadRebuild();
   // An exhausted lip resource cannot end a voice that is still playing.
   BeginSpeech(actor, stem, 12, 2, 0, 0, t, world_epoch);
   std::array<uint8_t, 0x20> lip_resource{};

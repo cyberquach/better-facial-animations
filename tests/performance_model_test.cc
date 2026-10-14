@@ -162,7 +162,7 @@ int main(int argc, char** argv) {
     return 1;
   CHECK(!a2f::GeneratePerformance(fake, pcm.data(), 0, emotion, false, line,
                                   err));
-  if (argc == 6) {
+  if (argc == 3 || argc == 6) {
     a2f::OrtOptions options;
     options.gpu = false;
     std::string info;
@@ -170,11 +170,14 @@ int main(int argc, char** argv) {
                                          err, info);
     if (!net) fprintf(stderr, "%s\n", err.c_str());
     CHECK(net && net->Version() == a2f::kNetPerformance);
-    pcm = ReadFloats(argv[3]);
+    if (argc == 6) pcm = ReadFloats(argv[3]);
     CHECK(!pcm.empty());
     for (int identity = 0; identity < 2; ++identity) {
       CHECK(a2f::GeneratePerformance(*net, pcm.data(), pcm.size(), emotion,
                                      identity == 0, line, err));
+      CHECK(!line.direct.empty());
+      for (float value : line.direct) CHECK(std::isfinite(value));
+      if (argc == 3) continue; // smoke test without optional parity fixtures
       const auto expected = ReadFloats(argv[4 + identity]);
       CHECK(line.direct.size() == expected.size());
       double max_error = 0;
@@ -196,7 +199,6 @@ int main(int argc, char** argv) {
     std::sort(ms.begin(), ms.end());
     printf("CPU frontend+inference median %.3f ms for %.3fs audio\n", ms[10],
            pcm.size() / double(a2f::kSampleRate));
-    CHECK(!a2f::DeviceWrapped());
     puts(info.c_str());
   }
   puts("performance generation, cancellation and output: pass");

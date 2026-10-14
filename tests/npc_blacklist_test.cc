@@ -233,7 +233,7 @@ int main() {
   SaveIni();
   LoadNpcSettings();
   CHECK(DescribeNpc(actor).values == npc.values && NpcAllowed(actor));
-  const auto direct = NpcDirectTune(defaults, actor);
+  const auto direct = NpcSharedTune(defaults, actor);
   CHECK(direct.disable_tongue && !direct.conversation_gaze &&
         direct.gaze_strength == .8f);
   defaults.male.upper_lip = 1.4f;
@@ -280,7 +280,93 @@ int main() {
   CHECK(DescribeNpc(actor).values.empty() && NpcAllowed(actor));
   CHECK(GetPrivateProfileIntA("Overrides", npc.key.c_str(), 0, ini) == 0);
   CHECK(NpcFaceTune(defaults, actor, false, false).voice_emotion == 1);
-  CHECK(!NpcDirectTune(defaults, actor).disable_tongue);
+  CHECK(!NpcSharedTune(defaults, actor).disable_tongue);
+  // Sentiment overrides affect only this base's added model input. The
+  // effective amount also separates cached native and provider requests.
+  defaults.sentiment_analysis = true;
+  defaults.sentiment_multiplier = .75f;
+  config.sentiment_available = true;
+  auto sentiment_request = [&](bool female = false, bool player = false,
+                               uint8_t* speaker = actor,
+                               const a2f::Emotion* given = nullptr) {
+    return Request("npc_sentiment", 3, 100, female, false, defaults, 0,
+                   world_epoch, player, given, {}, speaker);
+  };
+  auto inherited_sentiment = sentiment_request();
+  CHECK(inherited_sentiment && queue.back().emotion.sentiment_multiplier == .75f);
+  std::shared_ptr<Entry> previous = inherited_sentiment;
+  for (float amount : {0.f, .5f, .501f, 2.f}) {
+    npc.values = {{"SentimentMultiplier", amount}};
+    SetNpcOverride(npc);
+    SaveIni();
+    LoadNpcSettings();
+    CHECK(DescribeNpc(actor).values == npc.values);
+    auto custom_sentiment = sentiment_request();
+    CHECK(custom_sentiment && custom_sentiment != previous);
+    CHECK(queue.back().emotion.sentiment_multiplier == amount);
+    CHECK(queue.back().emotion.gain == 1 &&
+          queue.back().emotion.maximum == defaults.male.max_emotion);
+    CHECK(sentiment_request(true) == custom_sentiment);  // one-face fixture
+    previous = custom_sentiment;
+    Field<uint8_t*>(actor, kRefrBase) = same_local.form.data();
+    CHECK(sentiment_request() == inherited_sentiment);
+    Field<uint8_t*>(actor, kRefrBase) = full.form.data();
+    CHECK(sentiment_request(false, true) == inherited_sentiment);
+    CHECK(sentiment_request(false, false, nullptr) == inherited_sentiment);
+  }
+  // Provider-supplied authored channels retain their gain and values.
+  a2f::Emotion supplied;
+  supplied.type = a2f::kExplicitEmotion;
+  supplied.gain = .4f;
+  supplied.channels[a2f::kAnger] = .3f;
+  CHECK(sentiment_request(false, false, actor, &supplied));
+  CHECK(queue.back().emotion.sentiment_multiplier == 2 &&
+        queue.back().emotion.gain == .4f &&
+        queue.back().emotion.channels[a2f::kAnger] == .3f);
+  npc.values = {{"SentimentAnalysis", 0}, {"SentimentMultiplier", 2}};
+  SetNpcOverride(npc);
+  SaveIni();
+  LoadNpcSettings();
+  CHECK(DescribeNpc(actor).values == npc.values);
+  auto npc_disabled = sentiment_request();
+  CHECK(npc_disabled && npc_disabled != previous);
+  CHECK(!NpcSharedTune(defaults, actor).sentiment_analysis);
+  Field<uint8_t*>(actor, kRefrBase) = same_local.form.data();
+  CHECK(sentiment_request() == inherited_sentiment);
+  Field<uint8_t*>(actor, kRefrBase) = full.form.data();
+  CHECK(sentiment_request(false, true) == inherited_sentiment);
+  npc.values["SentimentAnalysis"] = 1;
+  SetNpcOverride(npc);
+  CHECK(sentiment_request() == previous);
+  defaults.sentiment_analysis = false;
+  CHECK(!NpcSharedTune(defaults, actor).sentiment_analysis);
+  auto disabled_sentiment = sentiment_request();
+  CHECK(disabled_sentiment == npc_disabled);
+  defaults.sentiment_analysis = true;
+  config.sentiment_available = false;
+  CHECK(sentiment_request() == disabled_sentiment);
+  config.sentiment_available = true;
+  // File values receive the same validation as live edits.
+  for (const auto& sample : {std::pair<const char*, float>{"-1", 0},
+                             {"99", 2}, {"nan", .75f}, {"bad", .75f}}) {
+    CHECK(WritePrivateProfileStringA("Override:follower.esp|001234",
+                                   "SentimentMultiplier", sample.first, ini));
+    LoadNpcSettings();
+    CHECK(NpcSharedTune(defaults, actor).sentiment_multiplier == sample.second);
+  }
+  for (float invalid : {-1.f, 99.f, NAN}) {
+    npc.values = {{"SentimentMultiplier", invalid}};
+    SetNpcOverride(npc);
+    CHECK(NpcSharedTune(defaults, actor).sentiment_multiplier ==
+          (std::isfinite(invalid) ? std::clamp(invalid, 0.f, 2.f) : .75f));
+  }
+  RemoveNpcOverride(npc);
+  SaveIni();
+  LoadNpcSettings();
+  CHECK(DescribeNpc(actor).values.empty());
+  CHECK(sentiment_request() == inherited_sentiment);
+  defaults.sentiment_multiplier = 1.25f;
+  CHECK(sentiment_request() && queue.back().emotion.sentiment_multiplier == 1.25f);
   // Independently exercise every kind of profile field after replacing
   // layout-based access: scalar, region array and emotion-cap array.
   npc.values = {

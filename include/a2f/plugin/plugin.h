@@ -34,13 +34,12 @@ struct ModelInfo {
 const ModelInfo& ModelFor(int network);
 
 struct Config {  // fixed after load
+  bool sentiment_available = false;  // optional model found at settings load
   bool gpu = true;
+  bool independent_device = true;  // fixed GPU route; change INI and restart
   int network = a2f::kNetV3;  // the model at startup, see ModelFor
   int batch = 2;
   int log_lines = 400;
-  int gpu_device = 0;  // 0 auto, 1 wrapper, 2 no wrapper, 3 independent
-  bool use_device_wrapper = false;  // a2f::SetUseDeviceWrapper
-  bool independent_device = false;  // preferred path; auto is resolved by the worker
   int cache_lines = 300;
   // Winning EFA head assets, detected at data loaded: male, female. Their
   // mouths were made for less speech: that face's Mouth scale is multiplied.
@@ -70,6 +69,9 @@ struct Tune {  // menu; defaults as dist/BetterFacialAnimations.ini
   bool player = true;
   bool prefetch = true;
   bool potato_mode = false;
+  bool vanilla_emotions = true;
+  bool sentiment_analysis = false;
+  float sentiment_multiplier = 1;
   bool disable_tongue = false;
   bool conversation_gaze = true;
   float gaze_strength = 1;
@@ -106,10 +108,26 @@ extern SRWLOCK
 
 // Param pointers may only be accessed with settings_lock held.
 // Every ini key / menu item: a slider (value, lo..hi) or, with flag set, a
-// checkbox, in a menu group (kModel is in the ini's General section). Table
-// order = menu order.
+// checkbox, in an ini section (kModel is in the ini's General section) and a
+// menu group (kAuto: the section's). Menus sort by profile, then group, then
+// table order.
 enum class Sec { kGeneral, kModel, kPlayback, kDirect, kEmotion, kDebug };
+enum class Group {
+  kGeneral,
+  kModel,
+  kSources,
+  kPlayback,
+  kTransitions,
+  kMovement,
+  kInputs,
+  kLimits,
+  kDebug,
+  kAuto
+};
 struct Param {
+  // What the control is inert without: the scene emotion toggle, or the
+  // optional sentiment model and its toggle.
+  enum Needs { kNone, kScene, kSentiment };
   const char* key;
   float* value;
   float lo, hi;
@@ -119,6 +137,8 @@ struct Param {
   bool* flag;
   int profile = -1;  // -1: shared, 0: male NPC, 1: female NPC, 2: player
   bool stored = true;  // in the ini
+  Needs needs = kNone;
+  Group group = Group::kAuto;
   // Typed access to a profile field, independent of the global tune's layout.
   float* (*face_value)(FaceTune&, size_t) = nullptr;
   size_t face_index = 0;  // array element, when applicable
@@ -151,7 +171,8 @@ struct NpcSetting {
   std::string key, label;
   bool blocked = false;
   bool female = false;
-  std::map<std::string, float> values;  // absent keys inherit the sex profile
+  // Absent keys inherit shared settings or the sex profile.
+  std::map<std::string, float> values;
 };
 void LoadNpcSettings();
 // Game thread; copies the base identity and never retains forms.
@@ -162,7 +183,7 @@ void RemoveNpcOverride(const NpcSetting& npc);
 bool NpcParamSupported(const Param& param);
 // The tune for an actor: the defaults, with the actor's override applied.
 // Without any override these return the defaults without locking.
-Tune NpcDirectTune(Tune defaults, uint8_t* actor);
+Tune NpcSharedTune(Tune defaults, uint8_t* actor);
 FaceTune NpcFaceTune(const Tune& defaults, uint8_t* actor, bool female,
                      bool player);
 bool NpcOverridesActive();  // any NPC override resolved in this load order
@@ -171,6 +192,9 @@ void SetNpcBlocked(const NpcSetting& npc, bool blocked);
 int NpcHotkey();  // keyboard scan code; 0 = unbound
 void SetNpcHotkey(int key);
 
+constexpr wchar_t kPluginDir[] = L"Data\\SKSE\\Plugins\\BetterFacialAnimations";
+std::wstring PluginDir();  // kPluginDir as a full path
+constexpr wchar_t kSentimentModel[] = L"emotion_fp16.onnx";  // optional
 void LoadIni();  // at load
 void SaveIni();
 void ScheduleSaveIni();  // debounce and persist on a dedicated writer thread
@@ -206,12 +230,12 @@ struct Stats {
   uint32_t lines = 0, failed = 0, late = 0;
   double audio_sec = 0, gen_sec = 0, last_ms = 0;
   std::string net_info, last_error;
+  std::string sentiment_info;  // Sentiment Analysis state, set at data loaded
   // The wanted session failed: the diagnosis (problem, cause, advice), the
   // runtime's own message, the attempts so far and when (Now()) the next one
   // is.
   std::vector<std::string> net_error;
   std::string net_detail;
-  int net_attempts = 0;
   double net_retry_at = 0;
   // The worker's model and device preference, and a switch in progress or
   // the reason the last one failed.
@@ -222,6 +246,7 @@ struct Stats {
   bool net_gpu = false;  // the loaded session is the GPU one
   // Why the plugin is not running (the A2FDirect bin).
   std::string startup_error;
+  bool waiting_for_game = false;
 };
 // The statistics now, and the lines cached and waiting to be generated.
 Stats SnapshotStats(size_t& cached, size_t& queued);

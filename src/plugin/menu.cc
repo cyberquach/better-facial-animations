@@ -42,6 +42,8 @@ struct ImGui {  // cimgui export names
   bool (*IsItemHovered)(int);
   void (*SameLine)(float, float);
   // optional
+  void (*BeginDisabled)(bool);
+  void (*EndDisabled)();
   void (*TextColored)(ImVec4, const char*, ...);
   void (*PushTextWrapPos)(float);
   void (*PopTextWrapPos)();
@@ -49,6 +51,125 @@ struct ImGui {  // cimgui export names
   void (*End)();
   void (*SetNextWindowSize)(ImVec2, int);
 } ig;
+
+// ImGuiHoveredFlags_AllowWhenDisabled (Menu Framework's cimgui ABI).
+constexpr int kHoverDisabled = 1 << 10;
+
+const char* ParamTip(const Param& p, bool npc = false) {
+  if (p.needs == Param::kSentiment && !config.sentiment_available)
+    return "Sentiment Analysis is unavailable because the optional sentiment "
+           "model is not installed in this copy of Better Facial Animations. "
+           "The download without sentiment does not include it.\n\n"
+           "Download and install the release that includes the sentiment "
+           "model. It must provide emotion_fp16.onnx in "
+           "Data/SKSE/Plugins/BetterFacialAnimations. Restart Skyrim after "
+           "installing it, then enable Sentiment Analysis.\n\n"
+           "This model detects emotion from voices. It requires about 600 MB "
+           "of additional VRAM on GPU and adds processing time. Force CPU "
+           "uses system memory and additional CPU processing.";
+  if (npc && !strcmp(p.key, "SentimentAnalysis"))
+    return "Enable voice-detected emotion for this NPC. "
+           "Requires global Sentiment Analysis. "
+           "Disabling skips sentiment inference for this "
+           "NPC and preserves their multiplier. Applies next line.";
+  return p.tip;
+}
+
+// The group a parameter is shown in: its own, or its ini section's.
+Group GroupFor(const Param& p) {
+  static const Group by_section[] = {Group::kGeneral,  Group::kModel,
+                                     Group::kPlayback, Group::kMovement,
+                                     Group::kInputs,   Group::kDebug};
+  return p.group != Group::kAuto ? p.group
+                                 : by_section[static_cast<int>(p.sec)];
+}
+const char* GroupTitle(Group group) {
+  static const char* const titles[] = {
+      "General", "Animation model & processing", "Emotion input sources",
+      "Speech timing", "Expression transitions", "Facial movement strength",
+      "Emotion input amounts", "Maximum emotion inputs", "Diagnostics"};
+  return titles[static_cast<int>(group)];
+}
+void HelpText(const char* text) {
+  if (ig.PushTextWrapPos) ig.PushTextWrapPos(0);
+  ig.Text("%s", text);
+  if (ig.PopTextWrapPos) ig.PopTextWrapPos();
+}
+void GroupHelp(Group group) {
+  switch (group) {
+    case Group::kModel:
+      HelpText("Choose one model. Force CPU runs the model on CPU. Changes "
+               "apply live.");
+      break;
+    case Group::kSources:
+      HelpText("Combine authored scene emotion and voice sentiment. Each "
+               "source has its own toggle. Lip-sync remains active with both "
+               "off.");
+      break;
+    case Group::kMovement:
+      HelpText("Scales generated facial movement: 0 = none, 1 = normal. "
+               "These are movement multipliers.");
+      break;
+    case Group::kInputs:
+      HelpText("Adjust each source before the inputs are combined. The "
+               "maximum emotion inputs below limit the combined result. "
+               "Applies next line.");
+      break;
+    case Group::kLimits:
+      HelpText("Maximum emotion inputs after all sources and multipliers are "
+               "combined. 0 blocks an input, 1 is the default, 2 is the "
+               "highest limit. Applies next line.");
+      break;
+    default:
+      break;
+  }
+}
+const std::vector<size_t>& MenuOrder() {
+  static const std::vector<size_t> order = [] {
+    std::vector<size_t> indices;
+    for (size_t i = 0; i < kNumParams; ++i) indices.push_back(i);
+    std::stable_sort(indices.begin(), indices.end(), [](size_t a, size_t b) {
+      const Param& left = kParams[a];
+      const Param& right = kParams[b];
+      // Diagnostics follows all profiles rather than interrupting the
+      // shared controls.
+      const int lp = left.sec == Sec::kDebug ? 3 : left.profile;
+      const int rp = right.sec == Sec::kDebug ? 3 : right.profile;
+      return lp != rp ? lp < rp : GroupFor(left) < GroupFor(right);
+    });
+    return indices;
+  }();
+  return order;
+}
+
+// A parameter's checkbox or slider; true when it changed. A control whose
+// need (Param::needs) is unmet is disabled: older frameworks without disabled
+// widgets show an inert grey label instead.
+bool ParamControl(const Param& p, const char* label, bool* flag, float* value,
+                  bool sentiment_enabled = true, bool vanilla_enabled = true) {
+  const bool scene = p.needs == Param::kScene;
+  const bool disabled =
+      (scene && !vanilla_enabled) ||
+      (p.needs == Param::kSentiment &&
+       (!config.sentiment_available || !sentiment_enabled));
+  const char* reason = scene ? "enable Vanilla / scene emotion inputs first"
+                       : config.sentiment_available
+                           ? "enable Sentiment Analysis first"
+                           : "model not installed";
+  if (disabled && !ig.BeginDisabled) {
+    if (ig.TextColored)
+      ig.TextColored(ImVec4{.5f, .5f, .5f, 1}, "%s (%s)", p.label, reason);
+    else
+      ig.Text("%s (%s)", p.label, reason);
+    return false;
+  }
+  if (disabled) ig.BeginDisabled(true);
+  const bool changed =
+      flag ? ig.Checkbox(label, flag)
+           : ig.SliderFloat(label, value, p.lo, p.hi, "%.3g", 0);
+  if (disabled) ig.EndDisabled();
+  return !disabled && changed;
+}
 
 // Common prefix of Menu Framework 2/3's WindowInterface. Only Framework 3
 // exports the input callback API; older versions retain page-based controls.
@@ -217,21 +338,24 @@ void RenderNpcWindow() {
       bool changed =
           ig.Checkbox("Enable facial animations for this NPC", &enabled);
       npc.blocked = !enabled;
-      ig.Text("Global enable and race settings still apply.");
+      ig.Text("Global enable, race and Sentiment Analysis settings still apply.");
       const Tune defaults = SnapshotTune();
       FaceTune inherited = defaults.ForSex(npc.female);
-      Sec section = Sec::kGeneral;
-      for (const Param& param : kParams) {
+      Group section = Group::kAuto;
+      for (size_t index : MenuOrder()) {
+        const Param& param = kParams[index];
         if (!NpcParamSupported(param)) continue;
-        if (param.sec != section) {
-          section = param.sec;
-          ig.SeparatorText(section == Sec::kPlayback ? "Playback"
-                           : section == Sec::kDirect ? "Strength"
-                                                     : "Emotion");
+        if (GroupFor(param) != section) {
+          section = GroupFor(param);
+          ig.SeparatorText(GroupTitle(section));
+          GroupHelp(section);
         }
         auto value = npc.values.find(param.key);
         const float fallback =
             param.profile == 0                    ? *param.FaceValue(inherited)
+            : !strcmp(param.key, "SentimentAnalysis") ? defaults.sentiment_analysis
+            : !strcmp(param.key, "SentimentMultiplier")
+                ? defaults.sentiment_multiplier
             : !strcmp(param.key, "GazeStrength")  ? defaults.gaze_strength
             : !strcmp(param.key, "DisableTongue") ? defaults.disable_tongue
                                                   : defaults.conversation_gaze;
@@ -239,13 +363,18 @@ void RenderNpcWindow() {
         const std::string label =
             std::string(param.label) + "##npc_" + param.key;
         bool checked = current != 0;
-        if (param.flag ? ig.Checkbox(label.c_str(), &checked)
-                       : ig.SliderFloat(label.c_str(), &current, param.lo,
-                                        param.hi, "%.3g", 0)) {
+        const auto sentiment = npc.values.find("SentimentAnalysis");
+        const bool sentiment_enabled =
+            defaults.sentiment_analysis &&
+            (param.flag || sentiment == npc.values.end() || sentiment->second != 0);
+        if (ParamControl(param, label.c_str(),
+                         param.flag ? &checked : nullptr, &current,
+                         sentiment_enabled, defaults.vanilla_emotions)) {
           npc.values[param.key] = param.flag ? float(checked) : current;
           changed = true;
         }
-        if (ig.IsItemHovered(0)) ig.SetTooltip("%s", param.tip);
+        if (ig.IsItemHovered(kHoverDisabled))
+          ig.SetTooltip("%s", ParamTip(param, true));
         ig.SameLine(0, -1);
         if (npc.values.count(param.key)) {
           if (ig.Button((std::string("Use global##") + param.key).c_str(),
@@ -363,12 +492,12 @@ void Notice(ImVec4 color, const std::string& text) {
 
 // The details of the item just drawn (id: any address of its own), as a
 // tooltip once the pointer has stayed on it.
-void Tip(const void* id, const char* details) {
+void Tip(const void* id, const char* details, int hover_flags = 0) {
   constexpr double kRest = 0.4;  // s
   constexpr size_t kColumns = 60;
   static const void* over;
   static double since, seen;  // the pointer came to over, was last on it
-  if (!ig.IsItemHovered(0)) return;
+  if (!ig.IsItemHovered(hover_flags)) return;
   const double now = Now();
   if (over != id || now - seen > 0.1) {
     over = id;
@@ -398,24 +527,32 @@ constexpr char kNetTip = 0, kSlowTip = 0, kLinesTip = 0;  // Tip ids
 void RenderProblems(const Stats& st, size_t queued, const Tune& tune,
                     const a2f::GpuState& gpu) {
   char b[400];
-  if (!ready)
-    Notice(kRed, st.startup_error.empty()
-                     ? "Starting."
-                     : "Not running: " + st.startup_error +
-                           ". Reinstall the mod.");
+  if (!ready) {
+    if (!st.startup_error.empty())
+      Notice(kRed, "Not running: " + st.startup_error);
+    else
+      Notice(kYellow, st.waiting_for_game
+                          ? "The model will load when you enter a game."
+                          : "Starting.");
+  }
   if (!st.net_error.empty()) {
     // the problem, its cause and the advice; the rest on the last of them
     for (const auto& line : st.net_error) Notice(kRed, line);
-    snprintf(b, sizeof b, "\nTried %d time(s); next try in %.0f s. %s",
-             st.net_attempts, std::max(0.0, st.net_retry_at - Now()),
-             net_loaded ? "Lines run on the CPU meanwhile."
-                        : "Vanilla lip-sync plays meanwhile.");
+    if (st.net_retry_at > 0)
+      snprintf(b, sizeof b,
+               "\nCPU retry in %.0f s. Vanilla lip-sync plays meanwhile.",
+               std::max(0.0, st.net_retry_at - Now()));
+    else
+      snprintf(b, sizeof b, "\nGPU retry requires a restart. %s",
+               net_loaded ? "Lines run on the CPU."
+                          : "Vanilla lip-sync plays meanwhile.");
     Tip(&kNetTip, ("Runtime message: " + st.net_detail + b).c_str());
   } else if (ready && tune.enabled && !net_loaded) {
     Notice(kYellow, "Loading the model.");
   }
   if (net_loaded && !st.net_gpu && st.want_gpu) {
-    Notice(kYellow, "On the CPU until the GPU is back: long lines start late.");
+    Notice(kYellow,
+           "GPU failed; the selected model runs on the CPU for this session.");
   }
   for (const auto& w : a2f::GpuWarnings(gpu)) Notice(kYellow, w);
   const double speed = st.audio_sec / std::max(st.gen_sec, 1e-6);
@@ -456,55 +593,89 @@ void RenderMenu() {
   ig.SeparatorText("Status");
   ig.Text("%s | %s", kVersion,
           st.net_info.empty() ? "model not loaded" : st.net_info.c_str());
-  if (gpu.known) {
-    ig.Text("GPU: %s, %.0f / %.0f MB VRAM", gpu.adapter.c_str(), gpu.used_mb,
-            gpu.budget_mb);
-    Tip(&gpu, "The VRAM the game uses, of what Windows grants it.");
-  } else {
-    ig.Text("GPU: %s", gpu.adapter.empty() ? "not found" : gpu.adapter.c_str());
-  }
-  if (st.lines || st.failed) {
-    ig.Text("Lines: %u, %.0fx realtime", st.lines,
-            st.audio_sec / std::max(st.gen_sec, 1e-6));
-    snprintf(b, sizeof b,
-             "Failed or without audio: %u\nStarted late: %u\nCached: %zu\n"
-             "Queued: %zu\nLast line: %.0f ms",
-             st.failed, st.late, cached, queued, st.last_ms);
-    Tip(&kLinesTip, b);
+  static bool details = false;
+  if (ig.Button(details ? "Hide status details" : "Show status details",
+                ImVec2{0, 0}))
+    details = !details;
+  if (details) {
+    ig.Text("GPU route: %s (change installer/INI, then restart)",
+            config.independent_device ? "Independent" : "4.0-style shared");
+    if (gpu.known) {
+      ig.Text("GPU: %s, %.0f / %.0f MB VRAM", gpu.adapter.c_str(), gpu.used_mb,
+              gpu.budget_mb);
+      Tip(&gpu, "The VRAM the game uses, of what Windows grants it.");
+    } else {
+      ig.Text("GPU: %s",
+              gpu.adapter.empty() ? "not found" : gpu.adapter.c_str());
+    }
+    if (st.lines || st.failed) {
+      ig.Text("Lines: %u, %.0fx realtime", st.lines,
+              st.audio_sec / std::max(st.gen_sec, 1e-6));
+      snprintf(b, sizeof b,
+               "Failed or without audio: %u\nStarted late: %u\nCached: %zu\n"
+               "Queued: %zu\nLast line: %.0f ms",
+               st.failed, st.late, cached, queued, st.last_ms);
+      Tip(&kLinesTip, b);
+    }
   }
   RenderProblems(st, queued, tune, gpu);
-  ig.Text("Expressive Facial Animation - Male Edition: %s",
-          config.expressive_faces[0] ? "Installed mod detected" : "Not detected");
-  ig.Text("Expressive Facial Animation - Female Edition: %s",
-          config.expressive_faces[1] ? "Installed mod detected" : "Not detected");
-  snprintf(b, sizeof b,
-           "Mouth strength is multiplied by %g for each detected edition; "
-           "otherwise it uses 1.0. Checks active Male 1.21 and Female 1.7 "
-           "assets at startup. Modified versions may not be recognized.",
-           kExpressiveMouthScale);
-  Tip(config.expressive_faces, b);
-  static const char* const kHeaders[] = {
-      nullptr, "Model", "Playback", "Strength", "Emotion", "Debug"};
-  Sec cur = Sec::kGeneral;
+  // The worker publishes the applied model independently of the selection.
+  if (!st.model_error.empty())
+    Notice(kRed, st.model_error);
+  else if (st.switching_model ||
+           tune.SelectedModel() != st.network ||
+           (tune.force_cpu != !st.want_gpu))
+    Notice(kYellow,
+           "Switching model; new dialogue uses it when loading finishes.");
+  if (details) {
+    ig.Text("Sentiment Analysis: %s", st.sentiment_info.c_str());
+    for (int sex = 0; sex < 2; ++sex)
+      ig.Text("Expressive Facial Animation - %s Edition: %s",
+              sex ? "Female" : "Male",
+              config.expressive_faces[sex] ? "Installed mod detected"
+                                           : "Not detected");
+    snprintf(b, sizeof b,
+             "Mouth strength: %g with a detected edition; 1.0 by default. "
+             "Detects original Male 1.21 and Female 1.7 assets at startup.",
+             kExpressiveMouthScale);
+    Tip(config.expressive_faces, b);
+  }
+  HelpText("Changes save automatically. Male and Female NPC profiles are "
+           "separate; the Player profile applies to either sex. NPC overrides "
+           "can replace profile values.");
+  Group cur = Group::kAuto;
+  static int selected_profile = 0;
+  bool profiles_shown = false;
   bool changed = false;
-  int profile = -1;
-  for (size_t i = 0; i < kNumParams; ++i) {
+  int profile = -2;  // no parameter's: the first one opens a group
+  for (size_t i : MenuOrder()) {
     const Param& p = kParams[i];
-    if (p.sec != cur || p.profile != profile) {
-      cur = p.sec;
+    if (p.profile >= 0) {
+      if (!profiles_shown) {
+        profiles_shown = true;
+        ig.SeparatorText("Character profile");
+        static const char* const names[] = {"Male NPCs", "Female NPCs",
+                                            "Player"};
+        for (int tab = 0; tab < 3; ++tab) {
+          if (tab) ig.SameLine(0, -1);
+          if (ig.Button(names[tab], ImVec2{0, 0})) selected_profile = tab;
+        }
+        ig.Text("Editing: %s", names[selected_profile]);
+        HelpText("Editing the selected profile. Each profile keeps its "
+                 "settings. Player settings apply to either sex.");
+      }
+      if (p.profile != selected_profile) continue;
+    }
+    if (GroupFor(p) != cur || p.profile != profile) {
+      cur = GroupFor(p);
       profile = p.profile;
-      snprintf(b, sizeof b, "%s%s",
-               profile < 0 ? ""
-               : profile == 2 ? "Player — "
-               : profile   ? "Female NPC — "
-                           : "Male NPC — ",
-               kHeaders[static_cast<int>(cur)]);
-      ig.SeparatorText(b);
+      ig.SeparatorText(GroupTitle(cur));
+      GroupHelp(cur);
     }
     snprintf(b, sizeof b, "%s##%zu", p.label, i);
     ScopedLock guard(settings_lock);
-    if (p.flag ? ig.Checkbox(b, p.flag)
-               : ig.SliderFloat(b, p.value, p.lo, p.hi, "%.3g", 0)) {
+    if (ParamControl(p, b, p.flag, p.value, p.flag || tune.sentiment_analysis,
+                     tune.vanilla_emotions)) {
       changed = true;
       SelectModelCheckbox(p);
       if (p.flag)
@@ -518,18 +689,12 @@ void RenderMenu() {
             p.key, *p.value);
     }
     guard.Unlock();
-    Tip(&p, p.tip);
+    Tip(&p, ParamTip(p), kHoverDisabled);
   }
   ApplyLogging();
-  ig.SeparatorText("");
-  // The worker publishes the applied model independently of the selection.
-  if (!st.model_error.empty())
-    Notice(kRed, st.model_error);
-  else if (st.switching_model || tune.SelectedModel() != st.network ||
-           (tune.force_cpu != !st.want_gpu))
-    Notice(kYellow,
-           "Switching model; new dialogue uses it when loading finishes.");
-  static const char kDefaults[] = "Defaults", kClear[] = "Clear cache";
+  ig.SeparatorText("Reset & cache");
+  static const char kDefaults[] = "Reset settings to defaults";
+  static const char kClear[] = "Clear generated animation cache";
   if (ig.Button(kDefaults, ImVec2{0, 0})) {
     ResetTune();
     changed = true;
@@ -538,7 +703,10 @@ void RenderMenu() {
     WakeWorker();
     ScheduleSaveIni();
   }
-  Tip(kDefaults, "Resets the sliders and switches, except Model and Debug.");
+  Tip(kDefaults,
+      "Resets shared settings and ALL three profiles, including hidden "
+      "profiles. Resets race choices too. Keeps model, CPU/GPU selection and "
+      "logging. NPC overrides are managed separately.");
   ig.SameLine(0, -1);
   if (ig.Button(kClear, ImVec2{0, 0})) {
     ClearLines();
@@ -626,6 +794,11 @@ void RegisterMenu() {
       !Import(m, "igSameLine", ig.SameLine)) {
     Log("SKSE Menu Framework: missing exports, no menu page");
     return;
+  }
+  if (!Import(m, "igBeginDisabled", ig.BeginDisabled) ||
+      !Import(m, "igEndDisabled", ig.EndDisabled)) {
+    ig.BeginDisabled = nullptr;
+    ig.EndDisabled = nullptr;
   }
   Import(m, "igSetNextWindowSize", ig.SetNextWindowSize);
   Import(m, "igTextColored", ig.TextColored);

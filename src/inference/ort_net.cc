@@ -1,6 +1,7 @@
 // ONNX Runtime session wrapper; session options are tuned for minimum VRAM.
 #include "a2f/inference/ort_net.h"
 #include "a2f/inference/device_factory.h"
+#include "a2f/inference/gpu_startup.h"
 
 #define PSAPI_VERSION 2  // K32EnumProcessModules, in kernel32
 #include <d3d12.h>
@@ -11,6 +12,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
@@ -103,8 +105,6 @@ FARPROC D3d12Export(const char* id) {
 std::atomic<bool> device_wrapped{false};
 // Set when onnxruntime.dll creates its device with CreateRealDevice.
 bool device_redirected;
-// The ini's UseDeviceWrapper: CreateRealDevice returns the wrapper as it is.
-std::atomic<bool> use_wrapper{false};
 
 // Retain each wrapper until all session/device references have been released.
 using Wrappers = std::vector<ComPtr<IUnknown>>;
@@ -129,7 +129,7 @@ void SelectDevice(ComPtr<IUnknown> real, void** out) {
   IUnknown* const wrapper = static_cast<IUnknown*>(*out);
   if (real.get() != wrapper) {
     device_wrapped = true;
-    if (use_wrapper || !wrappers_kept) return;
+    if (!wrappers_kept) return;
     wrappers_kept->emplace_back(wrapper);
   } else {
     wrapper->Release();
@@ -248,27 +248,98 @@ std::string RemovedReason(ID3D12Device* device, IUnknown* dml) {
   return out;
 }
 
+// Validate before copying: malformed/non-finite output must never reach face
+// geometry. A successful ORT Run alone does not establish usable output. A
+// failed validation fails the line only: the session and device stay.
+bool ReadFloats(OrtValue* value, size_t expected, float* dst,
+                std::string& err, const char* name) {
+  if (!value) {
+    err = std::string(name) + ": missing tensor";
+    return false;
+  }
+  OrtTensorTypeAndShapeInfo* shape = nullptr;
+  if (!Check(api->GetTensorTypeAndShape(value, &shape), err, name))
+    return false;
+  size_t count = 0;
+  ONNXTensorElementDataType type = ONNX_TENSOR_ELEMENT_DATA_TYPE_UNDEFINED;
+  const bool valid =
+      Check(api->GetTensorShapeElementCount(shape, &count), err, name) &&
+      Check(api->GetTensorElementType(shape, &type), err, name);
+  api->ReleaseTensorTypeAndShapeInfo(shape);
+  if (!valid) return false;
+  if (count != expected || type != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+    err = std::string(name) + ": wrong output shape/type";
+    return false;
+  }
+  float* data = nullptr;
+  if (!Check(api->GetTensorMutableData(value, reinterpret_cast<void**>(&data)),
+             err, name))
+    return false;
+  if (!data || !std::all_of(data, data + count,
+                            [](float f) { return std::isfinite(f); })) {
+    err = std::string(name) + ": non-finite or missing output data";
+    return false;
+  }
+  std::copy_n(data, count, dst);
+  return true;
+}
+
+bool CanRun(ID3D12Device* device, std::string& err) {
+  return !device || GpuAllowed(err);
+}
+
+void RunFailed(ID3D12Device* device, std::string& err) {
+  // Do not make extra driver calls to diagnose an already failing run.
+  if (device) DisableGpu(err);
+}
+
+// A facial session's run failed: the session is lost (Net::failed) and a GPU
+// session takes the GPU with it. Always false, for the caller to return.
+bool FailRun(ID3D12Device* device, bool& failed, std::string& err) {
+  failed = true;
+  RunFailed(device, err);
+  return false;
+}
+
+// What a session is made of. Destroyed in reverse: the session first, the
+// borrowed device references after it and wrappers last. The independent
+// context retains its own references regardless of this session's lifetime.
+struct Session {
+  Wrappers wrappers;  // of device and of the device onnxruntime made
+  ComPtr<ID3D12Device> device;  // held to ask why it was lost; null on the CPU
+  ComPtr<IUnknown> dml_device;  // the session's DirectML device, or null
+  OrtPtr<OrtMemoryInfo> mem;
+  OrtPtr<OrtSession> sess;
+};
+
+// Once the GPU is disabled, its sessions are quarantined with their device
+// and wrappers: releasing one can wait on the failed driver. The process-wide
+// gate bounds this to the sessions that existed when the failure occurred.
+void RetainFailedSession(Session& s) {
+  std::string ignored;
+  if (!s.device || GpuAllowed(ignored)) return;
+  (void)s.sess.release();
+  (void)s.mem.release();
+  (void)s.device.release();
+  (void)s.dml_device.release();
+  for (auto& wrapper : s.wrappers) (void)wrapper.release();
+}
+
 class OrtNet : public Net {
  public:
-  // device, dml (may be null): held to ask why they were lost when a run
-  // fails.
-  OrtNet(OrtPtr<OrtSession> sess, OrtPtr<OrtMemoryInfo> mem, int batch,
-         ComPtr<ID3D12Device> device, ComPtr<IUnknown> dml, Wrappers wrappers)
-      : wrappers_(std::move(wrappers)),
-        device_(std::move(device)),
-        dml_(std::move(dml)),
-        mem_(std::move(mem)),
-        sess_(std::move(sess)),
-        batch_(batch) {}
+  OrtNet(Session s, int batch) : s_(std::move(s)), batch_(batch) {}
+  ~OrtNet() override { RetainFailedSession(s_); }
   int Batch() const override { return batch_; }
   bool Run(const float* x, const float* emo, int b, float* out,
            std::string& err) override {
+    if (!CanRun(s_.device.get(), err))
+      return FailRun(s_.device.get(), failed, err);
     // null (with err) when it cannot be made
     const auto tensor = [&](const float* data, int width, const char* what) {
       const int64_t shape[3] = {b, 1, width};
       OrtValue* value = nullptr;
       if (!Check(api->CreateTensorWithDataAsOrtValue(
-                     mem_.get(), const_cast<float*>(data),
+                     s_.mem.get(), const_cast<float*>(data),
                      static_cast<size_t>(b) * width * sizeof(float), shape, 3,
                      ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &value),
                  err, what))
@@ -283,45 +354,24 @@ class OrtNet : public Net {
     const char* outn[] = {"result"};
     const OrtValue* ins[] = {vx.get(), ve.get()};
     OrtValue* result = nullptr;
-    if (!Check(api->Run(sess_.get(), nullptr, in, ins, 2, outn, 1, &result),
-               err, "run")) {
-      failed = true;
-      err += RemovedReason(device_.get(), dml_.get());
-      return false;
-    }
+    if (!Check(api->Run(s_.sess.get(), nullptr, in, ins, 2, outn, 1, &result),
+               err, "run"))
+      return FailRun(s_.device.get(), failed, err);
     const OrtPtr<OrtValue> vy(result);
-    float* p = nullptr;
-    if (!Check(api->GetTensorMutableData(vy.get(),
-                                         reinterpret_cast<void**>(&p)),
-               err, "output"))
-      return false;
-    memcpy(out, p, static_cast<size_t>(b) * kNumOut * sizeof(float));
-    return true;
+    return ReadFloats(vy.get(), static_cast<size_t>(b) * kNumOut, out, err,
+                      "output");
   }
 
  private:
-  // Destroyed in reverse: the session first, then the device, at once (a
-  // lost device held on would be handed out again to the next session), and
-  // the wrappers it came out of last.
-  Wrappers wrappers_;
-  ComPtr<ID3D12Device> device_;
-  ComPtr<IUnknown> dml_;
-  OrtPtr<OrtMemoryInfo> mem_;
-  OrtPtr<OrtSession> sess_;
+  Session s_;
   int batch_;
 };
 
 // The folded v3.0 network: one window per run.
 class OrtNet3 : public Net {
  public:
-  // device, dml: as OrtNet's.
-  OrtNet3(OrtPtr<OrtSession> sess, OrtPtr<OrtMemoryInfo> mem,
-          ComPtr<ID3D12Device> device, ComPtr<IUnknown> dml, Wrappers wrappers)
-      : wrappers_(std::move(wrappers)),
-        device_(std::move(device)),
-        dml_(std::move(dml)),
-        mem_(std::move(mem)),
-        sess_(std::move(sess)) {}
+  explicit OrtNet3(Session s) : s_(std::move(s)) {}
+  ~OrtNet3() override { RetainFailedSession(s_); }
   int Version() const override { return kNetV3; }
   int Batch() const override { return 1; }
   bool Run(const float*, const float*, int, float*, std::string& err) override {
@@ -331,6 +381,8 @@ class OrtNet3 : public Net {
   bool Run3(const float* window, const float* identity, const float* emotion,
             const float* state, float* skin, float* tongue, float* jaw_eyes,
             float* next_state, std::string& err) override {
+    if (!CanRun(s_.device.get(), err))
+      return FailRun(s_.device.get(), failed, err);
     constexpr int kIn = 4, kOut = 4;
     static const int64_t kShapes[kIn][4] = {{1, kWindow3},
                                             {1, kNumIdentity3},
@@ -352,7 +404,7 @@ class OrtNet3 : public Net {
     for (int i = 0; i < kIn; ++i) {
       OrtValue* value = nullptr;
       if (!Check(api->CreateTensorWithDataAsOrtValue(
-                     mem_.get(), const_cast<float*>(data[i]),
+                     s_.mem.get(), const_cast<float*>(data[i]),
                      kSizes[i] * sizeof(float), kShapes[i], kRanks[i],
                      ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &value),
                  err, kInNames[i]))
@@ -361,46 +413,26 @@ class OrtNet3 : public Net {
       ins[i] = value;
     }
     OrtValue* results[kOut] = {};
-    const bool ran = Check(api->Run(sess_.get(), nullptr, kInNames, ins, kIn,
+    const bool ran = Check(api->Run(s_.sess.get(), nullptr, kInNames, ins, kIn,
                                     kOutNames, kOut, results),
                            err, "run");
     OrtPtr<OrtValue> out[kOut];
     for (int i = 0; i < kOut; ++i) out[i].reset(results[i]);
-    if (!ran) {
-      failed = true;
-      err += RemovedReason(device_.get(), dml_.get());
-      return false;
-    }
-    for (int i = 0; i < kOut; ++i) {
-      float* p = nullptr;
-      if (!Check(api->GetTensorMutableData(out[i].get(),
-                                           reinterpret_cast<void**>(&p)),
-                 err, kOutNames[i]))
+    if (!ran) return FailRun(s_.device.get(), failed, err);
+    for (int i = 0; i < kOut; ++i)
+      if (!ReadFloats(out[i].get(), out_size[i], dst[i], err, kOutNames[i]))
         return false;
-      memcpy(dst[i], p, out_size[i] * sizeof(float));
-    }
     return true;
   }
 
  private:
-  // As OrtNet's: the session goes first, the wrappers last.
-  Wrappers wrappers_;
-  ComPtr<ID3D12Device> device_;
-  ComPtr<IUnknown> dml_;
-  OrtPtr<OrtMemoryInfo> mem_;
-  OrtPtr<OrtSession> sess_;
+  Session s_;
 };
 
 class PerformanceNet : public Net {
  public:
-  PerformanceNet(OrtPtr<OrtSession> sess, OrtPtr<OrtMemoryInfo> mem,
-                 ComPtr<ID3D12Device> device, ComPtr<IUnknown> dml,
-                 Wrappers wrappers)
-      : wrappers_(std::move(wrappers)),
-        device_(std::move(device)),
-        dml_(std::move(dml)),
-        mem_(std::move(mem)),
-        sess_(std::move(sess)) {}
+  explicit PerformanceNet(Session s) : s_(std::move(s)) {}
+  ~PerformanceNet() override { RetainFailedSession(s_); }
   int Version() const override { return kNetPerformance; }
   int Batch() const override { return 1; }
   bool Run(const float*, const float*, int, float*,
@@ -410,6 +442,8 @@ class PerformanceNet : public Net {
   }
   bool RunPerformance(const float* mel, int64_t identity, const float* emotion,
                       float* motion, std::string& err) override {
+    if (!CanRun(s_.device.get(), err))
+      return FailRun(s_.device.get(), failed, err);
     constexpr int kNumInputs = 3;
     const int64_t mel_shape[] = {1, kPerformanceWindowFrames, kMelBins};
     const int64_t identity_shape[] = {1};
@@ -432,7 +466,7 @@ class PerformanceNet : public Net {
     for (int i = 0; i < kNumInputs; ++i) {
       OrtValue* value = nullptr;
       if (!Check(api->CreateTensorWithDataAsOrtValue(
-                     mem_.get(), const_cast<void*>(data[i]), bytes[i],
+                     s_.mem.get(), const_cast<void*>(data[i]), bytes[i],
                      shapes[i], ranks[i], types[i], &value),
                  err, input_names[i]))
         return false;
@@ -441,50 +475,18 @@ class PerformanceNet : public Net {
     }
     OrtValue* raw_output = nullptr;
     const bool ran =
-        Check(api->Run(sess_.get(), nullptr, input_names, input_values,
+        Check(api->Run(s_.sess.get(), nullptr, input_names, input_values,
                        kNumInputs, output_names, 1, &raw_output),
               err, "performance run");
     OrtPtr<OrtValue> output(raw_output);
-    if (!ran) {
-      failed = true;
-      err += RemovedReason(device_.get(), dml_.get());
-      return false;
-    }
-    OrtTensorTypeAndShapeInfo* shape = nullptr;
-    if (!Check(api->GetTensorTypeAndShape(output.get(), &shape), err,
-               "performance shape"))
-      return false;
-    size_t count = 0;
-    ONNXTensorElementDataType type;
-    const bool described =
-        Check(api->GetTensorShapeElementCount(shape, &count), err,
-              "performance count") &&
-        Check(api->GetTensorElementType(shape, &type), err,
-              "performance type");
-    api->ReleaseTensorTypeAndShapeInfo(shape);
-    if (!described) return false;
-    constexpr size_t kOutputCount =
-        kPerformanceWindowFrames * kPerformanceChannels;
-    if (count != kOutputCount || type != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
-      err = "wrong performance model output shape/type";
-      return false;
-    }
-    float* values = nullptr;
-    if (!Check(api->GetTensorMutableData(output.get(),
-                                         reinterpret_cast<void**>(&values)),
-               err, "performance output"))
-      return false;
-    std::copy_n(values, kOutputCount, motion);
-    return true;
+    if (!ran) return FailRun(s_.device.get(), failed, err);
+    return ReadFloats(output.get(),
+                      kPerformanceWindowFrames * kPerformanceChannels, motion,
+                      err, "performance output");
   }
 
  private:
-  // Session first on teardown, then device references and wrappers.
-  Wrappers wrappers_;
-  ComPtr<ID3D12Device> device_;
-  ComPtr<IUnknown> dml_;
-  OrtPtr<OrtMemoryInfo> mem_;
-  OrtPtr<OrtSession> sess_;
+  Session s_;
 };
 
 void (*ort_log)(const std::string&);
@@ -508,6 +510,10 @@ void ORT_API_CALL OrtLog(void*, OrtLoggingLevel severity, const char* category,
 HMODULE ort_module;
 bool LoadApi(const std::wstring& dll_dir, std::string& err) {
   if (api) return true;
+  static bool attempted = false;
+  static std::string failure;
+  if (attempted) { err = failure; return false; }
+  attempted = true;
   // Full path + altered search path: DirectML.dll /
   // onnxruntime_providers_shared.dll resolve from the same folder.
   HMODULE h = LoadLibraryExW((dll_dir + L"\\onnxruntime.dll").c_str(), nullptr,
@@ -515,14 +521,18 @@ bool LoadApi(const std::wstring& dll_dir, std::string& err) {
   if (!h) {
     err = "cannot load onnxruntime.dll (error " +
           std::to_string(GetLastError()) + ")";
+    failure = err;
     return false;
   }
+  // Retain even an unusable module: repeated load/unload can invalidate a
+  // crash logger's concurrently captured module handles.
+  ort_module = h;
   auto base = reinterpret_cast<const OrtApiBase* (*)()>(
       reinterpret_cast<void*>(GetProcAddress(h, "OrtGetApiBase")));
   if (!base || !(api = base()->GetApi(ORT_API_VERSION))) {
     err = "onnxruntime.dll: wrong version";
     api = nullptr;
-    FreeLibrary(h);
+    failure = err;
     return false;
   }
   if (!Check(api->CreateEnvWithCustomLogger(OrtLog, nullptr,
@@ -530,7 +540,7 @@ bool LoadApi(const std::wstring& dll_dir, std::string& err) {
                                             "BetterFacialAnimations", &env),
              err, "env")) {
     api = nullptr;
-    FreeLibrary(h);
+    failure = err;
     return false;
   }
   // The successful module and environment live as long as the worker.
@@ -552,6 +562,7 @@ bool GraphicsCheck(HRESULT hr, const char* stage, std::string& err) {
 // imported/applied, and no ordinary D3D12CreateDevice call is made here.
 ComPtr<ID3D12Device> MakeIndependentDevice(independent::GetInterface get,
                                           std::string& err) {
+  if (ort_log) ort_log("GPU startup: obtaining independent device factory");
   if (!get) {
     GraphicsCheck(E_NOINTERFACE, "D3D12GetInterface unavailable", err);
     return nullptr;
@@ -571,6 +582,7 @@ ComPtr<ID3D12Device> MakeIndependentDevice(independent::GetInterface get,
   // Default adapter, as with the legacy adapter-0 provider. Let the factory
   // select it; diagnostics do not need to enumerate DXGI adapters first.
   ID3D12Device* raw_device = nullptr;
+  if (ort_log) ort_log("GPU startup: creating independent D3D12 device");
   const HRESULT made = factory->CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0,
       __uuidof(ID3D12Device), reinterpret_cast<void**>(&raw_device));
   ComPtr<ID3D12Device> device(raw_device);
@@ -590,17 +602,15 @@ struct IndependentContext {
   ComPtr<IUnknown> dml;
   ComPtr<ID3D12CommandQueue> queue;
   bool attempted = false;
-  std::string failure;
 
   bool Reject(const std::string& reason, std::string& err) {
-    failure = reason + "; GPU disabled until restart";
-    err = failure;
-    if (ort_log) ort_log(failure);
+    DisableGpu(reason);
+    GpuAllowed(err);
     return false;
   }
 
   bool Healthy(std::string& err) {
-    if (!failure.empty()) { err = failure; return false; }
+    if (!GpuAllowed(err)) return false;
     const auto reason = RemovedReason(device.get(), dml.get());
     if (!reason.empty()) return Reject("independent context:" + reason, err);
     return true;
@@ -624,6 +634,59 @@ IndependentContext& IndependentGpu() {
   return *context;
 }
 
+std::wstring startup_marker;
+// The process-wide GPU gate (GpuAllowed, DisableGpu): both routes and every
+// model, set by the first failure and never cleared.
+std::string gpu_failure;
+
+// One GPU model creation, from session compilation through warmup, for all
+// four factories; CPU creations pass through. A failure, returned or left
+// unfinished, disables the GPU for the process (across model switches and
+// the sentiment model). A hang or crash leaves the startup marker: a driver
+// thread cannot be killed safely.
+class GpuAttempt {
+ public:
+  GpuAttempt(const OrtOptions& options, std::string& err)
+      : active_(options.gpu), err_(err), marker_(startup_marker) {
+    if (!active_) return;
+    allowed_ = GpuAllowed(err_);
+    if (allowed_ && !startup_marker.empty() && !marker_.Begin(err_)) {
+      // A marker left by an interrupted launch selects CPU for this one.
+      allowed_ = false;
+      DisableGpu(err_);
+    }
+    finished_ = !allowed_;
+  }
+  bool allowed() const { return allowed_; }
+  // warmed: the session's first run succeeded. False (with err) when the
+  // attempt failed; the GPU is disabled here, before the caller destroys its
+  // session, so that the failed session is quarantined rather than released.
+  bool Finish(bool warmed) {
+    finished_ = true;
+    if (!active_) return warmed;
+    if (warmed && marker_.Complete(err_)) {
+      if (ort_log) ort_log("GPU startup: warmup complete; GPU ready");
+      return true;
+    }
+    Fail();
+    return false;
+  }
+  ~GpuAttempt() {
+    if (active_ && !finished_) Fail();
+  }
+
+ private:
+  void Fail() {
+    // Only clear a marker this attempt created, never a previous launch's.
+    std::string cleanup;
+    if (!marker_.Complete(cleanup)) err_ += "; " + cleanup;
+    DisableGpu(err_);
+  }
+  bool active_, allowed_ = true, finished_ = false;
+  std::string& err_;
+  GpuStartup marker_;
+};
+
 ComPtr<ID3D12Device> OpenIndependentDevice(std::string& err) {
   return IndependentGpu().Acquire(reinterpret_cast<independent::GetInterface>(
       reinterpret_cast<void*>(D3d12Export("D3D12GetInterface"))), err);
@@ -641,6 +704,7 @@ bool InitializeIndependentProvider(IndependentContext& context,
     return context.Reject(err, err);
   }
   IUnknown* raw_dml = nullptr;
+  if (ort_log) ort_log("GPU startup: creating DirectML device");
   const HRESULT made = create(context.device.get(), 0, independent::kDmlDevice,
                               reinterpret_cast<void**>(&raw_dml));
   context.dml.reset(raw_dml);
@@ -655,6 +719,7 @@ bool InitializeIndependentProvider(IndependentContext& context,
   desc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
   // Keep normal GPU timeout behavior. Do not request DISABLE_GPU_TIMEOUT.
   ID3D12CommandQueue* raw_queue = nullptr;
+  if (ort_log) ort_log("GPU startup: creating private compute queue");
   const HRESULT queued = context.device->CreateCommandQueue(&desc,
       __uuidof(ID3D12CommandQueue), reinterpret_cast<void**>(&raw_queue));
   context.queue.reset(raw_queue);
@@ -699,25 +764,14 @@ bool AppendIndependentProvider(const std::wstring& dll_dir,
                "independent device: DirectML DML1");
 }
 
-// What a session is made of. Destroyed in reverse: the session first, the
-// borrowed device references after it and wrappers last. The independent
-// context retains its own references regardless of this session's lifetime.
-struct Session {
-  Wrappers wrappers;  // of device and of the device onnxruntime made
-  ComPtr<ID3D12Device> device;  // held to ask why it was lost; null on the CPU
-  ComPtr<IUnknown> dml_device;  // the session's DirectML device, or null
-  OrtPtr<OrtMemoryInfo> mem;
-  OrtPtr<OrtSession> sess;
-};
-
 // A session of model on DirectML (adapter 0, with the driver's metacommands
-// or without) or the CPU, with the free dimensions dims fixed to batch: let
-// DirectML plan one static shape (also 4x faster at batch 1-2). False (with err, and
-// out empty) when it cannot be made.
+// or without) or the CPU, with the free dimensions dims fixed (name, size):
+// let DirectML plan one static shape (also 4x faster at batch 1-2). False
+// (with err, and out empty) when it cannot be made.
+using Dims = std::initializer_list<std::pair<const char*, int>>;
 bool CreateSession(const std::wstring& model, bool gpu, bool metacommands,
                    bool independent_device, const std::wstring& dll_dir,
-                   std::initializer_list<const char*> dims, int batch,
-                   Session& out, std::string& err) {
+                   Dims dims, Session& out, std::string& err) {
   Session s;
   const ScopedWrappers keep(s.wrappers);
   if (gpu && independent_device) {
@@ -728,6 +782,7 @@ bool CreateSession(const std::wstring& model, bool gpu, bool metacommands,
     s.device = OpenIndependentDevice(err);
     if (!s.device) return false;
   } else if (gpu) {
+    if (ort_log) ort_log("GPU startup: creating 4.0-style shared D3D12 device");
     static bool redirect_tried;
     if (!redirect_tried) {
       redirect_tried = true;
@@ -738,10 +793,31 @@ bool CreateSession(const std::wstring& model, bool gpu, bool metacommands,
                 "model's way");
     }
     s.device = OpenDevice();
+    if (!s.device) {
+      err = "shared device: D3D12 device creation failed";
+      return false;
+    }
+    // ORT delay-loads DirectML by name; pin our bundled library first.
+    static const HMODULE module = LoadLibraryExW(
+        (dll_dir + L"\\DirectML.dll").c_str(), nullptr,
+        LOAD_WITH_ALTERED_SEARCH_PATH);
+    if (!module) {
+      err = "shared device: cannot load bundled DirectML.dll";
+      return false;
+    }
   }
   OrtSessionOptions* options = nullptr;
   bool ok = Check(api->CreateSessionOptions(&options), err, "options");
-  const OrtPtr<OrtSessionOptions> so(options);
+  OrtPtr<OrtSessionOptions> so(options);
+  // Bound CPU helper work for both providers; idle threads sleep.
+  if (ok) {
+    ok = Check(api->SetIntraOpNumThreads(so.get(), 2), err, "threads") &&
+         Check(api->SetInterOpNumThreads(so.get(), 1), err, "threads") &&
+         Check(api->AddSessionConfigEntry(so.get(),
+                   "session.intra_op.allow_spinning", "0"), err, "CPU idle") &&
+         Check(api->AddSessionConfigEntry(so.get(),
+                   "session.inter_op.allow_spinning", "0"), err, "CPU idle");
+  }
   if (ok && gpu) {
     const OrtDmlApi* dml = nullptr;
     ok = Check(api->DisableMemPattern(so.get()), err, "mem pattern") &&
@@ -776,9 +852,9 @@ bool CreateSession(const std::wstring& model, bool gpu, bool metacommands,
     // DML's memory arena stays on: it keeps the work buffers of a run
     // allocated between runs (~16 MB more resident than freeing them), so a
     // loaded session never has to find VRAM again.
-    for (const char* name : dims) {
+    for (const auto& [name, size] : dims) {
       if (ok) {
-        ok = Check(api->AddFreeDimensionOverrideByName(so.get(), name, batch),
+        ok = Check(api->AddFreeDimensionOverrideByName(so.get(), name, size),
                    err, "shape override");
       }
     }
@@ -786,14 +862,14 @@ bool CreateSession(const std::wstring& model, bool gpu, bool metacommands,
     // Not ORT_ENABLE_ALL: its layout optimizations fail on the casts the CPU
     // provider inserts around the FP16 network's operators
     // (SimplifiedLayerNormFusion looks up a node argument that is gone).
-    ok = Check(api->SetIntraOpNumThreads(so.get(), 2), err, "threads") &&
-         Check(api->SetInterOpNumThreads(so.get(), 1), err, "threads") &&
-         Check(api->SetSessionGraphOptimizationLevel(so.get(),
+    ok = Check(api->SetSessionGraphOptimizationLevel(so.get(),
                                                      ORT_ENABLE_EXTENDED),
                err, "optimization");
   }
   if (ok) {
     OrtSession* sess = nullptr;
+    if (gpu && ort_log)
+      ort_log("GPU startup: compiling ONNX model session");
     ok = Check(api->CreateSession(env, model.c_str(), so.get(), &sess), err,
                "session");
     s.sess.reset(sess);
@@ -806,9 +882,16 @@ bool CreateSession(const std::wstring& model, bool gpu, bool metacommands,
     s.mem.reset(mem);
   }
   if (!ok) {
-    err += RemovedReason(s.device.get(), s.dml_device.get());
+    // Partial failed GPU sessions can enter driver waits during release.
+    // One process-wide failure stops further GPU creations, bounding this
+    // retained state. Never tear it down on the game's shutdown path.
+    if (gpu) {
+      (void)so.release();
+      (void)new Session(std::move(s));
+    }
     return false;
   }
+  if (gpu && ort_log) ort_log("GPU startup: session compiled; model warmup");
   out = std::move(s);
   return true;
 }
@@ -821,36 +904,90 @@ std::string DescribeProvider(const OrtOptions& o) {
                        : ", DirectML device 0, metacommands off";
   if (o.gpu && o.independent_device)
     description += ", independent device, private compute queue";
+  else if (o.gpu)
+    description += ", 4.0-style shared device";
   return description;
 }
+class OrtEmotionNet : public EmotionNet {
+ public:
+  explicit OrtEmotionNet(Session s) : s_(std::move(s)) {}
+  ~OrtEmotionNet() override { RetainFailedSession(s_); }
+  bool Run(const float* pcm, float* logits, std::string& err) override {
+    if (!CanRun(s_.device.get(), err)) return false;
+    const int64_t shape[] = {1, kVoiceWindow};
+    OrtValue* input = nullptr;
+    if (!Check(api->CreateTensorWithDataAsOrtValue(
+                   s_.mem.get(), const_cast<float*>(pcm),
+                   kVoiceWindow * sizeof(float), shape, 2,
+                   ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT, &input),
+               err, "sentiment input"))
+      return false;
+    const OrtPtr<OrtValue> x(input);
+    const OrtValue* inputs[] = {x.get()};
+    const char* in[] = {"input_values"};
+    const char* out[] = {"output"};
+    OrtValue* output = nullptr;
+    const bool ran = Check(
+        api->Run(s_.sess.get(), nullptr, in, inputs, 1, out, 1, &output),
+        err, "sentiment run");
+    const OrtPtr<OrtValue> y(output);
+    if (!ran) {
+      RunFailed(s_.device.get(), err);
+      return false;
+    }
+    return ReadFloats(y.get(), kNumVoiceEmo, logits, err, "sentiment output");
+  }
+
+ private:
+  Session s_;
+};
 
 }  // namespace
+
+std::unique_ptr<EmotionNet> CreateOrtEmotionNet(const std::wstring& dll_dir,
+                                                const std::wstring& model,
+                                                const OrtOptions& o,
+                                                std::string& err) {
+  if (!LoadApi(dll_dir, err)) return nullptr;
+  GpuAttempt attempt(o, err);
+  if (!attempt.allowed()) return nullptr;
+  Session session;
+  if (!CreateSession(model, o.gpu, o.metacommands, o.independent_device,
+                     dll_dir, {{"batch_size", 1}, {"seq_len", kVoiceWindow}},
+                     session, err))
+    return nullptr;
+  auto net = std::make_unique<OrtEmotionNet>(std::move(session));
+  std::vector<float> silence(kVoiceWindow);
+  float logits[kNumVoiceEmo];
+  if (!attempt.Finish(net->Run(silence.data(), logits, err))) return nullptr;
+  return net;
+}
 
 std::unique_ptr<Net> CreateOrtNet(const std::wstring& dll_dir,
                                   const std::wstring& model,
                                   const OrtOptions& o, std::string& err,
                                   std::string& info) {
   if (!LoadApi(dll_dir, err)) return nullptr;
+  GpuAttempt attempt(o, err);
+  if (!attempt.allowed()) return nullptr;
   const int batch = std::max(1, o.batch);
   Session s;
   // The batch is always the same.
-  if (!CreateSession(model, o.gpu, o.metacommands,
-                     o.independent_device, dll_dir,
-                     {"input_dynamic_axes_1", "emotion_dynamic_axes_1"}, batch,
-                     s, err))
+  if (!CreateSession(
+          model, o.gpu, o.metacommands, o.independent_device, dll_dir,
+          {{"input_dynamic_axes_1", batch}, {"emotion_dynamic_axes_1", batch}},
+          s, err))
     return nullptr;
   info = std::string("Audio2Face-3D v2.3, onnxruntime ") + version +
          DescribeProvider(o) + ", batch " + std::to_string(batch);
-  auto net = std::make_unique<OrtNet>(std::move(s.sess), std::move(s.mem),
-                                      batch, std::move(s.device),
-                                      std::move(s.dml_device),
-                                      std::move(s.wrappers));
+  auto net = std::make_unique<OrtNet>(std::move(s), batch);
   // One run now: a session that cannot run fails here and not on the first
   // line, and DirectML allocates its work buffers.
   std::vector<float> x(static_cast<size_t>(batch) * kWindow),
       emo(static_cast<size_t>(batch) * kNumEmo),
       y(static_cast<size_t>(batch) * kNumOut);
-  if (!net->Run(x.data(), emo.data(), batch, y.data(), err)) return nullptr;
+  if (!attempt.Finish(net->Run(x.data(), emo.data(), batch, y.data(), err)))
+    return nullptr;
   return net;
 }
 
@@ -859,18 +996,19 @@ std::unique_ptr<Net> CreatePerformanceNet(const std::wstring& dll_dir,
                                           const OrtOptions& o, std::string& err,
                                           std::string& info) {
   if (!LoadApi(dll_dir, err)) return nullptr;
+  GpuAttempt attempt(o, err);
+  if (!attempt.allowed()) return nullptr;
   Session s;
   if (!CreateSession(model, o.gpu, o.metacommands, o.independent_device,
-                     dll_dir, {"batch"}, 1, s, err))
+                     dll_dir, {{"batch", 1}}, s, err))
     return nullptr;
-  auto net = std::make_unique<PerformanceNet>(
-      std::move(s.sess), std::move(s.mem), std::move(s.device),
-      std::move(s.dml_device), std::move(s.wrappers));
+  auto net = std::make_unique<PerformanceNet>(std::move(s));
   // One run now, as CreateOrtNet's.
   std::vector<float> mel(kPerformanceWindowFrames * kMelBins),
       emotion(kPerformanceWindowFrames * kNumMod),
       motion(kPerformanceWindowFrames * kPerformanceChannels);
-  if (!net->RunPerformance(mel.data(), 0, emotion.data(), motion.data(), err))
+  if (!attempt.Finish(net->RunPerformance(mel.data(), 0, emotion.data(),
+                                          motion.data(), err)))
     return nullptr;
   info = std::string("Performance Thin120, 80,729 parameters, 30 fps") +
          DescribeProvider(o);
@@ -882,26 +1020,28 @@ std::unique_ptr<Net> CreateOrtNet3(const std::wstring& dll_dir,
                                    const OrtOptions& o, std::string& err,
                                    std::string& info) {
   if (!LoadApi(dll_dir, err)) return nullptr;
+  GpuAttempt attempt(o, err);
+  if (!attempt.allowed()) return nullptr;
   Session s;
-  if (!CreateSession(model, o.gpu, o.metacommands,
-                     o.independent_device, dll_dir,
-                     {"window_dynamic_axes_1", "identity_dynamic_axes_1",
-                      "emotion_dynamic_axes_1", "input_latents_dynamic_axes_1"},
-                     1, s, err))
+  if (!CreateSession(model, o.gpu, o.metacommands, o.independent_device,
+                     dll_dir,
+                     {{"window_dynamic_axes_1", 1},
+                      {"identity_dynamic_axes_1", 1},
+                      {"emotion_dynamic_axes_1", 1},
+                      {"input_latents_dynamic_axes_1", 1}},
+                     s, err))
     return nullptr;
   info = std::string("Audio2Face-3D v3.0, onnxruntime ") + version +
          DescribeProvider(o);
-  auto net = std::make_unique<OrtNet3>(std::move(s.sess), std::move(s.mem),
-                                       std::move(s.device),
-                                       std::move(s.dml_device),
-                                       std::move(s.wrappers));
+  auto net = std::make_unique<OrtNet3>(std::move(s));
   // One run now, as CreateOrtNet's.
   std::vector<float> x(kWindow3), emo(kFrames3 * kNumMod), state(kState3),
       skin(kFrames3 * kLatent3), tongue(kFrames3 * kLatent3),
       jaw(kFrames3 * kJawEyes3), next(kState3);
   const float identity[kNumIdentity3] = {1, 0, 0};
-  if (!net->Run3(x.data(), identity, emo.data(), state.data(), skin.data(),
-                 tongue.data(), jaw.data(), next.data(), err))
+  if (!attempt.Finish(net->Run3(x.data(), identity, emo.data(), state.data(),
+                                skin.data(), tongue.data(), jaw.data(),
+                                next.data(), err)))
     return nullptr;
   return net;
 }
@@ -945,20 +1085,20 @@ std::string FileVersion(const wchar_t* path) {
 }  // namespace
 
 void SetOrtLog(void (*log)(const std::string&)) { ort_log = log; }
+void SetGpuStartupMarker(const std::wstring& path) { startup_marker = path; }
+bool GpuAllowed(std::string& err) {
+  if (gpu_failure.empty()) return true;
+  err = gpu_failure;
+  return false;
+}
+void DisableGpu(const std::string& reason) {
+  if (!gpu_failure.empty()) return;
+  gpu_failure = reason + "; GPU disabled until restart";
+  if (ort_log) ort_log(gpu_failure);
+}
 
 bool DeviceRedirected() { return device_redirected; }
 
-bool IndependentDeviceSupported(std::string& err) {
-  err.clear();
-  const bool supported = bool(OpenIndependentDevice(err));
-  // The probe does not choose a fallback; its caller selects the policy.
-  const auto policy = err.find("; CPU fallback;");
-  if (policy != std::string::npos) err.resize(policy);
-  return supported;
-}
-
-void SetUseDeviceWrapper(bool use) { use_wrapper = use; }
-bool DeviceWrapped() { return device_wrapped; }
 
 // GpuReport's lines about the graphics: the adapters and their drivers and
 // what Direct3D 12 offers on adapter 0, for which a device is created.
@@ -1032,11 +1172,9 @@ static void ReportGraphics(std::vector<std::string>& out) {
     out.push_back("Direct3D 12 on adapter 0: no device");
   }
   if (device_wrapped)
-    out.push_back(std::string("Direct3D 12 hands out a wrapper of its device "
-                              "(ReShade does): the model runs on ") +
-                  (use_wrapper ? "the wrapper"
-                               : "the device itself (the wrapper once a "
-                                 "session on it is lost)"));
+    out.push_back(
+        "Direct3D 12 hands out a wrapper of its device (ReShade "
+        "does): the model runs on the device itself");
 }
 
 std::vector<std::string> GpuReport(bool probe_gpu) {

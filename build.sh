@@ -2,7 +2,7 @@
 # Build BetterFacialAnimations.dll with mingw-w64 (static FFmpeg + libstdc++) and assemble the mod in build/mod.
 #   ./build.sh                    build + assemble
 #   ./build.sh install <dir>      also copy into <dir> (e.g. an MO2 mod folder)
-#   ./build.sh release            also write release/Better Facial Animations-<ver>.<n>.7z
+#   ./build.sh release            write matching -with-sentiment and -without-sentiment archives
 #                                 (feature branches append -<branch>; n counts existing archives)
 #   ./build.sh compat             also run the compatibility contracts in tests/compatibility.json
 #                                 (no Skyrim launch) and write their evidence to build/compatibility/
@@ -43,9 +43,15 @@ MODEL=${MODEL:-models/mark/network_fp16.onnx}  # Audio2Face-3D v2.3 Mark
 MODEL_FP32=${MODEL_FP32:-$(dirname "$MODEL")/network.onnx}  # test only: reference for the FP16 network
 MODEL3=${MODEL3:-models/v3/network_fp16.onnx}  # v3.0, folded (tools/a2f3_fold.py)
 MODEL3_FP32=${MODEL3_FP32:-$(dirname "$MODEL3")/network_folded.onnx}  # test only
+EMOTION_MODEL=${EMOTION_MODEL:-models/a2e/network_fp16.onnx}
 ADDRLIB=${ADDRLIB:-deps/address-library}  # test only
 JOBS=${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)}
 case "$JOBS" in ""|*[!0-9]*|0*) echo "JOBS must be a positive integer" >&2; exit 1 ;; esac
+
+if [ "$1" = release ] && [ ! -f "$EMOTION_MODEL" ]; then
+    echo "Both release archives require EMOTION_MODEL: $EMOTION_MODEL" >&2
+    exit 1
+fi
 
 mkdir -p build
 CXX="x86_64-w64-mingw32-g++ -std=c++17 -O2 -Iinclude"
@@ -63,8 +69,12 @@ cp build/BetterFacialAnimations.dll dist/BetterFacialAnimations.ini $P/
 cp $ORT/runtimes/win-x64/native/onnxruntime.dll $ORT/runtimes/win-x64/native/onnxruntime_providers_shared.dll \
    $DML/bin/x64-win/DirectML.dll $MODEL dist/A2FDirect.bin dist/A2FDirect3.bin dist/NOTICE.txt $P/BetterFacialAnimations/ || exit 1
 cp $MODEL3 $P/BetterFacialAnimations/a2f3_fp16.onnx || exit 1
+if [ -f "$EMOTION_MODEL" ]; then
+    cp "$EMOTION_MODEL" "$P/BetterFacialAnimations/emotion_fp16.onnx" || exit 1
+fi
 cp include/a2f/speech/BFA_API.h $P/BetterFacialAnimations/ || exit 1
 cp dist/performance.onnx dist/performance-model.json $P/BetterFacialAnimations/ || exit 1
+cp dist/GPU-SETUP.txt $P/BetterFacialAnimations/ || exit 1
 sed "s/@VERSION@/$V/" dist/README.txt > $P/BetterFacialAnimations/README.txt
 cp LICENSE $L/BetterFacialAnimations-GPL-3.0.txt
 cp $FFMPEG/COPYING.LGPLv2.1 $L/FFmpeg-LGPL-2.1.txt
@@ -72,6 +82,7 @@ cp $ORT/LICENSE $L/onnxruntime-LICENSE.txt
 cp $ORT/ThirdPartyNotices.txt $L/onnxruntime-ThirdPartyNotices.txt
 cp $DML/LICENSE.txt $L/DirectML-LICENSE.txt
 cp dist/licenses/* $L/
+python3 tools/package_installer.py build/installer "$V" || exit 1
 du -sh $PKG
 
 case "$1" in
@@ -82,9 +93,17 @@ install)
     mkdir -p "$2" && cp -r $PKG/. "$2/" && echo "installed to $2" ;;
 release)
     R=$PWD/release; mkdir -p $R
-    rm -f "$R/Better Facial Animations-$V$ARCHIVE_SUFFIX.7z"
-    (cd $PKG && 7z a -t7z -mx=9 "$R/Better Facial Animations-$V$ARCHIVE_SUFFIX.7z" SKSE >/dev/null) &&
-    ls -la $R ;;
+    for variant in without-sentiment with-sentiment; do
+        archive="$R/Better Facial Animations-$V$ARCHIVE_SUFFIX-$variant.7z"
+        if [ "$variant" = without-sentiment ]; then
+            (cd "$PKG" && 7z a -t7z -mx=9 "$archive" SKSE \
+                -x!SKSE/Plugins/BetterFacialAnimations/emotion_fp16.onnx >/dev/null) || exit 1
+        else
+            (cd "$PKG" && 7z a -t7z -mx=9 "$archive" SKSE >/dev/null) || exit 1
+        fi
+        (cd build/installer && 7z a -t7z -mx=9 "$archive" fomod options >/dev/null) || exit 1
+        echo "$archive"
+    done ;;
 test)
     T=build/test; mkdir -p $T/Data && ln -sfn "$(realpath "$ADDRLIB")/SKSE" $T/Data/SKSE &&
     python3 tools/compatibility.py --tier contracts || exit 1
@@ -93,6 +112,7 @@ test)
     $CXX -Wall -static src/runtime/skse.cc tests/runtimes_test.cc -o $T/runtimes_test.exe -lshell32 -lole32 -luuid & pids="$pids $!"
     $CXX -Wall -static tests/emotion_test.cc build/live_core.o build/performance_features.o -o $T/emotion_test.exe \
         -L$FFMPEG/lib -lavformat -lavcodec -lswresample -lavutil -lbcrypt -lole32 & pids="$pids $!"
+    $CXX -Wall -static tests/sentiment_model_test.cc build/ort_net.o -o $T/sentiment_model_test.exe -ldxgi & pids="$pids $!"
     $CXX -Wall -static tests/reference_test.cc -o $T/reference_test.exe & pids="$pids $!"
     $CXX -Wall -static tests/passive_report_test.cc build/ort_net.o -o $T/passive_report_test.exe -Wl,--wrap=__imp_CreateDXGIFactory1 -ldxgi & pids="$pids $!"
     $CXX -Wall -static src/inference/net_keeper.cc tests/net_keeper_test.cc -o $T/net_keeper_test.exe & pids="$pids $!"
@@ -102,6 +122,9 @@ test)
     for pid in $pids; do wait "$pid" || status=1; done
     [ "$status" = 0 ] &&
     WINEDEBUG=-all ${WINE-wine64} $T/emotion_test.exe &&
+    { if [ -f "$EMOTION_MODEL" ]; then
+        WINEDEBUG=-all ${WINE-wine64} $T/sentiment_model_test.exe $P/BetterFacialAnimations "$EMOTION_MODEL";
+      else echo "BLOCKED: optional sentiment model inference test (model absent)"; exit 2; fi; } &&
     WINEDEBUG=-all ${WINE-wine64} $T/reference_test.exe &&
     WINEDEBUG=-all ${WINE-wine64} $T/passive_report_test.exe &&
     WINEDEBUG=-all ${WINE-wine64} $T/runtimes_test.exe build/BetterFacialAnimations.dll $T &&
