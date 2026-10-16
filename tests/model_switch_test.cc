@@ -168,17 +168,25 @@ int main() {
   Select(4);
   WorkerStep(keeper, false);
   CHECK(SnapshotModel()->network == 4 && a2f::created == before + 1);
-  // GPU failure retains normal CPU fallback and diagnostics after switching.
+  // GPU failure leaves no model; explicit retry and CPU selection remain usable.
   a2f::fail_gpu = true;
   Select(3);
   WorkerStep(keeper, false);
-  CHECK(SnapshotModel()->network == 3 && keeper.loaded() && !keeper.on_gpu());
-  CHECK(keeper.version() == 3 && stats.network == 3); // preserve selected model
+  CHECK(SnapshotModel()->network == 3 && !keeper.loaded());
+  CHECK(stats.network == 3); // preserve selected model
   CHECK(!stats.net_error.empty() && !stats.switching_model);
   a2f::fail_gpu = false;
-  Select(4);
+  RequestGpuRetry();
   WorkerStep(keeper, false);
-  CHECK(!stats.net_error.empty() && !keeper.on_gpu() && stats.lines == 0 && stats.gen_sec == 0);
+  CHECK(stats.net_error.empty() && keeper.on_gpu() && stats.lines == 0 && stats.gen_sec == 0);
+  CHECK(SnapshotModel()->network == 3);
+  a2f::DisableGpu("injected device loss");
+  Select(3, true);
+  WorkerStep(keeper, false);
+  CHECK(keeper.loaded() && !keeper.on_gpu());
+  Select(3, false);
+  WorkerStep(keeper, false);
+  CHECK(keeper.on_gpu() && a2f::GpuAllowed(error));
   // Disabled switches never load a session until enabled again.
   for (const Param& p : kParams)
     if (!strcmp(p.key, "Enabled")) *p.flag = false;

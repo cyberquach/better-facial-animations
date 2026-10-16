@@ -1,7 +1,6 @@
 // ONNX Runtime session wrapper; session options are tuned for minimum VRAM.
 #include "a2f/inference/ort_net.h"
 #include "a2f/inference/device_factory.h"
-#include "a2f/inference/gpu_startup.h"
 
 #define PSAPI_VERSION 2  // K32EnumProcessModules, in kernel32
 #include <d3d12.h>
@@ -103,6 +102,7 @@ FARPROC D3d12Export(const char* id) {
 
 // Set when D3D12CreateDevice handed out a wrapper of the device.
 std::atomic<bool> device_wrapped{false};
+std::atomic<bool> use_wrapper{false};
 // Set when onnxruntime.dll creates its device with CreateRealDevice.
 bool device_redirected;
 
@@ -129,7 +129,7 @@ void SelectDevice(ComPtr<IUnknown> real, void** out) {
   IUnknown* const wrapper = static_cast<IUnknown*>(*out);
   if (real.get() != wrapper) {
     device_wrapped = true;
-    if (!wrappers_kept) return;
+    if (use_wrapper || !wrappers_kept) return;
     wrappers_kept->emplace_back(wrapper);
   } else {
     wrapper->Release();
@@ -288,23 +288,11 @@ bool CanRun(ID3D12Device* device, std::string& err) {
   return !device || GpuAllowed(err);
 }
 
-void RunFailed(ID3D12Device* device, std::string& err) {
-  // Do not make extra driver calls to diagnose an already failing run.
-  if (device) DisableGpu(err);
-}
-
-// A facial session's run failed: the session is lost (Net::failed) and a GPU
-// session takes the GPU with it. Always false, for the caller to return.
-bool FailRun(ID3D12Device* device, bool& failed, std::string& err) {
-  failed = true;
-  RunFailed(device, err);
-  return false;
-}
-
 // What a session is made of. Destroyed in reverse: the session first, the
 // borrowed device references after it and wrappers last. The independent
 // context retains its own references regardless of this session's lifetime.
 struct Session {
+  bool independent = false, failed = false;
   Wrappers wrappers;  // of device and of the device onnxruntime made
   ComPtr<ID3D12Device> device;  // held to ask why it was lost; null on the CPU
   ComPtr<IUnknown> dml_device;  // the session's DirectML device, or null
@@ -312,17 +300,42 @@ struct Session {
   OrtPtr<OrtSession> sess;
 };
 
-// Once the GPU is disabled, its sessions are quarantined with their device
-// and wrappers: releasing one can wait on the failed driver. The process-wide
-// gate bounds this to the sessions that existed when the failure occurred.
+// Shared failures release their resources before retrying. Independent failures
+// remain latched until an explicit retry and retain their driver resources.
+void RunFailed(Session& s, std::string& err) {
+  s.failed = true;
+  if (!s.device) return;
+  if (s.independent) DisableGpu(err);
+  else {
+    std::string blocked;
+    if (GpuAllowed(blocked)) err += RemovedReason(s.device.get(), s.dml_device.get());
+    else err = blocked;
+  }
+}
+bool FailRun(Session& s, bool& failed, std::string& err) {
+  failed = true;
+  RunFailed(s, err);
+  return false;
+}
 void RetainFailedSession(Session& s) {
-  std::string ignored;
-  if (!s.device || GpuAllowed(ignored)) return;
-  (void)s.sess.release();
-  (void)s.mem.release();
-  (void)s.device.release();
-  (void)s.dml_device.release();
-  for (auto& wrapper : s.wrappers) (void)wrapper.release();
+  if (!s.device) return;
+  std::string err;
+  if (!GpuAllowed(err)) {
+    (void)s.sess.release();
+    (void)s.mem.release();
+    (void)s.device.release();
+    (void)s.dml_device.release();
+    for (auto& wrapper : s.wrappers) (void)wrapper.release();
+    return;
+  }
+  if (s.failed) {
+    // Shared failures release their session before another GPU attempt.
+    s.sess.reset();
+    s.mem.reset();
+    s.dml_device.reset();
+    s.device.reset();
+    s.wrappers.clear();
+  }
 }
 
 class OrtNet : public Net {
@@ -333,7 +346,7 @@ class OrtNet : public Net {
   bool Run(const float* x, const float* emo, int b, float* out,
            std::string& err) override {
     if (!CanRun(s_.device.get(), err))
-      return FailRun(s_.device.get(), failed, err);
+      return FailRun(s_, failed, err);
     // null (with err) when it cannot be made
     const auto tensor = [&](const float* data, int width, const char* what) {
       const int64_t shape[3] = {b, 1, width};
@@ -356,7 +369,7 @@ class OrtNet : public Net {
     OrtValue* result = nullptr;
     if (!Check(api->Run(s_.sess.get(), nullptr, in, ins, 2, outn, 1, &result),
                err, "run"))
-      return FailRun(s_.device.get(), failed, err);
+      return FailRun(s_, failed, err);
     const OrtPtr<OrtValue> vy(result);
     return ReadFloats(vy.get(), static_cast<size_t>(b) * kNumOut, out, err,
                       "output");
@@ -382,7 +395,7 @@ class OrtNet3 : public Net {
             const float* state, float* skin, float* tongue, float* jaw_eyes,
             float* next_state, std::string& err) override {
     if (!CanRun(s_.device.get(), err))
-      return FailRun(s_.device.get(), failed, err);
+      return FailRun(s_, failed, err);
     constexpr int kIn = 4, kOut = 4;
     static const int64_t kShapes[kIn][4] = {{1, kWindow3},
                                             {1, kNumIdentity3},
@@ -418,7 +431,7 @@ class OrtNet3 : public Net {
                            err, "run");
     OrtPtr<OrtValue> out[kOut];
     for (int i = 0; i < kOut; ++i) out[i].reset(results[i]);
-    if (!ran) return FailRun(s_.device.get(), failed, err);
+    if (!ran) return FailRun(s_, failed, err);
     for (int i = 0; i < kOut; ++i)
       if (!ReadFloats(out[i].get(), out_size[i], dst[i], err, kOutNames[i]))
         return false;
@@ -443,7 +456,7 @@ class PerformanceNet : public Net {
   bool RunPerformance(const float* mel, int64_t identity, const float* emotion,
                       float* motion, std::string& err) override {
     if (!CanRun(s_.device.get(), err))
-      return FailRun(s_.device.get(), failed, err);
+      return FailRun(s_, failed, err);
     constexpr int kNumInputs = 3;
     const int64_t mel_shape[] = {1, kPerformanceWindowFrames, kMelBins};
     const int64_t identity_shape[] = {1};
@@ -479,7 +492,7 @@ class PerformanceNet : public Net {
                        kNumInputs, output_names, 1, &raw_output),
               err, "performance run");
     OrtPtr<OrtValue> output(raw_output);
-    if (!ran) return FailRun(s_.device.get(), failed, err);
+    if (!ran) return FailRun(s_, failed, err);
     return ReadFloats(output.get(),
                       kPerformanceWindowFrames * kPerformanceChannels, motion,
                       err, "performance output");
@@ -554,7 +567,7 @@ bool GraphicsCheck(HRESULT hr, const char* stage, std::string& err) {
   char code[16];
   snprintf(code, sizeof code, "%08lX", static_cast<unsigned long>(hr));
   err = std::string("independent device: ") + stage + " failed (" + code +
-        "); CPU fallback; shared-device fallback disabled";
+        "); shared-device fallback disabled";
   return false;
 }
 
@@ -593,8 +606,8 @@ ComPtr<ID3D12Device> MakeIndependentDevice(independent::GetInterface get,
 }
 
 // Only the inference worker accesses this context. Model sessions borrow COM
-// references, but never own the last reference. Keep exactly one context until
-// process exit, including across CPU fallback and idle model unloading. Do not
+// references, but never own the last reference. Keep the healthy context until
+// process exit, including across explicit CPU use and idle model unloading. Do not
 // run its destructor during DLL/process teardown: driver destruction can block
 // Skyrim's renderer even when called on the inference worker.
 struct IndependentContext {
@@ -634,57 +647,32 @@ IndependentContext& IndependentGpu() {
   return *context;
 }
 
-std::wstring startup_marker;
-// The process-wide GPU gate (GpuAllowed, DisableGpu): both routes and every
-// model, set by the first failure and never cleared.
+// A failed independent attempt protects its existing sessions until the user
+// explicitly retries. No files or cross-launch state participate in selection.
 std::string gpu_failure;
 
-// One GPU model creation, from session compilation through warmup, for all
-// four factories; CPU creations pass through. A failure, returned or left
-// unfinished, disables the GPU for the process (across model switches and
-// the sentiment model). A hang or crash leaves the startup marker: a driver
-// thread cannot be killed safely.
 class GpuAttempt {
  public:
   GpuAttempt(const OrtOptions& options, std::string& err)
-      : active_(options.gpu), err_(err), marker_(startup_marker) {
-    if (!active_) return;
-    allowed_ = GpuAllowed(err_);
-    if (allowed_ && !startup_marker.empty() && !marker_.Begin(err_)) {
-      // A marker left by an interrupted launch selects CPU for this one.
-      allowed_ = false;
-      DisableGpu(err_);
-    }
+      : active_(options.gpu), independent_(options.independent_device), err_(err) {
+    allowed_ = !active_ || GpuAllowed(err_);
     finished_ = !allowed_;
   }
   bool allowed() const { return allowed_; }
-  // warmed: the session's first run succeeded. False (with err) when the
-  // attempt failed; the GPU is disabled here, before the caller destroys its
-  // session, so that the failed session is quarantined rather than released.
   bool Finish(bool warmed) {
-    finished_ = true;
     if (!active_) return warmed;
-    if (warmed && marker_.Complete(err_)) {
+    finished_ = true;
+    if (warmed) {
       if (ort_log) ort_log("GPU startup: warmup complete; GPU ready");
-      return true;
-    }
-    Fail();
-    return false;
+    } else if (independent_) DisableGpu(err_);
+    return warmed;
   }
   ~GpuAttempt() {
-    if (active_ && !finished_) Fail();
+    if (active_ && !finished_ && independent_) DisableGpu(err_);
   }
-
  private:
-  void Fail() {
-    // Only clear a marker this attempt created, never a previous launch's.
-    std::string cleanup;
-    if (!marker_.Complete(cleanup)) err_ += "; " + cleanup;
-    DisableGpu(err_);
-  }
-  bool active_, allowed_ = true, finished_ = false;
+  bool active_, independent_, allowed_ = true, finished_ = false;
   std::string& err_;
-  GpuStartup marker_;
 };
 
 ComPtr<ID3D12Device> OpenIndependentDevice(std::string& err) {
@@ -773,6 +761,7 @@ bool CreateSession(const std::wstring& model, bool gpu, bool metacommands,
                    bool independent_device, const std::wstring& dll_dir,
                    Dims dims, Session& out, std::string& err) {
   Session s;
+  s.independent = independent_device;
   const ScopedWrappers keep(s.wrappers);
   if (gpu && independent_device) {
     if (!metacommands) {
@@ -844,10 +833,13 @@ bool CreateSession(const std::wstring& model, bool gpu, bool metacommands,
     // the session's DirectML device (handed out without a reference), to ask
     // it why it stopped
     IUnknown* dml_device = nullptr;
-    if (ok && !independent_device &&
-        !dml->GetDMLDevice(so.get(), &dml_device) && dml_device) {
-      dml_device->AddRef();
-      s.dml_device.reset(dml_device);
+    if (ok && !independent_device) {
+      OrtStatus* status = dml->GetDMLDevice(so.get(), &dml_device);
+      if (status) api->ReleaseStatus(status);
+      else if (dml_device) {
+        dml_device->AddRef();
+        s.dml_device.reset(dml_device);
+      }
     }
     // DML's memory arena stays on: it keeps the work buffers of a run
     // allocated between runs (~16 MB more resident than freeing them), so a
@@ -882,10 +874,11 @@ bool CreateSession(const std::wstring& model, bool gpu, bool metacommands,
     s.mem.reset(mem);
   }
   if (!ok) {
-    // Partial failed GPU sessions can enter driver waits during release.
-    // One process-wide failure stops further GPU creations, bounding this
-    // retained state. Never tear it down on the game's shutdown path.
-    if (gpu) {
+    if (gpu && !independent_device)
+      err += RemovedReason(s.device.get(), s.dml_device.get());
+    // Independent resources remain quarantined. Shared retries use normal
+    // ordered destruction, while GpuAttempt still holds the recovery marker.
+    if (gpu && independent_device) {
       (void)so.release();
       (void)new Session(std::move(s));
     }
@@ -905,7 +898,7 @@ std::string DescribeProvider(const OrtOptions& o) {
   if (o.gpu && o.independent_device)
     description += ", independent device, private compute queue";
   else if (o.gpu)
-    description += ", 4.0-style shared device";
+    description += use_wrapper ? ", shared device, wrapper" : ", shared device, unwrapped";
   return description;
 }
 class OrtEmotionNet : public EmotionNet {
@@ -932,7 +925,7 @@ class OrtEmotionNet : public EmotionNet {
         err, "sentiment run");
     const OrtPtr<OrtValue> y(output);
     if (!ran) {
-      RunFailed(s_.device.get(), err);
+      RunFailed(s_, err);
       return false;
     }
     return ReadFloats(y.get(), kNumVoiceEmo, logits, err, "sentiment output");
@@ -1085,7 +1078,19 @@ std::string FileVersion(const wchar_t* path) {
 }  // namespace
 
 void SetOrtLog(void (*log)(const std::string&)) { ort_log = log; }
-void SetGpuStartupMarker(const std::wstring& path) { startup_marker = path; }
+void RetryGpu() {
+  // The worker has already unloaded both model sessions. Failed resources and
+  // their context stay alive: driver teardown must not block the renderer.
+  // A healthy context is reused across explicit CPU/GPU/model changes.
+  if (!gpu_failure.empty()) {
+    auto& context = IndependentGpu();
+    (void)context.device.release();
+    (void)context.dml.release();
+    (void)context.queue.release();
+    context.attempted = false;
+  }
+  gpu_failure.clear();
+}
 bool GpuAllowed(std::string& err) {
   if (gpu_failure.empty()) return true;
   err = gpu_failure;
@@ -1093,9 +1098,12 @@ bool GpuAllowed(std::string& err) {
 }
 void DisableGpu(const std::string& reason) {
   if (!gpu_failure.empty()) return;
-  gpu_failure = reason + "; GPU disabled until restart";
+  gpu_failure = reason + "; GPU attempt failed";
   if (ort_log) ort_log(gpu_failure);
 }
+
+bool DeviceWrapped() { return device_wrapped; }
+void SetUseDeviceWrapper(bool use) { use_wrapper = use; }
 
 bool DeviceRedirected() { return device_redirected; }
 

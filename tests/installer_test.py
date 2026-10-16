@@ -87,6 +87,6 @@ with tempfile.TemporaryDirectory() as directory:
         assert plugin.find('files') is None
         assert plugin.find('typeDescriptor/type').attrib['name'] == 'Required'
     assert 'ForceCPU=1' in recovery[0].findtext('description')
-    assert 'gpu-startup.pending' in recovery[1].findtext('description')
+    assert 'CPU runs only when explicitly selected' in recovery[1].findtext('description')
     assert 'GPU-SETUP.txt' in recovery[2].findtext('description')
 print('96 installer combinations, independent checkboxes, model selection, defaults and recovery: pass')
