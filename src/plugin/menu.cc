@@ -539,20 +539,19 @@ void RenderProblems(const Stats& st, size_t queued, const Tune& tune,
     // the problem, its cause and the advice; the rest on the last of them
     for (const auto& line : st.net_error) Notice(kRed, line);
     if (st.net_retry_at > 0)
-      snprintf(b, sizeof b,
-               "\nCPU retry in %.0f s. Vanilla lip-sync plays meanwhile.",
+      snprintf(b, sizeof b, "\nInference retry in %.0f s. Vanilla lip-sync plays meanwhile.",
                std::max(0.0, st.net_retry_at - Now()));
     else
-      snprintf(b, sizeof b, "\nGPU retry requires a restart. %s",
-               net_loaded ? "Lines run on the CPU."
-                          : "Vanilla lip-sync plays meanwhile.");
+      snprintf(b, sizeof b, "\nChoose Try GPU again or select Force CPU. Vanilla lip-sync plays meanwhile.");
     Tip(&kNetTip, ("Runtime message: " + st.net_detail + b).c_str());
   } else if (ready && tune.enabled && !net_loaded) {
     Notice(kYellow, "Loading the model.");
   }
-  if (net_loaded && !st.net_gpu && st.want_gpu) {
-    Notice(kYellow,
-           "GPU failed; the selected model runs on the CPU for this session.");
+  if (ready && tune.enabled && !tune.force_cpu &&
+      (!st.net_error.empty() ||
+       (tune.sentiment_analysis && config.sentiment_available &&
+        st.sentiment_info.find("unavailable") != std::string::npos))) {
+    if (ig.Button("Try GPU again", {0, 0})) RequestGpuRetry();
   }
   for (const auto& w : a2f::GpuWarnings(gpu)) Notice(kYellow, w);
   const double speed = st.audio_sec / std::max(st.gen_sec, 1e-6);

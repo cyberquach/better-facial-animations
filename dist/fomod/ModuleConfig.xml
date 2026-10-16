@@ -18,7 +18,7 @@ TECHNICAL DETAILS
 
 BFA creates its own D3D12 device and compute queue for DirectML inference, separate from the game's graphics device. This reduces shared-device interactions with shader mods, ReShade, upscaling and frame generation.
 
-The device still uses the same physical GPU and driver. Windows / Proton and the driver must support Independent Devices; ordinary DirectX 12 support alone is not enough. A returned initialization error selects CPU for that game session, without automatically trying the shared GPU route. Changing routes requires restarting Skyrim.
+The device still uses the same physical GPU and driver. Windows / Proton and the driver must support Independent Devices; ordinary DirectX 12 support alone is not enough. A returned error leaves vanilla lip-sync active. Try GPU again or select Force CPU in settings. No automatic CPU or shared-route switch occurs. Changing routes requires restarting Skyrim.
 
 INI equivalent: set IndependentGpuDevice=1 under [General] in Data/SKSE/Plugins/BetterFacialAnimations.ini.</description>
               <conditionFlags>
@@ -37,9 +37,7 @@ TECHNICAL DETAILS
 
 Uses the shared-device GPU path for DirectML inference. It can work on runtimes that do not support independent devices, including some Steam Deck / Proton setups. Shared-device access can also conflict with graphics hooks, so it is an alternative to test rather than a guaranteed fix.
 
-This route keeps delayed startup and recovery protection. It does not automatically retry other GPU configurations. Change routes with Skyrim closed. If a failed launch left gpu-startup.pending, follow the recovery page before trying GPU again. If both routes fail, use Force CPU.
-
-INI equivalent: set IndependentGpuDevice=0 under [General] in Data/SKSE/Plugins/BetterFacialAnimations.ini.</description>
+This route keeps delayed startup. It retries without driver metacommands, then through an observed graphics wrapper after eligible device loss. Further shared GPU attempts wait 2/4/8/16/30 seconds while vanilla lip-sync remains available. It never selects CPU or independent mode automatically. Change routes with Skyrim closed. If both routes fail, select Force CPU.</description>
               <conditionFlags>
                 <flag name="GpuRoute">shared</flag>
               </conditionFlags>
@@ -64,7 +62,7 @@ TECHNICAL DETAILS
 
 After a save loads or a new game starts, BFA initializes and warms up the selected model on its worker, using the GPU route chosen on the previous page. Early dialogue may use vanilla animation while the model gets ready.
 
-A returned GPU error disables further GPU attempts for that session. The selected model continues on CPU. An interrupted initialization leaves a recovery marker so the next launch uses CPU. This cannot cancel a driver call already hung inside Skyrim.
+A returned GPU error leaves vanilla lip-sync active. Choose Try GPU again or select Force CPU in settings. No automatic CPU fallback or persistent startup lockout. If GPU startup hangs or crashes, reinstall with Force CPU.
 
 INI equivalent: set ForceCPU=0 under [General] in Data/SKSE/Plugins/BetterFacialAnimations.ini.</description>
               <conditionFlags>
@@ -83,7 +81,7 @@ TECHNICAL DETAILS
 
 Skips GPU inference initialization and preserves your selected GPU route for later. CPU startup stays enabled across launches; there is no automatic second-launch GPU attempt. Speaker coverage is chosen separately on the Starting settings page.
 
-To opt in later, load a working save and uncheck Force CPU under Better Facial Animations &gt; Settings &gt; Model (requires SKSE Menu Framework). A GPU failure earlier in that session remains latched until restart. CPU honors your selected model, so V3 can still be slow; Performance with Potato Mode reduces the work.
+To opt in later, load a working save and uncheck Force CPU under Better Facial Animations &gt; Settings &gt; Model (requires SKSE Menu Framework). You can retry GPU in the same session, including after a returned failure. Shared GPU retries never select CPU automatically. CPU honors your selected model, so V3 can still be slow; Performance with Potato Mode reduces the work.
 
 INI equivalent: set ForceCPU=1 under [General] in Data/SKSE/Plugins/BetterFacialAnimations.ini.</description>
               <conditionFlags>
@@ -270,7 +268,7 @@ INI equivalent: set ForceCPU=1 to skip GPU startup under [General] in Data/SKSE/
 ------------------------------------------------------------
 TECHNICAL DETAILS
 
-Keep Force CPU enabled while changing routes. Close Skyrim and save the failed launch logs. If present, remove Data/SKSE/Plugins/BetterFacialAnimations/gpu-startup.pending only when deliberately retrying GPU; MO2 may place it in Overwrite. Reinstalling or switching routes does not clear this recovery marker.
+Keep Force CPU enabled while changing routes. Close Skyrim and save the failed launch logs. Old startup recovery markers are ignored. CPU runs only when explicitly selected.
 
 Restart Skyrim, load a save on CPU, then uncheck Force CPU in the menu to try the new route. If it fails again, return to CPU. This page only provides instructions; choose the route on the GPU mode page.
 

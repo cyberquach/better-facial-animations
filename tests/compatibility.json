@@ -2,17 +2,6 @@
   "schema": 1,
   "contracts": [
     {
-      "id": "gpu-startup",
-      "test": "gpu_startup_test",
-      "sources": [
-        "tests/gpu_startup_test.cc"
-      ],
-      "covers": [
-        "interrupted startup survives object destruction and blocks next attempt",
-        "IO failure selects CPU and successful completion clears only owned marker"
-      ]
-    },
-    {
       "id": "gpu-fallback",
       "test": "net_keeper_test",
       "sources": [
@@ -20,8 +9,8 @@
         "src/inference/net_keeper.cc"
       ],
       "covers": [
-        "one GPU attempt and CPU fallback after creation or run failure",
-        "latched failure across model and ForceCPU changes; bounded CPU retries"
+        "independent one-attempt policy; shared 2/4/8/16/30-second recovery with explicit CPU selection",
+        "manual GPU retry and CPU-to-GPU selection clear failed attempts; ForceCPU suspends shared recovery; bounded CPU retries"
       ]
     },
     {
@@ -35,14 +24,14 @@
       ],
       "covers": [
         "output count/type and finite values before copying",
-        "both GPU routes arm startup guard; GPU failure blocks all GPU factories but permits CPU"
+        "failed GPU attempts can be explicitly retried across all models without filesystem guards"
       ]
     },
     {
       "id": "installer",
       "python": "tests/installer_test.py",
       "covers": [
-        "all 8 independent/shared, GPU/CPU startup and model combinations resolve exactly one INI",
+        "all 96 route/startup/model/checkbox combinations resolve exactly one INI",
         "independent GPU default; CPU startup preserves route for opt-in; installed help/version"
       ]
     },
@@ -111,7 +100,7 @@
         "live V3/Performance/Old selection and CPU preference",
         "old session destruction before replacement and retained playback mappings",
         "pending cancellation, rapid changes, disabled mode and per-model statistics",
-        "mapping load failure recovery and GPU CPU fallback"
+        "mapping load failure recovery and GPU explicit CPU selection"
       ]
     },
     {
@@ -146,7 +135,7 @@
         "factory reference lifetime and invalid success responses",
         "DML1 and metacommand capability failures",
         "missing DirectML.dll beside the model with DML1 present",
-        "one retained device, DirectML device and queue across probes and model/CPU transitions",
+        "one retained device, DirectML device and queue across model/CPU transitions",
         "partial initialization and removed-device failures latch without recreation"
       ]
     },
@@ -158,7 +147,7 @@
       ],
       "plugin_objects": true,
       "covers": [
-        "v2/v3/Performance explicit independent or shared GPU without route retries; CPU fallback preserves the selected model",
+        "v2/v3/Performance explicit independent or shared GPU without route retries; explicit CPU selection preserves the selected model",
         "IndependentGpuDevice persists and overrides retired Auto/GpuDevice keys; explicit CPU honors model"
       ]
     },
@@ -562,9 +551,34 @@
       "plugin_objects": true,
       "covers": [
         "Sentiment Analysis disabled or optional model absent skips model loading",
-        "sentiment failure falls back and backs off",
+        "sentiment failure stays on the selected provider and backs off",
         "disable during inference cancels and releases weights",
         "idle worker unloads weights without another line"
+      ]
+    },
+    {
+      "id": "gpu-retry",
+      "test": "gpu_retry_test",
+      "sources": [
+        "tests/gpu_retry_test.cc"
+      ],
+      "covers": [
+        "shared shader and conditional wrapper retries, successful variant persistence, explicit retry after a failed attempt"
+      ]
+    },
+    {
+      "id": "passive-report",
+      "test": "passive_report_test",
+      "sources": [
+        "tests/passive_report_test.cc",
+        "src/inference/ort_net.cc"
+      ],
+      "link": [
+        "-Wl,--wrap=__imp_CreateDXGIFactory1",
+        "-ldxgi"
+      ],
+      "covers": [
+        "passive diagnostics never create a graphics device or DXGI factory"
       ]
     }
   ],

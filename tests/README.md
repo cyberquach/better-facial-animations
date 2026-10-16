@@ -32,9 +32,9 @@ including Steam 1.6.353 and GOG 1.6.659.
 
 `conversation-gaze` checks v2/v3 eye-track alignment, additive look controls,
 late-start sync, player-target/scene/runtime gating, restoration and hook coexistence.
-`independent-device` and `independent-routing` check strict factory isolation, retained GPU context ownership across model/CPU transitions, latched device failures and all model routes without GPU hardware. They do not establish driver or graphics-hook compatibility.
-`gpu-startup` checks persistent startup protection and file errors; `gpu-fallback` checks one GPU attempt, CPU recovery and persistence across settings changes. `ort-output` checks tensor validation and the shared facial/sentiment GPU failure gate. `installer` checks the FOMOD presets and GPU-first default.
-`sentiment-lifecycle` checks optional-model gating, GPU-to-CPU fallback, CPU failure backoff and unloading.
+`independent-device` and `independent-routing` check strict factory isolation, retained GPU context ownership across model/CPU transitions, explicit retries after device failure and all model routes without GPU hardware. They do not establish driver or graphics-hook compatibility.
+`gpu-fallback` checks explicit CPU selection, manual GPU recovery and shared GPU backoff without CPU fallback. `gpu-retry` checks shader/wrapper alternatives and remembered success; `wrapper-lifetime` checks shared failure cleanup without filesystem guards. `passive-report` checks diagnostics without DXGI/device probes. `ort-output` checks tensor validation and the shared facial/sentiment GPU failure gate. `installer` checks the FOMOD presets and GPU-first default.
+`sentiment-lifecycle` checks optional-model gating, GPU-only failure and explicit CPU selection, CPU failure backoff and unloading.
 `npc-menu` checks disabled sentiment controls; `build.sh test` checks additive caps and the local sentiment model when present.
 `worker-start` checks that CPU/GPU workers wait for successful game entry, with either startup listener order, failed loads, repeated events and thread creation failure.
 Settings persistence is covered by `sex-settings`; eye-mesh calibration still needs
@@ -134,7 +134,7 @@ channels to pass. Captures are not distributed. This is an offline geometry
 contract, not an in-game or SMP-physics test.
 
 `model-switch` exercises live V3/Performance/Old selection, session release,
-retained playback mappings, cancellation, CPU fallback and failed mapping loads.
+retained playback mappings, cancellation, manual GPU retries, explicit CPU and failed mapping loads.
 It does not establish in-game switching quality.
 
 `performance_model_test` covers native performance-model chunking and cancellation.

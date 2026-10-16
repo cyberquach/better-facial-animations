@@ -41,17 +41,19 @@ Requirements
   Both modes initialize inference after the first successful save load or new game, then keep the model
   loaded until exit. Early lines use vanilla animation while it warms up. An already submitted GPU run must finish
   before cancellation. PotatoMode=0 (default) processes all speakers. If the model cannot
-  be loaded on the GPU the settings window says why; CPU is used for the rest of the game process.
+  be loaded on the GPU the settings window says why; vanilla lip-sync remains active.
   GPU inference defaults to an independent device/private queue (IndependentGpuDevice=1).
   This requires D3D12 Independent Devices (Windows updates from August 2023 or a
   supporting Proton runtime) and a supporting driver. IndependentGpuDevice=0 explicitly
   selects 4.0-style shared GPU compatibility for Deck/older runtimes or troubleshooting
   failures with independent mode. Shared can also conflict with graphics mods.
-  Change the installer/INI and restart to switch routes. Either route tries once;
-  returned failures select CPU until restart, across models and sentiment. No automatic
-  GPU route, wrapper or metacommand retry. GPU-first V3 is the normal preset.
-  GPU failure falls back to CPU without changing your selected model.
-  Explicit ForceCPU=1 also uses your selected model.
+  Change the installer/INI and restart to switch routes. Shared mode retries without
+  metacommands and, after eligible device loss, through an observed graphics wrapper.
+  Further shared GPU attempts wait 2/4/8/16/30 seconds; sentiment retries after 30 seconds.
+  No Auto probe or automatic independent/shared switch. GPU-first V3 is the normal preset.
+  GPU errors never select CPU automatically. Choose Try GPU again for a new attempt,
+  or Force CPU to explicitly use your chosen model on CPU. Unchecking Force CPU
+  tries GPU in the same session, including after an earlier failure.
   The FOMOD separately selects GPU route, GPU/CPU startup and starting settings. Force CPU
   makes no GPU attempt and keeps your chosen route for later opt-in by unchecking
   Force CPU in-game. It persists until changed, including after the first launch.
@@ -61,10 +63,9 @@ Requirements
   + V3 after game entry.
   GPU-SETUP.txt in this folder has the installer guide: Windows/driver and Proton
   requirements, exact CPU recovery INI edits, and how to try GPU from a working CPU session.
-  An interrupted GPU startup leaves SKSE/Plugins/BetterFacialAnimations/gpu-startup.pending,
-  blocking the next GPU attempt. Close Skyrim before deleting it to deliberately retry; MO2 may
-  put it in Overwrite. Failure to write the guard also selects CPU. This only guards startup/warmup,
-  not later inference. A driver hang cannot safely be cancelled inside Skyrim. No helper is launched.
+  No startup recovery marker is created or checked; old gpu-startup.pending files
+  are ignored. If GPU startup hangs/crashes, reinstall with Force CPU or set ForceCPU=1.
+  A driver call already hanging cannot safely be cancelled inside Skyrim. No helper is launched.
   Old GpuDevice, AutoGpuDevice and UseDeviceWrapper keys are ignored.
   Optional: SKSE Menu Framework, for the in-game settings page (Better Facial Animations -> Settings).
 

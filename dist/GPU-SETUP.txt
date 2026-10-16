@@ -7,9 +7,11 @@ without having to launch Skyrim. No helper program is launched by this version.
 
 Independent GPU + V3 is the normal preset. V3 tries GPU inference after a save loads or a
 new game starts. Early dialogue keeps vanilla animation while the model warms
-up. A reported GPU failure disables further GPU attempts until Skyrim exits;
-automatic fallback runs your chosen model on CPU without changing it. Explicit
-ForceCPU also uses your chosen model. Performance has less facial detail than V3.
+up. A returned GPU failure can be retried with Try GPU again.
+Shared GPU retries without metacommands, then conditionally through an observed
+graphics wrapper after device loss. Further shared attempts wait 2/4/8/16/30 seconds;
+sentiment retries after 30 seconds. GPU failures never automatically select CPU.
+ForceCPU explicitly uses your chosen model on CPU. Performance has less facial detail than V3.
 
 The installer has three independent choices:
 - GPU route: Standard (independent, recommended), or Compatibility (4.0-style
@@ -101,8 +103,8 @@ GPU driver. A Deck user reported Performance + Potato working on GPU in the
 an independent device worked on that Deck. Try Compatibility GPU + Performance
 + Potato if independent mode is unsupported, or choose Force CPU first.
 The shared route does not require Independent Devices support. It restores
-4.0's first GPU route, with newer startup/recovery handling, rather than
-restoring every retry and wrapper variation from that release.
+4.2.1's metacommand/wrapper recovery and delayed shared GPU retries, with newer
+delayed startup. It never probes or automatically selects independent mode.
 
 For independent GPU, update SteamOS (or your distro's graphics stack) and use
 a Proton build whose bundled vkd3d-proton supports Independent Devices.
@@ -149,14 +151,8 @@ https://github.com/HansKristian-Work/vkd3d-proton/blob/master/CHANGELOG.md
    vanilla animation. ForceCPU=1 prevents BFA's GPU inference initialization,
    but cannot fix unrelated crashes or every problem elsewhere in the game.
 
-4. An interrupted GPU initialization leaves this recovery marker:
-   Data/SKSE/Plugins/BetterFacialAnimations/gpu-startup.pending
-   It makes subsequent GPU requests fall back to CPU. MO2 may put the file
-   in Overwrite. You can leave it there while using CPU. Remove it only with
-   Skyrim closed and only when deliberately testing GPU again. It can also
-   remain after a force-quit or unrelated crash during model warmup; it does
-   not prove BFA caused that crash. It guards initialization/warmup, not a
-   later inference hang. Failure to write this guard also selects CPU.
+4. No startup recovery file is created or checked. Old gpu-startup.pending
+   files are ignored, so an unrelated crash cannot change the provider choice.
 
 If a CPU launch still freezes, keep CPU enabled while investigating the
 remaining conflict. If standard independent GPU failed, shared GPU is an
@@ -175,9 +171,6 @@ Use only one of those values. Changing this route requires a restart; retired
 GpuDevice/AutoGpuDevice/UseDeviceWrapper keys are ignored. You can instead
 reinstall and choose the route, keeping Force CPU selected.
 
-If gpu-startup.pending exists, save the failed launch's log, then remove the
-marker with Skyrim closed only when you intend to retry GPU. Changing routes
-or reinstalling does not automatically clear that recovery guard.
 Keep ForceCPU=1 for the next launch. Load a save and let other mods finish
 their startup work. With SKSE Menu Framework installed, open Better Facial
 Animations -> Settings -> Model. Select V3 for full detail, or Performance
@@ -185,14 +178,16 @@ for less computation, then uncheck Force CPU. This queues GPU initialization
 on BFA's worker after current work finishes, using the route chosen before
 launch. It does not require reinstalling.
 
-A GPU failure earlier in the SAME Skyrim process disables further attempts,
-including after model changes or rechecking/unchecking Force CPU. Restart
-before another deliberate test. Menu settings save automatically: leaving
-Force CPU unchecked also requests GPU after loading a game next launch.
+After a returned GPU failure, choose Try GPU again to start another attempt, or
+select Force CPU yourself. Switching from CPU to GPU is allowed in the same
+session. Shared GPU retries also run automatically; vanilla lip-sync remains
+available while no model is loaded. CPU is never selected automatically.
+Restart only to change the independent/shared route. Menu settings save
+automatically: leaving Force CPU unchecked requests GPU next launch too.
 Without the menu framework, edit ForceCPU=0 while Skyrim is closed and relaunch.
 
-Check the actual provider/model status in the menu and log. CPU Performance
-fallback is not GPU success even if the log lists your graphics card. Startup
+Check the actual provider/model status in the menu and log. CPU inference
+is not GPU success even if the log lists your graphics card. Startup
 logs identify device creation, DirectML, queue creation, ONNX compilation and
 warmup. "GPU ready" means warmup returned, not a guarantee of future stability.
 A freeze precisely after toggling helps identify a trigger, but does not by
@@ -205,8 +200,7 @@ Common clues:
   is unsupported. Check the complete runtime + driver combination.
 - 887A0005: device removed/suspended. This alone does not prove lack of VRAM.
 - Missing/wrong ONNX Runtime, DirectML or model: reinstall matching files.
-- gpu-startup.pending / cannot write guard: follow the recovery steps above;
-  verify the mod manager can write to the plugin data folder.
+
 
 DLSS, frame generation, neural rendering, ReShade, ENB and shader overhauls
 can affect the result. For a comparison, hold your save/model fixed and change
@@ -214,7 +208,7 @@ one graphics feature at a time using that mod's instructions. A reported DLL
 downgrade that helped one NVIDIA setup failed for another; it is not a general
 fix. Independent devices separate API state but still share the physical GPU,
 driver and Skyrim process. A hung driver call cannot safely be cancelled here.
-CPU fallback handles returned errors; it cannot rescue every hang or CTD.
+If GPU startup hangs or crashes, close Skyrim and select Force CPU in the installer or INI.
 
 For a bug report include GPU + CPU, Windows build or SteamOS + Proton version,
 driver version, Skyrim/SKSE/BFA versions, model, IndependentGpuDevice and

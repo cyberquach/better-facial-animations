@@ -22,7 +22,7 @@ struct OrtOptions {
   // least VRAM.
   int batch = 2;
   // True: independent device/private queue. False: 4.0-style shared device.
-  // The caller selects one route; failures go to CPU, never another GPU route.
+  // The caller selects one route; failures never select a different provider.
   bool independent_device = false;
 };
 
@@ -66,14 +66,17 @@ std::vector<std::string> GpuReport(bool probe_gpu);
 // True once onnxruntime.dll creates its Direct3D 12 device through the plugin
 // (the test checks the import is still there).
 bool DeviceRedirected();
+// Worker-selected shared retry variant; no device is created by these calls.
+bool DeviceWrapped();
+void SetUseDeviceWrapper(bool use);
 
 // Where onnxruntime's own warnings and errors go (the first 200; any
 // thread). Set before the first session.
 void SetOrtLog(void (*log)(const std::string&));
 
-// Worker only, before creating any session. The marker covers initialization
-// and warmup, not later runs. An interrupted attempt makes the next launch CPU.
-void SetGpuStartupMarker(const std::wstring& path);
+// Worker only, after unloading facial and sentiment sessions. Clears a failed
+// GPU attempt so an explicit user retry or CPU-to-GPU switch can create a new one.
+void RetryGpu();
 // Shared by both GPU routes and all facial/sentiment models. No driver calls.
 bool GpuAllowed(std::string& err);
 void DisableGpu(const std::string& reason);

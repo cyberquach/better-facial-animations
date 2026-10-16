@@ -59,7 +59,7 @@ class FakeNet : public a2f::Net {
   bool gpu_;
 };
 
-a2f::NetKeeper Keeper(Machine* m, bool want_gpu = true) {
+a2f::NetKeeper Keeper(Machine* m, bool want_gpu = true, bool retry_gpu = false) {
   return a2f::NetKeeper(
       want_gpu,
       [m](bool gpu, std::string& err,
@@ -72,7 +72,7 @@ a2f::NetKeeper Keeper(Machine* m, bool want_gpu = true) {
         info = gpu ? "GPU" : "CPU";
         return std::make_unique<FakeNet>(m, gpu);
       },
-      [m] { return m->now; });
+      [m] { return m->now; }, nullptr, retry_gpu);
 }
 
 // One line: a single network run.
@@ -88,29 +88,26 @@ bool Line(a2f::NetKeeper& k, bool* no_net = nullptr) {
   return ok;
 }
 
-// Every returned GPU failure must settle on CPU for this process, even if
-// the device later recovers or the user changes models/settings.
+// Failure never selects CPU; the user can explicitly choose either provider.
 void LoadFails(const char* error, const char* name) {
   printf("-- load fails: %s\n", name);
   Machine m;
   m.gpu_error = error;
   auto k = Keeper(&m);
-  Expect(k.Ensure() && !k.on_gpu() && !k.Wanted() && k.loaded(), "CPU fallback settles");
-  Expect(k.error() == error && k.retry_at() == 0,
-         "failure retained without a GPU retry timer");
+  Expect(!k.Ensure() && !k.loaded() && !k.needs_poll(), "GPU failure leaves vanilla, no automatic CPU");
+  Expect(k.error() == error && k.retry_at() == 0, "error retained without idle retries");
   for (double now : {2., 30., 120., 1e6}) {
     m.now = now;
-    Expect(Line(k), "fallback keeps running");
+    Expect(!Line(k) && m.cpu_creates == 0, "time and speech never select CPU");
   }
   m.gpu_error = nullptr;
   k.Unload();
-  Expect(k.Ensure() && !k.on_gpu(), "unloading cannot reset GPU failure");
+  Expect(!k.Ensure(), "ordinary unload does not retry a failed attempt");
   k.Reconfigure(false);
   Expect(k.Ensure() && k.Wanted() && k.error().empty(), "explicit CPU works");
   k.Reconfigure(true);
-  Expect(k.Ensure() && !k.on_gpu() && k.error() == error,
-         "switching back cannot reset GPU failure");
-  Expect(m.gpu_creates == 1, "exactly one failed GPU creation");
+  Expect(k.Ensure() && k.on_gpu() && k.error().empty(), "CPU to GPU works in the same process");
+  Expect(m.gpu_creates == 2 && m.cpu_creates == 1, "only selected providers created");
 }
 
 void RunFails(const char* error, const char* name) {
@@ -119,13 +116,12 @@ void RunFails(const char* error, const char* name) {
   auto k = Keeper(&m);
   Expect(k.Ensure() && k.on_gpu() && Line(k), "loaded on GPU");
   m.run_error = error;
-  Expect(Line(k) && !k.on_gpu() && m.gpu_creates == 1 && m.cpu_runs == 1,
-         "same line retried once on CPU, never on another GPU session");
+  Expect(!Line(k) && !k.loaded() && m.gpu_creates == 1 && m.cpu_creates == 0,
+         "lost GPU leaves vanilla, never replays on CPU");
   Expect(k.error() == error, "run failure remains visible");
-  m.now = 1e6;
   k.Reconfigure(true);
-  Expect(Line(k) && !k.on_gpu() && m.gpu_creates == 1,
-         "run failure survives a model change");
+  Expect(Line(k) && k.on_gpu() && m.gpu_creates == 2,
+         "manual GPU retry works without a restart");
 }
 }  // namespace
 
@@ -141,24 +137,64 @@ int main() {
   RunFails(kReset, "device reset");
   RunFails(kDriver, "driver error");
 
-  printf("-- no CPU either\n");
+  printf("-- shared GPU backoff and recovery\n");
   {
     Machine m;
     m.gpu_error = kOom;
-    m.cpu_error = "session: cannot load";
-    auto k = Keeper(&m);
-    bool no_net = false;
-    Expect(!k.Ensure() && !k.loaded() && k.info() == "not loaded",
-           "nothing loaded");
-    Expect(!Line(k, &no_net) && no_net, "the line fails for want of a network");
-    m.now = 2;
-    k.Ensure();
-    Expect(m.gpu_creates == 1 && m.cpu_creates == 1,
-           "neither provider retried before CPU backoff");
+    auto k = Keeper(&m, true, true);
+    Expect(!k.Ensure() && !k.loaded() && k.needs_poll(), "shared GPU retry without CPU fallback");
+    for (double wait : {2., 4., 8., 16., 30., 30.}) {
+      const int before = m.gpu_creates;
+      Expect(k.retry_at() == m.now + wait, "exponential GPU retry deadline, capped at 30 seconds");
+      m.now = k.retry_at() - .01;
+      Expect(!Line(k) && m.gpu_creates == before, "no provider change before GPU deadline");
+      m.now += .01;
+      Expect(!k.Ensure() && !k.loaded() && m.gpu_creates == before + 1,
+             "shared GPU retried without CPU creation");
+    }
+    Expect(m.cpu_creates == 0, "GPU attempts never create CPU sessions");
     m.gpu_error = nullptr;
+    m.now = k.retry_at();
+    Expect(k.Ensure() && k.on_gpu() && !k.needs_poll() && k.error().empty() && !k.retry_at(),
+           "shared GPU recovers and stops idle polling");
+    m.run_error = kRemoved;
+    Expect(!Line(k) && !k.loaded(), "run failure leaves vanilla during backoff");
+    m.now = k.retry_at();
+    Expect(Line(k) && k.on_gpu(), "lost shared session recovers on GPU");
+  }
+  {
+    Machine m;
+    m.gpu_error = "device error; GPU attempt failed";
+    auto k = Keeper(&m, true, true);
+    Expect(!k.Ensure() && !k.needs_poll(), "returned terminal attempt stops idle retries");
+    m.gpu_error = nullptr;
+    k.Reconfigure(true);
+    Expect(Line(k) && m.gpu_creates == 2 && m.cpu_creates == 0, "explicit retry clears attempt state");
+  }
+  {
+    Machine m;
+    m.gpu_error = kOom;
+    auto k = Keeper(&m, true, true);
+    k.Ensure();
+    k.Reconfigure(false);
+    m.now = 1e6;
+    Expect(k.Ensure() && k.Wanted() && !k.needs_poll() && !k.retry_at(), "Force CPU suspends shared retry");
+    m.gpu_error = nullptr;
+    k.Reconfigure(true);
+    Expect(k.Ensure() && k.on_gpu(), "explicit GPU opt-in resumes shared recovery");
+  }
+
+  printf("-- explicitly selected CPU retry\n");
+  {
+    Machine m;
+    m.cpu_error = "session: cannot load";
+    auto k = Keeper(&m, false);
+    Expect(!k.Ensure() && m.gpu_creates == 0 && m.cpu_creates == 1, "CPU failure never tries GPU");
+    m.now = 2;
+    Expect(!k.Ensure() && m.cpu_creates == 1, "CPU backoff");
     m.cpu_error = nullptr;
     m.now = 30;
-    Expect(Line(k) && !k.on_gpu() && m.gpu_creates == 1, "CPU recovers without touching GPU");
+    Expect(Line(k) && !k.on_gpu() && m.gpu_creates == 0, "selected CPU recovers");
   }
   printf("-- a failure that is not the session's\n");
   {
@@ -204,13 +240,13 @@ int main() {
   const std::string removed = kRemoved;
   const auto retained_failure = DiagnoseNet(true,
       "independent context: [DirectML removed reason 887A0020]; "
-      "GPU disabled until restart", roomy);
-  Expect(any(retained_failure, "CPU fallback") &&
-             any(retained_failure, "Restart the game") &&
+      "GPU attempt failed", roomy);
+  Expect(any(retained_failure, "Vanilla lip-sync") &&
+             any(retained_failure, "Try GPU again") &&
              !any(retained_failure, "each on a new device"),
-         "retained failed context requires restart, not device recreation");
-  Expect(any(DiagnoseNet(true, kOom, roomy), "restart the game"),
-         "out of memory: advised to free VRAM and restart");
+         "failed attempt offers explicit GPU retry");
+  Expect(any(DiagnoseNet(true, kOom, roomy), "Try GPU again"),
+         "out of memory: explains shared retry and independent restart");
   Expect(Has(first(DiagnoseNet(true, kOom, roomy)), "memory allocation failed"),
          "out of memory: reports allocation failure");
   Expect(Has(first(DiagnoseNet(true, kRemoved, full)),
@@ -248,9 +284,9 @@ int main() {
                  .find("memory allocation failed") != std::string::npos,
          "reason from Windows: out of memory");
   Expect(any(DiagnoseNet(true, kRemoved, roomy),
-             "Restart the game to retry the GPU") &&
+             "Shared GPU retries automatically") &&
              !any(DiagnoseNet(true, kRemoved, roomy), "each on a new device"),
-         "diagnosis does not promise retries or assign an unproven cause");
+         "diagnosis distinguishes shared recovery without assigning an unproven cause");
   Expect(Has(first(DiagnoseNet(true, kOther, roomy)),
              "DirectML is not available") &&
              any(DiagnoseNet(true, kOther, roomy), "Independent Devices API"),
