@@ -198,6 +198,7 @@ constexpr wchar_t kSentimentModel[] = L"emotion_fp16.onnx";  // optional
 void LoadIni();  // at load
 void SaveIni();
 void ScheduleSaveIni();  // debounce and persist on a dedicated writer thread
+void RequestGpuRetry();  // retry on the worker between inference calls
 void WakeWorker();  // after menu settings change, with settings_lock released
 void ResetTune();  // menu defaults
 // Turns the log on / off as tune.logging says; a new log starts with the

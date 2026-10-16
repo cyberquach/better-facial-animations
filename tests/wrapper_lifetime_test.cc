@@ -28,12 +28,17 @@ class Object : public IUnknown {
 
 Object wrapper;
 int releases = 0;
+std::wstring required_marker;
 void ORT_API_CALL ReleaseSession(OrtSession*) {
   CHECK(wrapper.refs == 1);
+  if (!required_marker.empty())
+    CHECK(GetFileAttributesW(required_marker.c_str()) != INVALID_FILE_ATTRIBUTES);
   ++releases;
 }
 void ORT_API_CALL ReleaseMemory(OrtMemoryInfo*) {
   CHECK(wrapper.refs == 1);
+  if (!required_marker.empty())
+    CHECK(GetFileAttributesW(required_marker.c_str()) != INVALID_FILE_ATTRIBUTES);
   ++releases;
 }
 
@@ -68,6 +73,58 @@ void TestSelection() {
   SelectDevice(ComPtr<IUnknown>(&native), &result);
   CHECK(result == &native && native.refs == 1 && wrappers.empty());
   native.Release();
+}
+
+void TestWrapperRetrySelection() {
+  using namespace a2f;
+  Object wrapped, real;
+  Wrappers wrappers;
+  const ScopedWrappers scope(wrappers);
+  SetUseDeviceWrapper(true);
+  void* result = &wrapped;
+  SelectDevice(ComPtr<IUnknown>(&real), &result);
+  CHECK(result == &wrapped && real.refs == 0 && wrappers.empty());
+  wrapped.Release();
+  SetUseDeviceWrapper(false);
+}
+
+void TestSharedFailureCleanup() {
+  using namespace a2f;
+  OrtApi mock{};
+  mock.ReleaseSession = ReleaseSession;
+  mock.ReleaseMemoryInfo = ReleaseMemory;
+  api = &mock;
+  wchar_t temp[MAX_PATH], path[MAX_PATH];
+  CHECK(GetTempPathW(MAX_PATH, temp));
+  CHECK(GetTempFileNameW(temp, L"bfa", 0, path) && DeleteFileW(path));
+  // No filesystem state is required for GPU retries.
+  std::string err;
+  for (bool warmup : {false, true}) {
+    for (int retry = 0; retry < 8; ++retry) {
+      Object device, dml;
+      wrapper.refs = 1;
+      releases = 0;
+      {
+        OrtOptions options; options.gpu = warmup; // runtime failure arms its own teardown guard
+        GpuAttempt attempt(options, err);
+        CHECK(attempt.allowed());
+        Session s;
+        s.failed = true;
+        s.device.reset(reinterpret_cast<ID3D12Device*>(&device));
+        s.dml_device.reset(&dml);
+        s.wrappers.emplace_back(&wrapper);
+        s.sess.reset(reinterpret_cast<OrtSession*>(1));
+        s.mem.reset(reinterpret_cast<OrtMemoryInfo*>(1));
+        OrtNet3 net(std::move(s));
+        CHECK(!attempt.Finish(false));
+      }
+      CHECK(releases == 2 && wrapper.refs == 0 && device.refs == 0 && dml.refs == 0);
+      CHECK(GpuAllowed(err));
+      CHECK(GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES);
+    }
+  }
+  required_marker.clear();
+  api = nullptr;
 }
 
 void TestScopes() {
@@ -182,6 +239,8 @@ void TestFailedRetention() {
 int main() {
   TestScopes();
   TestSelection();
+  TestWrapperRetrySelection();
+  TestSharedFailureCleanup();
   TestTeardown();
   TestRedirect();
   TestFailedRetention();

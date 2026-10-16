@@ -7,18 +7,6 @@
 #include <vector>
 
 namespace a2f {
-namespace {
-
-// The device was removed, hung or reset or the driver failed.
-bool LostDevice(const std::string& err) {
-  // DXGI device removed / hung / reset / driver internal error
-  for (const char* code : {"887A0005", "887A0006", "887A0007", "887A0020"})
-    if (err.find(code) != std::string::npos) return true;
-  return false;
-}
-
-}  // namespace
-
 // Problems that do not stop the model from loading, one line each.
 std::vector<std::string> GpuWarnings(const GpuState& g) {
   std::vector<std::string> out;
@@ -54,20 +42,9 @@ std::vector<std::string> DiagnoseNet(bool gpu, const std::string& err,
   };
   std::vector<std::string> out;
   char b[400];
-  if (gpu && has("GPU disabled until restart")) {
-    out.push_back("GPU context unavailable; using CPU fallback if available.");
-    out.push_back("Restart the game to retry the GPU. Switching models will "
-                  "not recreate a failed graphics device.");
-    return out;
-  }
-  if (gpu && has("independent device:")) {
-    out.push_back(
-        "Independent GPU device failed; using CPU fallback if available.");
-    out.push_back("This mode requires a supporting D3D12 runtime and driver. "
-                  "Shared-device and wrapper retries are disabled.");
-    out.push_back("Update Windows and the graphics driver, then restart. "
-                  "See the detailed error and log; ForceCPU=1 selects CPU "
-                  "only.");
+  if (gpu && (has("GPU attempt failed") || has("independent device:"))) {
+    out.push_back("GPU model unavailable. Vanilla lip-sync remains active.");
+    out.push_back("Choose Try GPU again, or enable Force CPU to use CPU.");
     return out;
   }
   if (has("model file not found")) {
@@ -132,7 +109,7 @@ std::vector<std::string> DiagnoseNet(bool gpu, const std::string& err,
     out.push_back(b);
     out.push_back(
         "Free VRAM (smaller textures, close other programs that "
-        "use the GPU), then restart the game to retry the GPU.");
+        "use the GPU), then choose Try GPU again.");
   } else if (lost) {
     snprintf(b, sizeof b, "GPU FAILED: the graphics device was lost (%s now).",
              vram);
@@ -173,39 +150,54 @@ std::vector<std::string> DiagnoseNet(bool gpu, const std::string& err,
       out.push_back(
           "Windows gave no device-removal reason: the failure happened inside "
           "DirectML, the graphics driver or a program that hooks Direct3D 12.");
-    out.push_back("Restart the game to retry the GPU; attach "
+    out.push_back("Shared GPU retries automatically; Try GPU again starts a manual attempt. Attach "
                   "BetterFacialAnimations.log to a bug report if it recurs.");
   }
   return out;
 }
 
+void NetKeeper::GpuFailed(const std::string& err) {
+  gpu_error_ = error_ = err.empty() ? "GPU initialization failed" : err;
+  gpu_blocked_ = !retry_gpu_ || !RetryableGpuFailure(gpu_error_);
+  if (gpu_blocked_) {
+    retry_at_ = 0;
+    Log("GPU attempt failed; choose Try GPU again or Force CPU: " + error_);
+  } else {
+    retry_wait_ = retry_wait_ ? std::min(retry_wait_ * 2, kRetryMax) : kRetryMin;
+    retry_at_ = now_() + retry_wait_;
+    Log("shared GPU unavailable; retry in " +
+        std::to_string(static_cast<int>(retry_wait_)) + " s: " + error_);
+  }
+}
+
 Net* NetKeeper::Ensure() {
-  if (loaded()) return net_.get();
-  if (want_gpu_ && gpu_error_.empty()) {
+  if (Wanted()) return net_.get();
+  if (want_gpu_ && !gpu_blocked_ && now_() >= retry_at_) {
     std::string err, info;
     if (auto n = create_(true, err, info)) {
       net_ = std::move(n);
       on_gpu_ = true;
       info_ = info;
+      gpu_error_.clear();
       error_.clear();
+      retry_at_ = retry_wait_ = 0;
       Log("network loaded: " + info);
     } else {
-      gpu_error_ = error_ = err.empty() ? "GPU initialization failed" : err;
-      Log("GPU disabled until restart: " + error_);
+      GpuFailed(err);
     }
   }
-  if (!net_ && now_() >= cpu_retry_at_) {
+  if (!want_gpu_ && !net_ && now_() >= cpu_retry_at_) {
     std::string err, info;
     net_ = create_(false, err, info);
     on_gpu_ = false;
     if (net_) {
       info_ = info;
-      retry_at_ = 0;
-      error_ = want_gpu_ ? gpu_error_ : "";  // the GPU's failure stays shown
+      cpu_retry_at_ = 0;
+      error_.clear();
       Log("network loaded on CPU: " + info);
     } else {
-      retry_at_ = cpu_retry_at_ = now_() + kCpuRetry;
-      error_ = want_gpu_ ? gpu_error_ + "; CPU: " + err : err;
+      cpu_retry_at_ = now_() + kCpuRetry;
+      error_ = err;
       Log("CPU unavailable; retry in " +
           std::to_string(static_cast<int>(kCpuRetry)) + " s: " + err);
     }

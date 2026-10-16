@@ -298,10 +298,15 @@ int main() {
   CHECK(err.find("DirectML removed reason") != std::string::npos);
   fake_dml.removed = S_OK;
   CHECK(!OpenIndependentDevice(err));  // latch persists, never silently revived
-  CHECK(err.find("GPU disabled until restart") != std::string::npos);
+  CHECK(err.find("GPU attempt failed") != std::string::npos);
   CHECK(!AppendIndependentProvider(L"", &dml, nullptr, &device, dml_device, err));
   CHECK(attachments == 12 && factory.creates == creates_before + 1);
   CHECK(device.refs == 1 && fake_dml.refs == 1 && queue.refs == 1);
+  CHECK(!device.final_releases && !fake_dml.final_releases && !queue.final_releases);
+  RetryGpu();
+  CHECK(GpuAllowed(err));
+  CHECK(context.Acquire(Get, err));
+  CHECK(factory.creates == creates_before + 2);
   CHECK(!device.final_releases && !fake_dml.final_releases && !queue.final_releases);
   // Independently exercise D3D12 removal before any DirectML allocation.
   {

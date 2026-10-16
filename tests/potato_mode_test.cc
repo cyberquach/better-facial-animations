@@ -268,7 +268,22 @@ int main() {
       }, [] { return 0.; });
   CHECK(WorkerStep(changed, false) == 0);
   CHECK(WorkerStep(changed, false) == INFINITE && changed.loaded());
-  // CPU fallback is final in both modes: no GPU retries or idle polling.
+  {
+    double time = 0;
+    bool recovered = false;
+    int attempts = 0;
+    a2f::NetKeeper retrying(true,
+        [&](bool gpu, std::string& error, std::string&) -> std::unique_ptr<a2f::Net> {
+          if (gpu && !recovered) { ++attempts; error = "shared failure"; return nullptr; }
+          return std::make_unique<FakeNet>();
+        }, [&] { return time; }, nullptr, true);
+    CHECK(WorkerStep(retrying, false) == 1000 && !retrying.loaded() && !retrying.on_gpu());
+    time = 1;
+    CHECK(WorkerStep(retrying, false) == 1000 && attempts == 1);
+    time = 2; recovered = true;
+    CHECK(WorkerStep(retrying, false) == INFINITE && retrying.on_gpu());
+  }
+  // An independent failure waits for user input; no automatic CPU or polling.
   int gpu_creates = 0, cpu_creates = 0;
   double clock = 0;
   a2f::NetKeeper fallback(true,
@@ -283,23 +298,23 @@ int main() {
       }, [&] { return clock; });
   flag("PotatoMode", false);
   CHECK(WorkerStep(fallback, false) == INFINITE);
-  CHECK(!fallback.Wanted() && fallback.loaded() && !fallback.on_gpu());
-  CHECK(gpu_creates == 1 && cpu_creates == 1 && !stats.net_gpu &&
+  CHECK(!fallback.Wanted() && !fallback.loaded() && !fallback.on_gpu());
+  CHECK(gpu_creates == 1 && cpu_creates == 0 && !stats.net_gpu &&
         stats.net_retry_at == 0);
   for (int conversation = 0; conversation < 3; ++conversation) {
     flag("PotatoMode", true);
     Field<uint32_t>(mtm, kMtmSpeaker) = 0;
     // Changing conversation state cannot re-arm GPU initialization.
-    CHECK(WorkerStep(fallback, false) == INFINITE && fallback.loaded());
+    CHECK(WorkerStep(fallback, false) == INFINITE && !fallback.loaded());
     CHECK(gpu_creates == 1 &&
           fallback.error() == "GPU startup failure" &&
           stats.net_detail == fallback.error());
-    // A new admitted line stays on CPU even much later.
+    // A new admitted line cannot select CPU implicitly.
     Field<uint32_t>(mtm, kMtmSpeaker) = 42;
     clock += 100000;
-    CHECK(fallback.Run([](a2f::Net&, std::string&) { return true; }, err,
+    CHECK(!fallback.Run([](a2f::Net&, std::string&) { return true; }, err,
                        no_net, [&] { return DialogueAllows(SnapshotTune(), 42); }));
-    CHECK(gpu_creates == 1 && cpu_creates == 1);
+    CHECK(gpu_creates == 1 && cpu_creates == 0);
     flag("PotatoMode", false);
     CHECK(WorkerStep(fallback, false) == INFINITE);
   }
@@ -389,7 +404,7 @@ int main() {
   CHECK(native() == 3.5f && queue.empty());
   // CPU creation retries also run while Potato mode is idle.
   CHECK(WorkerStep(failed, false) == 1000);
-  // Cancellation after GPU loss delays CPU creation, never resets the GPU gate.
+  // Cancellation after GPU loss never creates an unrequested CPU session.
   gpu_creates = cpu_creates = 0;
   a2f::NetKeeper lost(true,
       [&](bool gpu, std::string&, std::string&) -> std::unique_ptr<a2f::Net> {
@@ -404,6 +419,6 @@ int main() {
           return false;
         }, err, no_net, [&] { return admitted; }));
   CHECK(!lost.loaded() && gpu_creates == 1 && cpu_creates == 0);
-  CHECK(lost.Ensure() && !lost.on_gpu() && gpu_creates == 1 && cpu_creates == 1);
-  puts("potato mode, GPU fallback and worker lifecycle contracts passed");
+  CHECK(!lost.Ensure() && !lost.on_gpu() && gpu_creates == 1 && cpu_creates == 0);
+  puts("potato mode, explicit providers and worker lifecycle contracts passed");
 }

@@ -25,6 +25,8 @@ Stats SnapshotStats(size_t& cached, size_t& queued) {
 void ClearLines() {}
 void ClearHeads() {}
 void WakeWorker() {}
+int retry_requests = 0;
+void RequestGpuRetry() { ++retry_requests; }
 }  // namespace bfa
 namespace a2f {
 GpuState QueryGpu() { return {}; }
@@ -126,6 +128,22 @@ int main() {
   ig.SameLine = SameLine;
   ig.IsItemHovered = Hovered;
   ig.SetTooltip = Tooltip;
+  // GPU errors offer an explicit retry; the action never changes Force CPU.
+  ready = true;
+  net_loaded = false;
+  Tune retry_tune = SnapshotTune();
+  retry_tune.enabled = true;
+  retry_tune.force_cpu = false;
+  Stats retry_stats;
+  retry_stats.net_error = {"injected GPU error"};
+  click = "Try GPU again";
+  RenderProblems(retry_stats, 0, retry_tune, {});
+  CHECK(retry_requests == 1 && !retry_tune.force_cpu);
+  retry_tune.force_cpu = true;
+  RenderProblems(retry_stats, 0, retry_tune, {});
+  CHECK(retry_requests == 1);
+  ready = false;
+  click.clear();
   for (const auto& p : kParams) {
     if (strcmp(p.key, "SentimentAnalysis") &&
         strcmp(p.key, "SentimentMultiplier")) continue;
