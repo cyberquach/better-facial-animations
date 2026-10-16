@@ -292,6 +292,7 @@ constexpr size_t kMaxFaces = 8;
 
 SRWLOCK lock = SRWLOCK_INIT;  // guards everything below
 CONDITION_VARIABLE queue_cv = CONDITION_VARIABLE_INIT;
+std::atomic<bool> gpu_retry_requested{false};
 uint64_t settings_revision = 0;  // lock held; prevents a lost settings wakeup
 auto& cache = *new std::unordered_map<std::string, std::shared_ptr<Entry>>;
 auto& queue = *new std::deque<Job>;
@@ -418,6 +419,11 @@ void WakeWorker() {
   ScopedLock guard(lock);
   ++settings_revision;
   WakeConditionVariable(&queue_cv);
+}
+
+void RequestGpuRetry() {
+  gpu_retry_requested = true;
+  WakeWorker();
 }
 
 void ClearLines() {
@@ -793,6 +799,10 @@ void LoadExpressiveFaces() {
 // Network events go to the log.
 void NetEvent(const std::string& text) { skse::Report("%s", text.c_str()); }
 
+// Worker-owned successful shared variants, separately for each facial model
+// and sentiment (slot 0). Choosing these never creates/probes another device.
+a2f::SharedGpuSettings shared_gpu_settings[5];
+
 std::unique_ptr<a2f::Net> CreateNet(bool gpu, std::string& err,
                                     std::string& info) {
   const auto selection = SnapshotModel();
@@ -824,10 +834,23 @@ std::unique_ptr<a2f::Net> CreateNet(bool gpu, std::string& err,
     }
   };
   if (!gpu) return create(err, info);
-  auto net = create(err, info);
-  if (!net && config.independent_device && err.find("independent device:") != 0)
-    err = "independent device: " + err;
-  return net;
+  if (config.independent_device) {
+    auto net = create(err, info);
+    if (!net && err.find("independent device:") != 0)
+      err = "independent device: " + err;
+    return net;
+  }
+  return a2f::CreateSharedGpu(
+      [&](bool metacommands, bool wrapper, std::string& error) {
+        o.metacommands = metacommands;
+        a2f::SetUseDeviceWrapper(wrapper);
+        const double started = Now();
+        auto net = create(error, info);
+        skse::Report("GPU session with metacommands %s on %s: %s after %.0f ms",
+            metacommands ? "on" : "off", wrapper ? "the wrapper" : "the device",
+            net ? "loaded" : "failed", (Now() - started) * 1e3);
+        return net;
+      }, shared_gpu_settings[selection->network], a2f::DeviceWrapped, err, NetEvent);
 }
 
 // Copies the keeper's state to the settings window.
@@ -915,41 +938,39 @@ Sentiment PrepareSentiment(const Job& job, const std::vector<float>& pcm,
   };
   if (!allowed()) return Sentiment::kCancelled;
   std::string err;
-  // Facial and sentiment failures share one process-wide GPU gate. Neither
-  // model may re-enter a driver that the other has already rejected.
   if (sentiment_gpu && !a2f::GpuAllowed(err)) sentiment_net.reset();
-  for (int attempt = 0; attempt < 2; ++attempt) {
-    if (!sentiment_net) {
-      if (Now() < sentiment_retry_at) return Sentiment::kUnavailable;
-      a2f::OrtOptions options;
-      options.gpu = !SnapshotTune().force_cpu &&
-                    a2f::GpuAllowed(err);
-      options.independent_device = config.independent_device;
-      sentiment_gpu = options.gpu;
-      const std::wstring dir = PluginDir();
-      sentiment_net = a2f::CreateOrtEmotionNet(
-          dir, dir + L"\\" + kSentimentModel, options, err);
-      if (sentiment_net)
-        SentimentStatus(options.gpu ? "sentiment ready (GPU)"
-                                    : "sentiment ready (CPU)");
-    }
-    if (sentiment_net && a2f::AnalyzeSentiment(*sentiment_net, pcm.data(),
-          pcm.size(), emotion.sentiment, err, allowed))
-      return Sentiment::kReady;
-    if (!allowed()) return Sentiment::kCancelled;
-    if (sentiment_gpu) {
-      a2f::DisableGpu(err);
-      sentiment_net.reset();
-      sentiment_gpu = false;
-      skse::Report("Audio2Emotion GPU disabled until restart: %s", err.c_str());
-      continue;  // one CPU attempt, without another GPU or legacy provider
-    }
-    sentiment_net.reset();
-    sentiment_retry_at = Now() + 60;
-    SentimentStatus("dialogue only; CPU sentiment retry in 60s: " + err);
-    skse::Report("Audio2Emotion unavailable: %s", err.c_str());
-    return Sentiment::kUnavailable;
+  if (!sentiment_net) {
+    if (Now() < sentiment_retry_at) return Sentiment::kUnavailable;
+    a2f::OrtOptions options;
+    options.gpu = !SnapshotTune().force_cpu;
+    options.independent_device = config.independent_device;
+    sentiment_gpu = options.gpu;
+    const std::wstring dir = PluginDir();
+    const auto create = [&](std::string& error) {
+      return a2f::CreateOrtEmotionNet(
+          dir, dir + L"\\" + kSentimentModel, options, error);
+    };
+    if (options.gpu && !options.independent_device) {
+      sentiment_net = a2f::CreateSharedGpu(
+          [&](bool metacommands, bool wrapper, std::string& error) {
+            options.metacommands = metacommands;
+            a2f::SetUseDeviceWrapper(wrapper);
+            return create(error);
+          }, shared_gpu_settings[0], a2f::DeviceWrapped, err, NetEvent);
+    } else sentiment_net = create(err);
+    if (sentiment_net)
+      SentimentStatus(options.gpu ? "sentiment ready (GPU)"
+                                  : "sentiment ready (CPU)");
   }
+  if (sentiment_net && a2f::AnalyzeSentiment(*sentiment_net, pcm.data(),
+        pcm.size(), emotion.sentiment, err, allowed))
+    return Sentiment::kReady;
+  if (!allowed()) return Sentiment::kCancelled;
+  sentiment_net.reset();
+  sentiment_retry_at = Now() + (sentiment_gpu ? 30 : 60);
+  SentimentStatus(std::string("dialogue only; ") +
+      (sentiment_gpu ? "GPU sentiment unavailable: " : "CPU sentiment unavailable: ") + err);
+  skse::Report("Audio2Emotion unavailable: %s", err.c_str());
   return Sentiment::kUnavailable;
 }
 
@@ -1099,7 +1120,8 @@ void SwitchModel(a2f::NetKeeper& keeper, const Tune& tune) {
   const auto old = SnapshotModel();
   const int network = tune.SelectedModel();
   const bool gpu = !tune.force_cpu;
-  if (old->network == network && old->gpu == gpu) return;
+  const bool retry = gpu_retry_requested.exchange(false);
+  if (old->network == network && old->gpu == gpu && !retry) return;
   UnloadSentiment();
   {
     ScopedLock guard(lock);
@@ -1132,6 +1154,7 @@ void SwitchModel(a2f::NetKeeper& keeper, const Tune& tune) {
     next->mapping = std::move(mapping);
   }
   keeper.Reconfigure(gpu);
+  if (gpu) a2f::RetryGpu();
   {
     ScopedLock guard(lock);
     for (const auto& job : queue) CancelJob(job);
@@ -1167,8 +1190,8 @@ DWORD WorkerStep(a2f::NetKeeper& keeper, bool wait = true) {
   else if (!sentiment_net && sentiment_retry_at == 0)
     SentimentStatus("waiting for speech");
   // Keep the session ready in both modes; Potato mode restricts speakers,
-  // not residency. A working CPU fallback needs no retry wakeups.
-  if (tune.enabled && !keeper.loaded()) {
+  // not residency. Shared GPU recovery wakes while vanilla lip-sync is used.
+  if (tune.enabled && keeper.needs_poll()) {
     keeper.Ensure();
     PublishNet(keeper);
   }
@@ -1183,7 +1206,7 @@ DWORD WorkerStep(a2f::NetKeeper& keeper, bool wait = true) {
   }
   if (queue.empty()) {
     const DWORD timeout =
-        tune.enabled && !keeper.loaded() ? 1000 : INFINITE;
+        tune.enabled && keeper.needs_poll() ? 1000 : INFINITE;
     if (revision != settings_revision) return 0;
     if (wait) SleepConditionVariableSRW(&queue_cv, &lock, timeout, 0);
     return timeout;
@@ -1215,13 +1238,16 @@ DWORD WINAPI Worker(void*) {
   ready = true;
   skse::Report("settings: GPU=%d, batch %d, model %ls", config.gpu,
                config.batch, config.model.c_str());
-  skse::Report("GPU route: %s; CPU on failure, no other GPU route is tried",
+  skse::Report("GPU route: %s; CPU only when selected, no other GPU route is tried",
                config.independent_device
                    ? "independent device, private compute queue"
                    : "4.0-style shared device");
   a2f::SetOrtLog([](const std::string& s) { skse::Report("%s", s.c_str()); });
-  a2f::SetGpuStartupMarker(PluginDir() + L"\\gpu-startup.pending");
-  a2f::NetKeeper keeper(config.gpu, CreateNet, Now, NetEvent);
+  if (!config.independent_device)
+    skse::Report("shared GPU recovery: metacommands off, conditional wrapper, "
+                 "then 2/4/8/16/30-second retries; no Auto device probe");
+  a2f::NetKeeper keeper(config.gpu, CreateNet, Now, NetEvent,
+                        !config.independent_device);
   for (;;) WorkerStep(keeper);
 }
 

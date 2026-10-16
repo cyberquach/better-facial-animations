@@ -40,32 +40,26 @@ int main() {
   data[2] = 3;
   CHECK(a2f::ReadFloats(value, 3, out, err, "test") && out[2] == 3);
   CHECK(released == 5);
-  // Both provider routes arm and complete the same guard before touching ORT.
-  wchar_t temp[MAX_PATH], path[MAX_PATH];
-  CHECK(GetTempPathW(MAX_PATH, temp));
-  CHECK(GetTempFileNameW(temp, L"bfa", 0, path) && DeleteFileW(path));
-  a2f::SetGpuStartupMarker(path);
-  for (bool independent : {false, true}) {
-    a2f::OrtOptions options; options.independent_device = independent;
-    a2f::GpuAttempt attempt(options, err);
-    CHECK(attempt.allowed() && GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES);
-    CHECK(attempt.Finish(true) && GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES);
-  }
+  // No startup file exists in the API: a failed GPU attempt is reset explicitly.
   a2f::DisableGpu("injected session failure");
   a2f::OrtOptions options;
   for (bool independent : {false, true}) {
     options.independent_device = independent;
-  // None can touch the deliberately incomplete ORT mock after any model fails.
-  CHECK(!a2f::CreateOrtNet(L"", L"", options, err, info));
-  CHECK(!a2f::CreateOrtNet3(L"", L"", options, err, info));
-  CHECK(!a2f::CreatePerformanceNet(L"", L"", options, err, info));
-  CHECK(!a2f::CreateOrtEmotionNet(L"", L"", options, err));
-  CHECK(err.find("injected session failure") != std::string::npos);
+    CHECK(!a2f::CreateOrtNet(L"", L"", options, err, info));
+    CHECK(!a2f::CreateOrtNet3(L"", L"", options, err, info));
+    CHECK(!a2f::CreatePerformanceNet(L"", L"", options, err, info));
+    CHECK(!a2f::CreateOrtEmotionNet(L"", L"", options, err));
+    CHECK(err.find("injected session failure") != std::string::npos);
   }
-  // A GPU failure must not block a CPU session's guard or create a marker.
   a2f::OrtOptions cpu; cpu.gpu = false;
   a2f::GpuAttempt cpu_attempt(cpu, err);
   CHECK(cpu_attempt.allowed() && cpu_attempt.Finish(true));
-  CHECK(GetFileAttributesW(path) == INVALID_FILE_ATTRIBUTES);
-  puts("tensor validation and shared GPU failure gate across all models: pass");
+  a2f::RetryGpu();
+  CHECK(a2f::GpuAllowed(err));
+  for (bool independent : {false, true}) {
+    options.independent_device = independent;
+    a2f::GpuAttempt retry(options, err);
+    CHECK(retry.allowed() && retry.Finish(true));
+  }
+  puts("tensor validation and explicit GPU retry across all models: pass");
 }

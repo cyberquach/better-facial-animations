@@ -70,9 +70,9 @@ int main() {
       const int before = a2f::creates;
       std::string err, info;
       CHECK(!CreateNet(gpu, err, info));
-      CHECK(a2f::creates == before + 1 && a2f::version_seen == network);
+      CHECK(a2f::creates == before + (gpu && !independent ? 2 : 1) && a2f::version_seen == network);
       CHECK(a2f::seen.gpu == gpu && a2f::seen.independent_device == config.independent_device);
-      CHECK(a2f::seen.metacommands);
+      CHECK(a2f::seen.metacommands == (!gpu || independent));
     }
   }
   }
@@ -87,8 +87,8 @@ int main() {
       model.network = network == 4 ? 3 : network;
       double time = 0;
       a2f::NetKeeper automatic(true, CreateNet, [&] { return time; });
-      CHECK(automatic.Ensure() && !automatic.on_gpu());
-      CHECK(automatic.version() == network && a2f::version_seen == network);
+      CHECK(!automatic.Ensure() && !automatic.loaded());
+      CHECK(a2f::version_seen == network && a2f::seen.gpu);
       CHECK(config.network == network && config.model == L"test.onnx");
       config.gpu = false;
       std::string error, information;
@@ -101,15 +101,15 @@ int main() {
   a2f::allow_cpu = true;
   double now = 0;
   a2f::NetKeeper keeper(true, CreateNet, [&] { return now; });
-  CHECK(keeper.Ensure() && !keeper.on_gpu());
+  CHECK(!keeper.Ensure() && !keeper.loaded());
   CHECK(keeper.error().find("independent device:") == 0);
   const int before_retry = a2f::creates;
-  CHECK(keeper.Ensure() && a2f::creates == before_retry);
+  CHECK(!keeper.Ensure() && a2f::creates == before_retry);
   now = 1e6;
-  CHECK(keeper.Ensure() && !keeper.on_gpu());
-  CHECK(a2f::creates == before_retry); // fallback is final until restart
+  CHECK(!keeper.Ensure() && !keeper.loaded());
+  CHECK(a2f::creates == before_retry); // waits for explicit retry
   const auto why = a2f::DiagnoseNet(true, keeper.error(), {});
-  CHECK(!why.empty() && why[0].find("Independent GPU device") == 0);
+  CHECK(!why.empty() && why[0].find("GPU model unavailable") == 0);
   CHECK(!a2f::DeviceRedirected());
   config.network = 4;
   model.network = 3; // Performance uses the v3 geometry mapping.

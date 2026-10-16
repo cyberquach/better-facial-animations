@@ -4,12 +4,22 @@
 namespace a2f {
 int creates = 0;
 OrtOptions seen;
+bool gpu_shaders_work = false, cpu_works = false;
+class ReadyEmotion : public EmotionNet {
+ public:
+  bool Run(const float*, float* logits, std::string&) override {
+    std::fill_n(logits, kNumVoiceEmo, 0.f);
+    return true;
+  }
+};
 std::unique_ptr<EmotionNet> CaptureEmotion(const std::wstring&,
                                          const std::wstring&,
                                          const OrtOptions& options,
                                          std::string& err) {
   ++creates;
   seen = options;
+  if ((options.gpu && !options.metacommands && gpu_shaders_work) ||
+      (!options.gpu && cpu_works)) return std::make_unique<ReadyEmotion>();
   err = "injected creation failure";
   return nullptr;
 }
@@ -103,24 +113,48 @@ int main() {
         !emotion.sentiment.empty());
   sentiment_net.reset();
   CHECK(destroyed == 2);
-  // Sentiment follows the same isolated GPU route as facial inference. A
-  // failed creation must back off without retrying the legacy shared device.
+  // Shared GPU variants remain GPU-only. Failure leaves authored emotion
+  // usable; CPU is created only after an explicit settings change.
+  config.independent_device = false;
+  Set("ForceCPU", false);
+  a2f::gpu_shaders_work = true;
+  CHECK(PrepareSentiment(job, pcm, emotion) == Sentiment::kReady);
+  CHECK(sentiment_gpu && a2f::seen.gpu && !a2f::seen.metacommands);
+  sentiment_net.reset();
+  shared_gpu_settings[0] = {};
+  a2f::gpu_shaders_work = false;
+  a2f::cpu_works = true;
+  CHECK(PrepareSentiment(job, pcm, emotion) == Sentiment::kUnavailable);
+  CHECK(a2f::seen.gpu && sentiment_retry_at > Now());
+  const int before_backoff = a2f::creates;
+  CHECK(PrepareSentiment(job, pcm, emotion) == Sentiment::kUnavailable);
+  CHECK(a2f::creates == before_backoff);
+  Set("ForceCPU", true);
+  UnloadSentiment();
+  CHECK(PrepareSentiment(job, pcm, emotion) == Sentiment::kReady && !sentiment_gpu);
+  Set("ForceCPU", false);
+  UnloadSentiment();
+  a2f::gpu_shaders_work = true;
+  a2f::RetryGpu();
+  CHECK(PrepareSentiment(job, pcm, emotion) == Sentiment::kReady && sentiment_gpu);
+  sentiment_net.reset();
+  shared_gpu_settings[0] = {};
+  a2f::gpu_shaders_work = a2f::cpu_works = false;
   for (bool independent : {false, true}) {
     config.independent_device = independent;
     for (bool cpu : {false, true}) {
-    Set("ForceCPU", cpu);
-    sentiment_retry_at = 0;
-    const int before = a2f::creates;
-    std::string blocked;
-    const int expected = !cpu && a2f::GpuAllowed(blocked) ? 2 : 1;
-    CHECK(PrepareSentiment(job, pcm, emotion) == Sentiment::kUnavailable);
-    CHECK(a2f::creates == before + expected && !sentiment_net);
-    CHECK(!a2f::seen.gpu && a2f::seen.independent_device == independent &&
-          a2f::seen.metacommands);
-    CHECK(sentiment_retry_at > Now());
-    CHECK(PrepareSentiment(job, pcm, emotion) == Sentiment::kUnavailable);
-    CHECK(a2f::creates == before + expected);
-  }
+      Set("ForceCPU", cpu);
+      UnloadSentiment();
+      a2f::RetryGpu();
+      const int before = a2f::creates;
+      const int expected = cpu || independent ? 1 : 2;
+      CHECK(PrepareSentiment(job, pcm, emotion) == Sentiment::kUnavailable);
+      CHECK(a2f::creates == before + expected && !sentiment_net);
+      CHECK(a2f::seen.gpu == !cpu && a2f::seen.independent_device == independent);
+      CHECK(sentiment_retry_at > Now());
+      CHECK(PrepareSentiment(job, pcm, emotion) == Sentiment::kUnavailable);
+      CHECK(a2f::creates == before + expected);
+    }
   }
   // Idle worker must release weights too, without needing another spoken line.
   sentiment_net = std::make_unique<Voice>();
