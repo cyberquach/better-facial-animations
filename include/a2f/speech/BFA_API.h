@@ -33,7 +33,6 @@ extern "C" {
 #define BFA_PLUGIN_NAME "BetterFacialAnimations"
 #define BFA_MAX_AUDIO_BYTES (32u * 1024u * 1024u)
 
-
 enum BFA_MessageType {
   BFA_kRequestInterface = 0x42464101,
   BFA_kInterface = 0x42464102,
@@ -43,23 +42,23 @@ enum BFA_MessageType {
 typedef uint32_t BFA_Result;
 enum BFA_ResultCode {
   BFA_kResultOK = 0,
-  BFA_kResultPending = 1,  // accepted; generation or face cleanup pending
+  BFA_kResultPending = 1,   // accepted; generation or face cleanup pending
   BFA_kResultNoChange = 2,  // already in the requested state
   BFA_kResultInvalidArgument = 3,
   BFA_kResultInvalidHandle = 4,  // unknown or finished handle
-  BFA_kResultInvalidState = 5,  // operation not legal in the current state
-  BFA_kResultNotFound = 6,  // unknown listener or reply
-  BFA_kResultUnavailable = 7,  // plugin hooks not ready
-  BFA_kResultDisabled = 8,  // master switch off
+  BFA_kResultInvalidState = 5,   // operation not legal in the current state
+  BFA_kResultNotFound = 6,       // unknown listener or reply
+  BFA_kResultUnavailable = 7,    // plugin hooks not ready
+  BFA_kResultDisabled = 8,       // master switch off
   BFA_kResultPlayerDisabled = 9,
   BFA_kResultRaceDisabled = 10,
-  BFA_kResultInScene = 11,  // a scene owns the face
-  BFA_kResultNoFaceGenHead = 12,  // missing actor or FaceGen head
-  BFA_kResultHeadMapFailed = 13,  // required morphs unavailable
-  BFA_kResultModelNotLoaded = 14,  // network not loaded yet
-  BFA_kResultNoDevice = 15,  // no inference device available
+  BFA_kResultInScene = 11,             // a scene or equipped mouth gear owns the face
+  BFA_kResultNoFaceGenHead = 12,       // missing actor or FaceGen head
+  BFA_kResultHeadMapFailed = 13,       // required morphs unavailable
+  BFA_kResultModelNotLoaded = 14,      // network not loaded yet
+  BFA_kResultNoDevice = 15,            // no inference device available
   BFA_kResultUnsupportedRuntime = 16,  // actor lookup unsupported (VR)
-  BFA_kResultAudioFailed = 17,  // decode failed or audio silent
+  BFA_kResultAudioFailed = 17,         // decode failed or audio silent
   BFA_kResultNotInDialogue = 18,  // excluded by Potato mode (checked first)
   BFA_kResultInternalError = 19,
   BFA_kResultInferenceFailed = 20,  // animation generation failed
@@ -77,8 +76,16 @@ enum BFA_StopReason {
 };
 
 enum BFA_EmotionChannel {
-  BFA_kAmazement, BFA_kAnger, BFA_kCheekiness, BFA_kDisgust, BFA_kFear,
-  BFA_kGrief, BFA_kJoy, BFA_kOutOfBreath, BFA_kPain, BFA_kSadness,
+  BFA_kAmazement,
+  BFA_kAnger,
+  BFA_kCheekiness,
+  BFA_kDisgust,
+  BFA_kFear,
+  BFA_kGrief,
+  BFA_kJoy,
+  BFA_kOutOfBreath,
+  BFA_kPain,
+  BFA_kSadness,
   BFA_kNumEmotionChannels
 };
 
@@ -93,9 +100,9 @@ typedef struct BFA_Line {
   // From NewUtteranceId, shared by the reply's segments; one speaker.
   uint64_t utterance_id;
   uint32_t segment;
-  uint32_t speaker_form_id;  // loaded actor, including player 0x14
-  const void* audio;  // RIFF WAVE bytes, copied before returning
-  uint32_t audio_bytes;  // 12..BFA_MAX_AUDIO_BYTES
+  uint32_t speaker_form_id;    // loaded actor, including player 0x14
+  const void* audio;           // RIFF WAVE bytes, copied before returning
+  uint32_t audio_bytes;        // 12..BFA_MAX_AUDIO_BYTES
   const BFA_Emotion* emotion;  // copied before returning; null = neutral
 } BFA_Line;
 
@@ -112,7 +119,7 @@ enum BFA_EventType {
 
 typedef struct BFA_Event {
   uint32_t version, size;
-  uint32_t event;  // BFA_EventType
+  uint32_t event;   // BFA_EventType
   uint32_t reason;  // see BFA_EventType
   uint64_t handle, utterance_id;
   uint32_t segment, speaker_form_id;

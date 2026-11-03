@@ -24,8 +24,8 @@ class ReleaseVersionTests(unittest.TestCase):
             if model:
                 (root / 'emotion.onnx').touch()
             (root / 'bin').mkdir()
-            make = root / 'bin/make'
-            make.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > make-args\nexit 1\n')
+            make = root / 'bin/python3'
+            make.write_text('#!/bin/sh\nprintf "BFA_VERSION=%s\\n" "$BFA_BUILD_VERSION" > make-args\nexit 1\n')
             make.chmod(0o755)
             result = subprocess.run(
                 ['sh', str(root / 'build.sh'), 'release'],

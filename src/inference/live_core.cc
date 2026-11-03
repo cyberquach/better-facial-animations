@@ -1,8 +1,6 @@
 // Better Facial Animations core: decode, the line's emotion, network windows,
 // A2F Direct coefficients.
 #include "a2f/inference/live_core.h"
-#include "a2f/inference/performance_features.h"
-#include "a2f/inference/performance_stats.h"
 
 #include <algorithm>
 #include <cmath>
@@ -13,12 +11,43 @@
 #include <string>
 #include <vector>
 
+#include "a2f/inference/performance_features.h"
+#include "a2f/inference/performance_stats.h"
+
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/channel_layout.h>
 #include <libswresample/swresample.h>
 }
+
+#include <delayimp.h>
+#include <windows.h>
+namespace {
+FARPROC WINAPI LoadAudioDependency(unsigned notification, PDelayLoadInfo info) {
+  if (notification != dliNotePreLoadLibrary ||
+      std::strcmp(info->szDll, "BFAFFmpeg.dll"))
+    return nullptr;
+  HMODULE module = nullptr;
+  wchar_t path[32768];
+  if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                              GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                          reinterpret_cast<LPCWSTR>(&LoadAudioDependency),
+                          &module))
+    return nullptr;
+  const auto size = GetModuleFileNameW(module, path, 32768);
+  if (!size || size >= 32768) return nullptr;
+  std::wstring full(path, size);
+  if (full.size() >= 4 &&
+      _wcsicmp(full.c_str() + full.size() - 4, L".exe") == 0)
+    return nullptr;  // Offline test executables keep the DLL beside themselves.
+  full.resize(full.find_last_of(L"\\/") + 1);
+  return reinterpret_cast<FARPROC>(
+      LoadLibraryExW((full + L"BetterFacialAnimations\\BFAFFmpeg.dll").c_str(),
+                     nullptr, LOAD_WITH_ALTERED_SEARCH_PATH));
+}
+}  // namespace
+extern "C" const PfnDliHook __pfnDliNotifyHook2 = LoadAudioDependency;
 
 namespace a2f {
 
@@ -366,8 +395,8 @@ void EmotionTrack(const float* pcm, size_t n, int frames,
   if (emotion.type == kExplicitEmotion) {
     for (int c = 0; c < kNumMod; ++c)
       game[c] = std::isfinite(emotion.channels[c])
-                    ? std::clamp(static_cast<double>(emotion.channels[c]),
-                                 0.0, kMaxEmotion)
+                    ? std::clamp(static_cast<double>(emotion.channels[c]), 0.0,
+                                 kMaxEmotion)
                     : 0.0;
   } else if (emotion.type >= 1 && emotion.type <= 7) {
     for (int c = 0; c < kNumMod; ++c)

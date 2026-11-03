@@ -9,15 +9,31 @@
         "src/inference/net_keeper.cc"
       ],
       "covers": [
-        "independent one-attempt policy; shared 2/4/8/16/30-second recovery with explicit CPU selection",
+        "independent 2/4/8-second recovery (3 retries, lost devices only); shared 2/4/8/16/30-second recovery with explicit CPU selection",
         "manual GPU retry and CPU-to-GPU selection clear failed attempts; ForceCPU suspends shared recovery; bounded CPU retries"
+      ]
+    },
+    {
+      "id": "gpu-adapter",
+      "test": "gpu_adapter_test",
+      "sources": [
+        "tests/gpu_adapter_test.cc",
+        "src/inference/performance_features.cc"
+      ],
+      "link": [
+        "-ldxgi"
+      ],
+      "covers": [
+        "DXGI indices and duplicate names, software filtering, missing adapters and enumeration failures without device creation",
+        "selected GPU reaches shared DirectML metacommand and shader providers"
       ]
     },
     {
       "id": "ort-output",
       "test": "ort_output_test",
       "sources": [
-        "tests/ort_output_test.cc"
+        "tests/ort_output_test.cc",
+        "src/inference/performance_features.cc"
       ],
       "link": [
         "-ldxgi"
@@ -31,8 +47,8 @@
       "id": "installer",
       "python": "tests/installer_test.py",
       "covers": [
-        "all 96 route/startup/model/checkbox combinations resolve exactly one INI",
-        "independent GPU default; CPU startup preserves route for opt-in; installed help/version"
+        "all installer selections compose one value per controlled key; explicit main INI wins",
+        "package-specific face/emotion model choices, vanilla cues, compute route and user feature toggles"
       ]
     },
     {
@@ -42,9 +58,7 @@
         "tests/npc_blacklist_test.cc"
       ],
       "plugin_objects": true,
-      "link": [
-        "-Wl,--wrap=_ZN4skse4AddrEy"
-      ],
+      "link": [],
       "covers": [
         "full/light NPC base identity, load-order changes, missing plugins and persistent removal",
         "player and temporary-base rejection, hotkey persistence and defaults preservation",
@@ -60,8 +74,6 @@
         "src/runtime/skse.cc"
       ],
       "link": [
-        "-Wl,--wrap=_ZN4skse4AddrEy",
-        "-Wl,--wrap=_ZN3bfa15ScheduleSaveIniEv",
         "-lshell32",
         "-lole32",
         "-luuid"
@@ -79,14 +91,26 @@
         "tests/face_update_test.cc"
       ],
       "plugin_objects": true,
-      "link": [
-        "-Wl,--wrap=_ZN4skse4AddrEy"
-      ],
+      "link": [],
       "covers": [
         "zero-time pose refreshes recompute without advancing native facial time",
         "normal, repeated, scaled, slow and paused updates retain their supplied delta",
         "nested and concurrent face contexts, world reset and hook chaining",
         "SE/AE/VR node layouts and protected virtual-slot installation"
+      ]
+    },
+    {
+      "id": "morph-lock-span",
+      "test": "morph_lock_test",
+      "sources": [
+        "tests/morph_lock_test.cc"
+      ],
+      "plugin_objects": true,
+      "link": [],
+      "covers": [
+        "a played face's lock and every dynamic face shape's lock are held from before the engine's ApplyMorphs reset until the deltas pass has run (no release in the gap the render thread could copy)",
+        "the engine's own per-shape locking nests under the hook's; non-dynamic children are never locked",
+        "faces the plugin does not play, nothing playing and a not-ready plugin take no locks"
       ]
     },
     {
@@ -110,13 +134,12 @@
         "tests/race_settings_test.cc"
       ],
       "plugin_objects": true,
-      "link": [
-        "-Wl,--wrap=_ZN4skse4AddrEy"
-      ],
+      "link": [],
       "covers": [
         "detected full and light plugin races, Argonians default on with old-INI migration",
         "load-order-independent settings persistence and defaults",
         "race admission and immediate speech, expression and morph handoff",
+        "face hand-back within the grace and fade after a line or conversation, kept across a speaker's next line while it is generated",
         "re-enable and FaceGen safety across SE/AE/VR"
       ]
     },
@@ -124,19 +147,21 @@
       "id": "independent-device",
       "test": "independent_device_test",
       "sources": [
-        "tests/independent_device_test.cc"
+        "tests/independent_device_test.cc",
+        "src/inference/performance_features.cc"
       ],
       "link": [
         "-ldxgi"
       ],
       "covers": [
         "strict factory flags, no global state changes or singleton fallback",
-        "missing API, rejected flags, driver refusal and device removal",
+        "missing API versus query failure, rejected flags, driver refusal and device removal; API availability survives creation failure",
         "factory reference lifetime and invalid success responses",
         "DML1 and metacommand capability failures",
         "missing DirectML.dll beside the model with DML1 present",
         "one retained device, DirectML device and queue across model/CPU transitions",
-        "partial initialization and removed-device failures latch without recreation"
+        "partial initialization and removed-device failures latch without recreation",
+        "complete CPU/independent session setup: bounded non-spinning threads, sequential DML, fixed dimensions and memory arena"
       ]
     },
     {
@@ -158,9 +183,7 @@
         "tests/potato_mode_test.cc"
       ],
       "plugin_objects": true,
-      "link": [
-        "-Wl,--wrap=_ZN4skse4AddrEy"
-      ],
+      "link": [],
       "covers": [
         "active dialogue admission and partner changes",
         "cancelled queue cache retry",
@@ -175,7 +198,8 @@
       "id": "wrapper-lifetime",
       "test": "wrapper_lifetime_test",
       "sources": [
-        "tests/wrapper_lifetime_test.cc"
+        "tests/wrapper_lifetime_test.cc",
+        "src/inference/performance_features.cc"
       ],
       "link": [
         "-ldxgi"
@@ -193,13 +217,12 @@
         "tests/scene_compat_test.cc"
       ],
       "plugin_objects": true,
-      "link": [
-        "-Wl,--wrap=_ZN4skse4AddrEy"
-      ],
+      "link": [],
       "covers": [
         "SexLab",
         "OStim",
         "exclusive scene entry/exit",
+        "ZaZ mouth-gear keywords, equipped-only NPC/player handoff and removal",
         "held speech samples survive full/partial phoneme suppression",
         "SE/AE/VR synthetic ABI"
       ]
@@ -224,10 +247,7 @@
         "tests/provider_api_test.cc"
       ],
       "plugin_objects": true,
-      "link": [
-        "-Wl,--wrap=_ZN4skse4AddrEy",
-        "-Wl,--wrap=_ZN3bfa3NowEv"
-      ],
+      "link": [],
       "covers": [
         "plain C discovery and exact version gate",
         "WAV intake and deferred engine admission; no Started before animation",
@@ -236,6 +256,20 @@
         "EndUtterance releases queued audio, cached output and pending tasks; cancels running work; preserves other replies",
         "per-line emotion copied at Prepare, explicit neutral, invalid emotion",
         "open handle capacity, world reset and deterministic idle expiry"
+      ]
+    },
+    {
+      "id": "provider-sentiment",
+      "test": "provider_sentiment_test",
+      "sources": [
+        "tests/provider_sentiment_test.cc"
+      ],
+      "plugin_objects": true,
+      "link": [],
+      "covers": [
+        "a provider line through the worker: the selected Audio2Emotion model (Performance or Full) is loaded and its reading fed to the facial network and logged on the line's animation",
+        "the caller's channels and the sentiment multiplier combine with the model's reading; the animation reaches the provider's playing line and its Started event",
+        "Audio2Emotion Disabled or the selected model missing feeds nothing and runs no emotion model"
       ]
     },
     {
@@ -278,9 +312,7 @@
         "tests/worker_start_test.cc"
       ],
       "plugin_objects": true,
-      "link": [
-        "-Wl,--wrap=_ZN4skse4AddrEy"
-      ],
+      "link": [],
       "covers": [
         "inference starts after startup broadcast in either logger order",
         "successful save load and new game, CPU and GPU",
@@ -294,9 +326,7 @@
         "tests/load_game_test.cc"
       ],
       "plugin_objects": true,
-      "link": [
-        "-Wl,--wrap=_ZN4skse8SpinLock4LockEv"
-      ],
+      "link": [],
       "covers": [
         "save/load cancellation",
         "stale face lifetime"
@@ -361,9 +391,7 @@
         "tests/efa_test.cc"
       ],
       "plugin_objects": true,
-      "link": [
-        "-Wl,--wrap=_ZN4skse4AddrEy"
-      ],
+      "link": [],
       "covers": [
         "SE/AE/VR resource dispatch and missing/unknown EFA rejection",
         "independent male/female Mouth calibration",
@@ -380,6 +408,20 @@
         "independent upper/lower lip deformation",
         "neutral default and unchanged expressions",
         "smooth lip boundary and attached followers"
+      ]
+    },
+    {
+      "id": "settings-restart",
+      "test": "settings_restart_test",
+      "sources": [
+        "tests/settings_restart_test.cc"
+      ],
+      "plugin_objects": true,
+      "link": [],
+      "covers": [
+        "synchronous menu edits survive immediate process exit and a fresh restart",
+        "SimpleIni preserves unrelated settings, comments and UTF-8 text",
+        "failed reads and writes report errors with logging disabled; unreadable files are not overwritten"
       ]
     },
     {
@@ -429,11 +471,7 @@
         "tests/audio_fallback_test.cc"
       ],
       "plugin_objects": true,
-      "link": [
-        "-Wl,--wrap=_ZN4skse4AddrEy",
-        "-Wl,--wrap=_ZN3bfa7HeadKeyB5cxx11EPhbSt10shared_ptrIKN6direct5ModelEE",
-        "-Wl,--wrap=_ZN3bfa8FindHeadEPhRKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEEbRSt10shared_ptrIKN6direct4HeadEES9_IKNSA_5ModelEE"
-      ],
+      "link": [],
       "covers": [
         "decoded silence, codec noise, DC, quiet and delayed audio",
         "missing or silent assets bypass inference without cached failures; missing files are counted, silence is not",
@@ -453,9 +491,7 @@
         "tests/runtime_layout_test.cc"
       ],
       "plugin_objects": true,
-      "link": [
-        "-Wl,--wrap=_ZN4skse4AddrEy"
-      ],
+      "link": [],
       "covers": [
         "supported AE declarations and native speech gate",
         "1.6.353 uses AE ids with pre-1.6.629 actor layout",
@@ -470,9 +506,7 @@
         "tests/gaze_test.cc"
       ],
       "plugin_objects": true,
-      "link": [
-        "-Wl,--wrap=_ZN4skse4AddrEy"
-      ],
+      "link": [],
       "covers": [
         "v2/v3 silence-relative eye tracks and batch/window alignment",
         "binocular averaging, bounded additive look controls and invalid input rejection",
@@ -516,9 +550,7 @@
         "tests/alfiq_compat_test.cc"
       ],
       "plugin_objects": true,
-      "link": [
-        "-Wl,--wrap=_ZN4skse4AddrEy"
-      ],
+      "link": [],
       "covers": [
         "Creatures of Nirn - Khajiit Alfiq 2.3",
         "all races owned by DWAlfiqKhajiit.esp default off with menu opt-in",
@@ -571,14 +603,76 @@
       "test": "passive_report_test",
       "sources": [
         "tests/passive_report_test.cc",
-        "src/inference/ort_net.cc"
+        "src/inference/ort_net.cc",
+        "src/inference/performance_features.cc"
       ],
       "link": [
-        "-Wl,--wrap=__imp_CreateDXGIFactory1",
         "-ldxgi"
       ],
       "covers": [
-        "passive diagnostics never create a graphics device or DXGI factory"
+        "passive diagnostics report OS prerequisites/runtime identity without loading D3D12 or creating a graphics device or DXGI factory"
+      ]
+    },
+    {
+      "id": "startup-diagnostics",
+      "test": "diagnostics_test",
+      "sources": [
+        "tests/diagnostics_test.cc"
+      ],
+      "covers": [
+        "pending startup remains readable while an operation blocks; failures survive CPU recovery",
+        "facial and sentiment histories are separate; bounded concurrent snapshots",
+        "Windows revision thresholds, missing revisions, unknown releases, Server and Proton remain distinct from runtime API availability"
+      ]
+    },
+    {
+      "id": "reference-lookup",
+      "test": "reference_test",
+      "sources": [
+        "tests/reference_test.cc"
+      ],
+      "covers": [
+        "null/missing handles, nested retention and masked final release",
+        "1000 repeated acquisitions resolve the immutable engine function once"
+      ]
+    },
+    {
+      "id": "performance-emotion",
+      "test": "performance_emotion_test",
+      "sources": [
+        "tests/performance_emotion_test.cc",
+        "src/inference/ort_net.cc",
+        "src/inference/performance_features.cc"
+      ],
+      "covers": [
+        "Actual packaged student ONNX and C++ frontend against Python checkpoint reference on silence, DC, quiet/loud tones, noise and modulated audio",
+        "Constant-offset stability, finite logits and error bounds"
+      ]
+    },
+    {
+      "id": "ort-delay-import",
+      "python": "tests/test_ort_delay_import.py",
+      "covers": [
+        "bundled onnxruntime.dll delay-loads D3D12CreateDevice from d3d12.dll (no static import), as the shared-route ReShade unwrap patches it"
+      ]
+    },
+    {
+      "id": "training-portability",
+      "python": "tests/test_training_portability.py",
+      "covers": [
+        "Public training source contains no private network endpoints, home paths or SSH configuration"
+      ]
+    },
+    {
+      "id": "mouth-lining-surface",
+      "test": "mouth_lining_test",
+      "sources": [
+        "src/animation/direct.cc",
+        "tests/mouth_lining_test.cc"
+      ],
+      "covers": [
+        "Independent sloped-face surface oracle catches exposed mouth lining during sideways skin motion",
+        "Both tongue modes, native Happy, expression-only and unchanged face/teeth/tongue/jaw opening; removed-correction negative control"
       ]
     }
   ],
@@ -705,6 +799,15 @@
         "pinned installed HDPT registries and dynamic mesh names/shader flags",
         "18,582 excluded scalp-hair occurrences and 12,314 preserved facial-hair controls",
         "production capture/playback traversal, including inactive source variants"
+      ]
+    },
+    {
+      "id": "mouth-lining",
+      "python": "tools/mouth_lining.py",
+      "fixture_directory": true,
+      "covers": [
+        "SHA-pinned Ingarte/Ange geometry and v2/v3 speech, both tongue modes and native Happy",
+        "Independent projected protrusion bounds and unchanged face/teeth/tongue/opening; v3 broken-mouth control"
       ]
     }
   ],

@@ -14,6 +14,9 @@ namespace a2f {
 bool PerformanceFeatures(const float* pcm, size_t n, std::vector<float>& mel,
                          const std::function<bool()>& allowed = {});
 
+// Student emotion frontend; pcm contains exactly kVoiceWindow samples.
+void EmotionFeatures(const float* pcm, std::vector<float>& mel);
+
 }  // namespace a2f
 
 #endif  // INCLUDE_A2F_INFERENCE_PERFORMANCE_FEATURES_H_

@@ -1,3 +1,4 @@
+#include "runtime_fixture.h"
 // Replay pinned installed HDPT registries through production face traversal.
 // Reuse the engine mocks; the synthetic contract remains a separate executable.
 #define main SyntheticHeadPartsMain
@@ -45,33 +46,33 @@ int main(int argc, char** argv) {
           extras[i].push_back(ptrs[index]);
         }
         auto* p = ptrs[i];
-        p[kFormType] = kFtHeadPart;
-        Field<uint32_t>(p, kHeadPartType) = type;
-        Field<const char*>(p, kHeadPartName) = names[i].c_str();
-        Field<BSTArray>(p, kHeadPartExtras) = {extras[i].data(),
+        p[0x1A] = kFtHeadPart;
+        Field<uint32_t>(p, 0x6C) = type;
+        Field<const char*>(p, 0x118) = FixtureString(names[i].c_str());
+        Field<FixtureArray>(p, 0x70) = {extras[i].data(),
                                                uint32_t(extras[i].size()), 0,
                                                uint32_t(extras[i].size())};
       }
-      Field<BSTArray>(handler,
-                      kDhFormArrays + kFtHeadPart * sizeof(BSTArray)) = {
+      Field<FixtureArray>(handler,
+                      0x10 + kFtHeadPart * sizeof(FixtureArray)) = {
           ptrs.data(), n, 0, n};
       LoadHeadPartTypes();
       std::array<uint8_t, 0x1000> node{}, shape{}, fod{}, shader{};
       uint8_t* children[] = {shape.data()};
       uint8_t* extra[] = {fod.data()};
       float vertices[] = {1, 2, 3, 4, 5, 6};
-      Field<uint8_t**>(node.data(), kNodeChildren.Get()) = children;
-      Field<uint16_t>(node.data(), kNodeNumChildren.Get()) = 1;
-      shape[kGeomType.Get()] = 4;
-      Field<uint16_t>(shape.data(), kDynNumVerts.Get()) = 2;
-      Field<uint32_t>(shape.data(), kDynDataSize.Get()) = 32;
-      Field<uint8_t**>(shape.data(), kObjExtra) = extra;
-      Field<uint16_t>(shape.data(), kObjNumExtra) = 1;
+      Field<uint8_t**>(node.data(), (skse::IsVr() ? 0x140 : 0x118)) = children;
+      Field<uint16_t>(node.data(), (skse::IsVr() ? 0x14A : 0x122)) = 1;
+      shape[(skse::IsVr() ? 0x190 : 0x150)] = 4;
+      Field<uint16_t>(shape.data(), (skse::IsVr() ? 0x19A : 0x15A)) = 2;
+      Field<uint32_t>(shape.data(), (skse::IsVr() ? 0x1B0 : 0x170)) = 32;
+      Field<uint8_t**>(shape.data(), 0x20) = extra;
+      Field<uint16_t>(shape.data(), 0x28) = 1;
       // Independent AE shader layout; SE/AE/VR are covered by head-parts.
       Field<uint8_t*>(shape.data(), 0x128) = shader.data();
-      Field<const char*>(fod.data(), kObjName) = "FOD";
-      Field<uint32_t>(fod.data(), kBaseNumVerts) = 2;
-      Field<const float*>(fod.data(), kBaseVerts) = vertices;
+      Field<const char*>(fod.data(), 0x10) = FixtureString("FOD");
+      Field<uint32_t>(fod.data(), 0x24) = 2;
+      Field<const float*>(fod.data(), 0x18) = vertices;
       const uint32_t queries = ReadU32(in);
       for (uint32_t i = 0; i < queries; ++i) {
         const std::string name = ReadString(in);
@@ -80,7 +81,7 @@ int main(int argc, char** argv) {
                      sizeof(shader_flags)))
           throw std::runtime_error("short shader flags");
         Field<uint64_t>(shader.data(), 0x38) = shader_flags;
-        Field<const char*>(shape.data(), kObjName) = name.c_str();
+        Field<const char*>(shape.data(), 0x10) = FixtureString(name.c_str());
         bool accepted = false;
         ForFaceShapes(node.data(),
                       [&](uint8_t*, const char*, direct::Part, bool, uint32_t,

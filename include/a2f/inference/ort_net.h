@@ -13,8 +13,9 @@
 namespace a2f {
 
 struct OrtOptions {
-  // DirectML (adapter 0); false = CPU, 2 threads (no VRAM, ~0.4x realtime).
+  // DirectML on gpu_adapter; false = CPU, 2 threads (no VRAM).
   bool gpu = true;
+  int gpu_adapter = 0;  // DXGI EnumAdapters index, shared by both GPU routes
   // GPU only. The graphics driver's own versions of the network's operations
   // (metacommands); false: DirectML's shaders, the same on every driver.
   bool metacommands = true;
@@ -51,10 +52,18 @@ std::unique_ptr<Net> CreatePerformanceNet(const std::wstring& dll_dir,
 std::unique_ptr<EmotionNet> CreateOrtEmotionNet(const std::wstring& dll_dir,
                                                 const std::wstring& model,
                                                 const OrtOptions& options,
-                                                std::string& err);
+                                                std::string& err,
+                                                bool performance = false);
 
-// Adapter 0 (the one DirectML uses) and this process's video memory there.
+// Worker only, on user request: enumerate names without creating GPU devices.
+GpuAdapterList EnumerateGpuAdapters();
+
+// Adapter 0 and its VRAM budget through DXGI (no Direct3D device); the worker
+// asks when it publishes the session's state.
 GpuState QueryGpu();
+// The Windows-version prerequisite of the independent route, one line.
+// Advisory: not a driver test and never a gate.
+std::string IndependentPrerequisite();
 
 // What a bug report about the GPU session needs, one line each: Windows, the
 // adapters and their drivers, what Direct3D 12 offers on adapter 0 (the
@@ -75,9 +84,12 @@ void SetUseDeviceWrapper(bool use);
 void SetOrtLog(void (*log)(const std::string&));
 
 // Worker only, after unloading facial and sentiment sessions. Clears a failed
-// GPU attempt so an explicit user retry or CPU-to-GPU switch can create a new one.
+// independent context (its resources stay quarantined) so the next attempt,
+// an explicit retry or the keeper's bounded retry after a lost device, creates
+// a new one.
 void RetryGpu();
-// Shared by both GPU routes and all facial/sentiment models. No driver calls.
+// The latched independent-context failure, if any; shared by both GPU routes
+// and all facial/sentiment models. No driver calls.
 bool GpuAllowed(std::string& err);
 void DisableGpu(const std::string& reason);
 

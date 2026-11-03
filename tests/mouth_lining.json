@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "provenance": "Local 2026-11-03 Cuyima Ingarte/Ange FaceGen with EFA female morphs and vanilla mouth; topology from the same NIFs. Mouth vertices 0..44 are lining; remaining vertices are teeth/tongue. No third-party geometry is distributed.",
+  "fixtures": [
+    {
+      "file": "ange.bin",
+      "sha256": "7dd7a9be9c1ed1c38a9811f533a481bbc5ab592842117f1ea33fbc28d5a5c200"
+    },
+    {
+      "file": "ange.triangles",
+      "sha256": "d756cc60397514ba39a3196ad8891d7c325ee2da2e02cb12a4d45e146186accd"
+    },
+    {
+      "file": "ingarte.bin",
+      "sha256": "fb0af0d8a47b63cedc33d5a865ff8fc896832617cda46bd2ab551c3e40830ce1"
+    },
+    {
+      "file": "ingarte.triangles",
+      "sha256": "d756cc60397514ba39a3196ad8891d7c325ee2da2e02cb12a4d45e146186accd"
+    },
+    {
+      "file": "v2.coef",
+      "sha256": "3780eea5f0bbdcd0815ef0d2a678330038c4e3745e460d97116c8fffafdf2080"
+    },
+    {
+      "file": "v3.coef",
+      "sha256": "671009e720624cd5bde47d82f46475fe86bd7dafec9e19bb3c7cc0c1e472d2df"
+    }
+  ],
+  "models": [
+    {
+      "file": "A2FDirect.bin",
+      "sha256": "56c2c927dad64f32cd5b704dc4bd1522bee15a9a3517dfed1b11b3c30d1cbe17",
+      "speech": "v2.coef",
+      "negative_control": false
+    },
+    {
+      "file": "A2FDirect3.bin",
+      "sha256": "8741ff3b457cdd68003f55436f15c7b13de9f3e53d498b3ffaebd789870fec3c",
+      "speech": "v3.coef",
+      "negative_control": true
+    }
+  ],
+  "cases": [
+    {
+      "name": "ingarte",
+      "pixels": 32,
+      "depth": 0.09
+    },
+    {
+      "name": "ange",
+      "pixels": 0,
+      "depth": 0.01
+    }
+  ]
+}

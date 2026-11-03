@@ -8,6 +8,7 @@ import shlex
 import sys
 
 from compatibility import run_command
+import commonlib_build
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -43,7 +44,7 @@ def main():
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=True)
     manifest_path = ROOT / 'tests/hair_assets.json'
-    code = [Path(__file__), ROOT / 'tools/compatibility.py', manifest_path,
+    code = [Path(__file__), ROOT / 'tools/compatibility.py', ROOT / 'tools/commonlib_build.py', manifest_path,
             ROOT / 'tests/hair_assets_probe.cc', ROOT / 'tests/head_parts_test.cc',
             ROOT / 'src/animation/head_cache.cc', ROOT / 'src/animation/direct.cc']
     code += sorted((ROOT / 'include').rglob('*.h'))
@@ -65,10 +66,10 @@ def main():
         if expectations['queries'] != manifest['queries']:
             raise ValueError('query count differs from pinned manifest')
         exe = out / 'hair_assets_probe.exe'
-        compile_cmd = shlex.split(os.environ.get('CXX', 'x86_64-w64-mingw32-g++'))
-        compile_cmd += ['-std=c++17', '-O2', '-Wall', '-static', '-I', str(ROOT / 'include'),
-                        str(ROOT / 'tests/hair_assets_probe.cc'),
-                        str(ROOT / 'src/animation/direct.cc'), '-o', str(exe)]
+        commonlib_build.runtime_files(out)
+        compile_cmd = [sys.executable, str(ROOT / 'tools/commonlib_build.py'), '--case',
+                       json.dumps({'test': 'hair_assets_probe', 'sources': [
+                           'tests/hair_assets_probe.cc', 'src/animation/direct.cc']}), str(exe)]
         report['compile_command'] = compile_cmd
         rc = run_command(compile_cmd, out / 'compile.log', 180)
         if rc:

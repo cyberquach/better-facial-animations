@@ -42,7 +42,6 @@ uint64_t next_handle = 0, next_listener = 0;
 std::atomic<uint64_t> next_utterance{0};
 skse::SKSETaskInterface* tasks = nullptr;
 skse::SKSEMessagingInterface* messaging = nullptr;
-uint32_t plugin_handle = 0;
 SRWLOCK events_lock = SRWLOCK_INIT;
 CONDITION_VARIABLE events_cv = CONDITION_VARIABLE_INIT;
 auto& events = *new std::deque<BFA_Event>;
@@ -54,9 +53,9 @@ constexpr uint32_t kMinWaveBytes = 12;  // "RIFF" size "WAVE"
 // provider_lock held. Subscribers receive events in lifecycle order.
 void Post(uint32_t event, uint32_t reason, const PlayerSpeechPtr& line) {
   if (listeners.empty()) return;
-  BFA_Event e{BFA_API_VERSION,    sizeof(BFA_Event), event,
-              reason,             line->handle,      line->utterance_id,
-              line->segment,      line->form_id};
+  BFA_Event e{BFA_API_VERSION, sizeof(BFA_Event), event,
+              reason,          line->handle,      line->utterance_id,
+              line->segment,   line->form_id};
   ScopedLock guard(events_lock);
   events.push_back(e);
   WakeConditionVariable(&events_cv);
@@ -156,36 +155,30 @@ bool EnsureThread() {
 }
 // The engine-bound half of Prepare (admission and inference) or Start (the
 // face), on the game thread.
-struct LineTask final : skse::TaskDelegate {
-  PlayerSpeechPtr line;
-  bool prepare;
-  LineTask(PlayerSpeechPtr l, bool p) : line(std::move(l)), prepare(p) {}
-  void Run() override {
-    std::lock_guard<std::recursive_mutex> serial(calls);
-    if (line->stopped) return;
-    ProviderActor who;
-    uint32_t result = ResolveProviderActor(line->form_id, who);
-    if (result == BFA_kResultOK && who.head_state == State::kFailed)
-      result = BFA_kResultHeadMapFailed;
-    if (result != BFA_kResultOK) {
-      ProviderLineDeclined(line, result);
-      return;
-    }
-    if (prepare) {
-      result = ProviderPrepare(line, who);
-      if (result != BFA_kResultOK) ProviderLineFailed(line, result);
-      return;
-    }
-    result = ProviderStart(line);
-    if (result != BFA_kResultOK) {
-      ProviderLineDeclined(line, result);
-      return;
-    }
-    ScopedLock guard(provider_lock);
-    if (!line->stopped) line->on_face = true;
+void RunLineTask(const PlayerSpeechPtr& line, bool prepare) {
+  std::lock_guard<std::recursive_mutex> serial(calls);
+  if (line->stopped) return;
+  ProviderActor who;
+  uint32_t result = ResolveProviderActor(line->form_id, who);
+  if (result == BFA_kResultOK && who.head_state == State::kFailed)
+    result = BFA_kResultHeadMapFailed;
+  if (result != BFA_kResultOK) {
+    ProviderLineDeclined(line, result);
+    return;
   }
-  void Dispose() override { delete this; }
-};
+  if (prepare) {
+    result = ProviderPrepare(line, who);
+    if (result != BFA_kResultOK) ProviderLineFailed(line, result);
+    return;
+  }
+  result = ProviderStart(line);
+  if (result != BFA_kResultOK) {
+    ProviderLineDeclined(line, result);
+    return;
+  }
+  ScopedLock guard(provider_lock);
+  if (!line->stopped) line->on_face = true;
+}
 // The line's emotion as the network takes it: explicit channels, neutral
 // when the provider gives none.
 bool ReadEmotion(const BFA_Emotion* in, a2f::Emotion& out) {
@@ -226,7 +219,7 @@ uint64_t Prepare(const BFA_Line* in, BFA_Result* result) {
   a2f::Emotion emotion;
   if (!ValidLine(in, emotion)) return 0;
   std::lock_guard<std::recursive_mutex> serial(calls);
-  if (!tasks || !tasks->AddTask) {
+  if (!tasks) {
     *result = BFA_kResultUnavailable;
     return 0;
   }
@@ -265,7 +258,7 @@ uint64_t Prepare(const BFA_Line* in, BFA_Result* result) {
     Touch(line);
     lines[line->handle] = line;
   }
-  tasks->AddTask(new LineTask(line, true));
+  tasks->AddTask([line] { RunLineTask(line, true); });
   *result = BFA_kResultPending;
   return line->handle;
 }
@@ -285,7 +278,7 @@ BFA_Result Start(uint64_t handle, double offset) {
     auto it = utterances.find(line->utterance_id);
     if (it != utterances.end()) it->second.started = true;
   }
-  tasks->AddTask(new LineTask(line, false));
+  tasks->AddTask([line] { RunLineTask(line, false); });
   return BFA_kResultPending;
 }
 // The started line's audio clock, as the provider reports it.
@@ -361,14 +354,20 @@ BFA_Result UnregisterListener(uint64_t id) {
   ScopedLock guard(provider_lock);
   return listeners.erase(id) ? BFA_kResultOK : BFA_kResultNotFound;
 }
-const BFA_Interface kInterface = {
-    BFA_API_VERSION, sizeof(BFA_Interface), NewUtteranceId, Prepare,
-    Start,           Pause,                 Seek,           Stop,
-    EndUtterance,    RegisterListener,      UnregisterListener};
+const BFA_Interface kInterface = {BFA_API_VERSION,
+                                  sizeof(BFA_Interface),
+                                  NewUtteranceId,
+                                  Prepare,
+                                  Start,
+                                  Pause,
+                                  Seek,
+                                  Stop,
+                                  EndUtterance,
+                                  RegisterListener,
+                                  UnregisterListener};
 void SendInterface(const char* receiver) {
-  if (messaging && messaging->Dispatch)
-    messaging->Dispatch(plugin_handle, BFA_kInterface,
-                        const_cast<BFA_Interface*>(&kInterface),
+  if (messaging)
+    messaging->Dispatch(BFA_kInterface, const_cast<BFA_Interface*>(&kInterface),
                         sizeof kInterface, receiver);
 }
 void Receive(skse::SKSEMessage* m) {
@@ -413,13 +412,11 @@ void ProviderReset() {
 uint64_t ProviderHolder(uint32_t actor) {
   ScopedLock guard(provider_lock, ScopedLock::kShared);
   for (const auto& [id, u] : utterances)
-    if (u.actor == actor && u.started && Now() - u.touched < kExpiry)
-      return id;
+    if (u.actor == actor && u.started && Now() - u.touched < kExpiry) return id;
   return 0;
 }
 bool ProviderClaims(uint32_t actor) { return ProviderHolder(actor) != 0; }
 void InitProvider(const skse::SKSEInterface* iface) {
-  plugin_handle = iface->GetPluginHandle();
   messaging = static_cast<skse::SKSEMessagingInterface*>(
       iface->QueryInterface(skse::kInterfaceMessaging));
   tasks = static_cast<skse::SKSETaskInterface*>(
@@ -427,7 +424,7 @@ void InitProvider(const skse::SKSEInterface* iface) {
 }
 void ProviderMessage(unsigned type) {
   if (type != skse::kMessagePostPostLoad) return;
-  if (messaging) messaging->RegisterListener(plugin_handle, nullptr, Receive);
+  if (messaging) messaging->RegisterListener(nullptr, Receive);
   SendInterface(nullptr);
 }
 }  // namespace bfa

@@ -1,3 +1,4 @@
+#include "runtime_fixture.h"
 // Real settings persistence and animation handoff; engine lookups are mocked.
 #include <array>
 #include <cmath>
@@ -26,21 +27,21 @@ struct Npc {
     uint32_t count;
   } source{files, 1};
   Npc(const char* plugin, uint32_t id) {
-    form[bfa::kFormType] = bfa::kFtNpc;
-    bfa::Field<uint32_t>(form.data(), bfa::kFormId) = id;
-    bfa::Field<void*>(form.data(), bfa::kFormFiles) = &source;
-    bfa::Field<const char*>(form.data(), bfa::kNpcName) = "Val Serano";
-    std::strcpy(reinterpret_cast<char*>(file.data() + bfa::kFileName), plugin);
+    form[0x1A] = bfa::kFtNpc;
+    bfa::Field<uint32_t>(form.data(), 0x14) = id;
+    bfa::Field<void*>(form.data(), 0x08) = &source;
+    bfa::Field<const char*>(form.data(), 0xE0) = FixtureString("Val Serano");
+    std::strcpy(reinterpret_cast<char*>(file.data() + 0x58), plugin);
   }
 };
 bool Lookup(const uint32_t& handle, uint8_t** out) {
   *out = handle == 42 ? actor : nullptr;
-  if (*out) ++bfa::Field<LONG>(*out, bfa::kRefrRefCount);
+  if (*out) ++bfa::Field<LONG>(*out, 0x28);
   return *out != nullptr;
 }
 uint8_t* LookupForm(uint32_t id) { return id == 0x100 ? actor : nullptr; }
 }  // namespace
-extern "C" uint64_t __wrap__ZN4skse4AddrEy(uint64_t id) {
+extern "C" uint64_t TestAddress(uint64_t id) {
   if (id == kIdDataHandler.Get()) return reinterpret_cast<uint64_t>(&handler);
   if (id == kIdLookupReference.Get())
     return reinterpret_cast<uint64_t>(&Lookup);
@@ -49,6 +50,7 @@ extern "C" uint64_t __wrap__ZN4skse4AddrEy(uint64_t id) {
   return 0;
 }
 int main() {
+  bfa::testing::address = TestAddress;
   using namespace bfa;
   char old[MAX_PATH], temp[MAX_PATH], root[MAX_PATH];
   CHECK(GetCurrentDirectoryA(MAX_PATH, old));
@@ -79,11 +81,11 @@ int main() {
       temporary("Follower.esp", 0xFF001234);
   uint8_t* forms[] = {full.form.data(), light.form.data(),
                       same_local.form.data(), nullptr};
-  Field<BSTArray>(handler, kDhFormArrays + kFtNpc * sizeof(BSTArray)) = {
+  Field<FixtureArray>(handler, 0x10 + kFtNpc * sizeof(FixtureArray)) = {
       forms, 4, 0, 4};
-  actor[kFormType] = kFtActor;
-  Field<uint32_t>(actor, kFormId) = 0x100;
-  Field<uint8_t*>(actor, kRefrBase) = full.form.data();
+  actor[0x1A] = kFtActor;
+  Field<uint32_t>(actor, 0x14) = 0x100;
+  Field<uint8_t*>(actor, 0x40) = full.form.data();
   LoadNpcSettings();
   CHECK(SnapshotOverrides().empty());
   auto npc = DescribeNpc(actor);
@@ -91,32 +93,32 @@ int main() {
   CHECK(NpcAllowed(actor));
   SetNpcBlocked(npc, true);
   CHECK(!NpcAllowed(actor));
-  Field<uint8_t*>(actor, kRefrBase) = light.form.data();
+  Field<uint8_t*>(actor, 0x40) = light.form.data();
   CHECK(NpcAllowed(actor));
   SetNpcBlocked(DescribeNpc(actor), true);
   SaveIni();
   CHECK(GetPrivateProfileIntA("Overrides", "Follower.esp|001234", 0, ini) == 1);
   CHECK(GetPrivateProfileIntA("Overrides", "Light.esl|000ABC", 0, ini) == 1);
-  Field<uint8_t*>(actor, kRefrBase) = same_local.form.data();
+  Field<uint8_t*>(actor, 0x40) = same_local.form.data();
   CHECK(NpcAllowed(actor));  // same local id, different plugin
-  Field<uint8_t*>(actor, kRefrBase) = temporary.form.data();
+  Field<uint8_t*>(actor, 0x40) = temporary.form.data();
   CHECK(DescribeNpc(actor).key.empty());
   CHECK(DescribeNpc(nullptr).key.empty());
-  Field<uint32_t>(actor, kFormId) = kPlayerFormId;
+  Field<uint32_t>(actor, 0x14) = kPlayerFormId;
   CHECK(DescribeNpc(actor).key.empty() && NpcAllowed(actor));
-  Field<uint32_t>(actor, kFormId) = 0x100;
+  Field<uint32_t>(actor, 0x14) = 0x100;
   // Reordered full/light plugins and differently cased names retain choices.
-  Field<uint32_t>(full.form.data(), kFormId) = 0x09001234;
-  Field<uint32_t>(light.form.data(), kFormId) = 0xFE456ABC;
-  std::strcpy(reinterpret_cast<char*>(full.file.data() + kFileName),
+  Field<uint32_t>(full.form.data(), 0x14) = 0x09001234;
+  Field<uint32_t>(light.form.data(), 0x14) = 0xFE456ABC;
+  std::strcpy(reinterpret_cast<char*>(full.file.data() + 0x58),
               "FOLLOWER.ESP");
   CHECK(WritePrivateProfileStringA("Blacklist", "Absent.esp|123ABC", "1", ini));
   CHECK(WritePrivateProfileStringA("Blacklist", "Invalid", "1", ini));
   LoadNpcSettings();
   CHECK(SnapshotOverrides().size() == 3);
-  Field<uint8_t*>(actor, kRefrBase) = full.form.data();
+  Field<uint8_t*>(actor, 0x40) = full.form.data();
   CHECK(!NpcAllowed(actor));
-  Field<uint8_t*>(actor, kRefrBase) = light.form.data();
+  Field<uint8_t*>(actor, 0x40) = light.form.data();
   CHECK(!NpcAllowed(actor));
   ResetTune();
   CHECK(!NpcAllowed(actor) && NpcHotkey() == 66);
@@ -147,11 +149,11 @@ int main() {
   for (uint32_t runtime : {skse::Version(1, 5, 97), skse::Version(1, 6, 353),
                            skse::Version(1, 6, 1170), skse::kVrRuntime}) {
     skse::SetRuntime(runtime);
-    Field<uint8_t*>(actor, kRefrBase) = full.form.data();
-    Field<uint8_t*>(actor, kActorRace.Get()) = race.data();
-    Field<uint32_t>(race.data(), kFormId) = 0x13746;
-    Field<uint32_t>(race.data(), kRaceFlags) = 2;
-    Field<LONG>(actor, kRefrRefCount) = 1;
+    Field<uint8_t*>(actor, 0x40) = full.form.data();
+    Field<uint8_t*>(actor, (skse::Runtime() >= skse::Version(1, 6, 629) ? 0x1f8 : 0x1f0)) = race.data();
+    Field<uint32_t>(race.data(), 0x14) = 0x13746;
+    Field<uint32_t>(race.data(), 0x108) = 2;
+    Field<LONG>(actor, 0x28) = 1;
     npc = DescribeNpc(actor);
     CHECK(npc.blocked && !SpeakerOk(actor));
     CHECK(BeginSpeech(actor, "blocked", 0, 2, 0, 0, Tune(), world_epoch) ==
@@ -164,7 +166,7 @@ int main() {
     std::array<uint8_t, 0x400> storage{}, node{};
     auto* fg = storage.data();
     float values[direct::kNumExpressions];
-    auto& ex = Field<skse::KeyframeMultiple>(fg, skse::kFgExpr3);
+    auto& ex = FixtureKeyframe(fg, 0xC0);
     ex.values = values;
     ex.count = direct::kNumExpressions;
     auto seed = [&] {
@@ -192,10 +194,10 @@ int main() {
     CHECK(faces.empty());
     for (float v : values) CHECK(v == 0.65f);
     seed();
-    Field<uint8_t*>(node.data(), kNodeFg.Get()) = fg;
+    Field<uint8_t*>(node.data(), (skse::IsVr() ? 0x178 : 0x150)) = fg;
     AddDirect(node.data(), false);
-    CHECK(faces.empty() && playing.empty() && fg[kFgDirty]);
-    CHECK(Field<LONG>(actor, kRefrRefCount) == 1);
+    CHECK(faces.empty() && playing.empty() && fg[0x218]);
+    CHECK(Field<LONG>(actor, 0x28) == 1);
     SetNpcBlocked(npc, false);
     CHECK(SpeakerOk(actor));
     partner_fg = fg;
@@ -215,7 +217,7 @@ int main() {
   CHECK(NpcAllowed(actor) && SnapshotOverrides().size() == 1);
   CHECK(SnapshotOverrides()[0].key == "light.esl|000ABC");
   // Sparse values inherit the current profile and persist independently.
-  Field<uint8_t*>(actor, kRefrBase) = full.form.data();
+  Field<uint8_t*>(actor, 0x40) = full.form.data();
   npc = DescribeNpc(actor);
   npc.values = {{"DirectMouth", .4f},    {"SmileEyes", .7f},
                 {"VoiceEmotion", .25f},  {"MaxJoy", .3f},
@@ -258,14 +260,14 @@ int main() {
                         world_epoch, false, nullptr, {}, actor);
   CHECK(custom && queue.back().emotion.gain == .25f);
   CHECK(queue.back().emotion.maximum[a2f::kJoy] == .3f);
-  Field<uint8_t*>(actor, kRefrBase) = same_local.form.data();
+  Field<uint8_t*>(actor, 0x40) = same_local.form.data();
   auto normal = Request("npc_override", 3, 100, false, false, defaults, 0,
                         world_epoch, false, nullptr, {}, actor);
   CHECK(normal && normal != custom && queue.back().emotion.gain == 1);
   CHECK(
       NpcFaceTune(defaults, actor, false, false).direct_scale[direct::kMouth] ==
       1);
-  Field<uint8_t*>(actor, kRefrBase) = full.form.data();
+  Field<uint8_t*>(actor, 0x40) = full.form.data();
   npc = DescribeNpc(actor);
   npc.values["VoiceEmotion"] = .6f;
   SetNpcOverride(npc);
@@ -284,6 +286,7 @@ int main() {
   // Sentiment overrides affect only this base's added model input. The
   // effective amount also separates cached native and provider requests.
   defaults.sentiment_analysis = true;
+  defaults.performance_sentiment = false;  // Full-model override fixture
   defaults.sentiment_multiplier = .75f;
   config.sentiment_available = true;
   auto sentiment_request = [&](bool female = false, bool player = false,
@@ -308,9 +311,9 @@ int main() {
           queue.back().emotion.maximum == defaults.male.max_emotion);
     CHECK(sentiment_request(true) == custom_sentiment);  // one-face fixture
     previous = custom_sentiment;
-    Field<uint8_t*>(actor, kRefrBase) = same_local.form.data();
+    Field<uint8_t*>(actor, 0x40) = same_local.form.data();
     CHECK(sentiment_request() == inherited_sentiment);
-    Field<uint8_t*>(actor, kRefrBase) = full.form.data();
+    Field<uint8_t*>(actor, 0x40) = full.form.data();
     CHECK(sentiment_request(false, true) == inherited_sentiment);
     CHECK(sentiment_request(false, false, nullptr) == inherited_sentiment);
   }
@@ -331,9 +334,9 @@ int main() {
   auto npc_disabled = sentiment_request();
   CHECK(npc_disabled && npc_disabled != previous);
   CHECK(!NpcSharedTune(defaults, actor).sentiment_analysis);
-  Field<uint8_t*>(actor, kRefrBase) = same_local.form.data();
+  Field<uint8_t*>(actor, 0x40) = same_local.form.data();
   CHECK(sentiment_request() == inherited_sentiment);
-  Field<uint8_t*>(actor, kRefrBase) = full.form.data();
+  Field<uint8_t*>(actor, 0x40) = full.form.data();
   CHECK(sentiment_request(false, true) == inherited_sentiment);
   npc.values["SentimentAnalysis"] = 1;
   SetNpcOverride(npc);

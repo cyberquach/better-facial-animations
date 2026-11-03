@@ -7,31 +7,20 @@
 #include <cstring>
 #include <utility>
 
-#include "a2f/speech/DBReV_API.h"
 #include "a2f/plugin/plugin.h"
 #include "a2f/runtime/scoped_lock.h"
 #include "a2f/runtime/skse.h"
+#include "a2f/speech/DBReV_API.h"
 
 namespace bfa {
 namespace {
 skse::SKSEMessagingInterface* messaging = nullptr;
 skse::SKSETaskInterface* tasks = nullptr;
-uint32_t plugin_handle = 0;
-const void* (*plugin_info)(const char*) = nullptr;
 bool dbvo_installed = false;
 SRWLOCK session_lock = SRWLOCK_INIT;
 // not destroyed at exit: the Papyrus thread may still be notifying
 PlayerSpeechPtr& active = *new PlayerSpeechPtr;
 uint32_t topic = 0;
-
-struct StartTask final : skse::TaskDelegate {
-  PlayerSpeechPtr speech;
-  explicit StartTask(PlayerSpeechPtr value) : speech(std::move(value)) {}
-  void Run() override {
-    if (!speech->stopped) StartPlayerSpeech(speech);
-  }
-  void Dispose() override { delete this; }
-};
 
 template <class T>
 bool Read(const skse::SKSEMessage& message, T& out) {
@@ -54,10 +43,13 @@ void Receive(skse::SKSEMessage* message) {
     speech->path = line.voicePath;
     speech->started_at = Now();
     speech->duration = std::isfinite(line.audioSeconds)
-                           ? std::max(0.f, line.audioSeconds) : 0.f;
+                           ? std::max(0.f, line.audioSeconds)
+                           : 0.f;
     topic = line.topicIndex;
     active = speech;
-    tasks->AddTask(new StartTask(std::move(speech)));
+    tasks->AddTask([speech = std::move(speech)] {
+      if (!speech->stopped) StartPlayerSpeech(speech);
+    });
   } else if (message->type == DBReV::kPlayerLineEnd) {
     DBReV::PlayerLineEnd end{};
     // A superseded line was already stopped by the start that replaced it;
@@ -74,9 +66,7 @@ void Receive(skse::SKSEMessage* message) {
 bool DbvoInstalled() { return dbvo_installed; }
 
 void InitPlayerSpeech(const skse::SKSEInterface* iface) {
-  plugin_info = iface->GetPluginInfo;
   dbvo_installed = false;
-  plugin_handle = iface->GetPluginHandle();
   messaging = static_cast<skse::SKSEMessagingInterface*>(
       iface->QueryInterface(skse::kInterfaceMessaging));
   tasks = static_cast<skse::SKSETaskInterface*>(
@@ -85,10 +75,11 @@ void InitPlayerSpeech(const skse::SKSEInterface* iface) {
 
 void PlayerSpeechMessage(unsigned type) {
   if (type == skse::kMessagePostLoad) {
-    dbvo_installed = plugin_info && plugin_info("DBVO");
-    skse::Log("player speech: DBVO %s", dbvo_installed ? "detected" : "not present");
+    dbvo_installed = SKSE::GetPluginInfo("DBVO") != nullptr;
+    skse::Log("player speech: DBVO %s",
+              dbvo_installed ? "detected" : "not present");
     bool found = messaging && tasks &&
-        messaging->RegisterListener(plugin_handle, DBReV::kSender, Receive);
+                 messaging->RegisterListener(DBReV::kSender, Receive);
     skse::Log("player speech: DBReV listener %s",
               found ? "registered" : "not present");
   } else if (type == skse::kMessagePreLoadGame ||

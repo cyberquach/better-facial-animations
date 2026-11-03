@@ -1,3 +1,4 @@
+#include "runtime_fixture.h"
 // Production admission and conversation tracking; only engine lookup is mocked.
 #include "../src/plugin/better_facial_animations.cc"
 
@@ -21,17 +22,17 @@ uint8_t* manager = menu.data();
 uint8_t* handler = data.data();
 
 void SetOwner(const char* name) {
-  std::strcpy(reinterpret_cast<char*>(file.data() + bfa::kFileName), name);
+  std::strcpy(reinterpret_cast<char*>(file.data() + 0x58), name);
 }
 
 bool Lookup(const uint32_t& handle, uint8_t** out) {
   *out = handle == 42 ? actor : nullptr;
-  if (*out) ++bfa::Field<LONG>(*out, bfa::kRefrRefCount);
+  if (*out) ++bfa::Field<LONG>(*out, 0x28);
   return *out != nullptr;
 }
 }  // namespace
 
-extern "C" uint64_t __wrap__ZN4skse4AddrEy(uint64_t id) {
+extern "C" uint64_t TestAddress(uint64_t id) {
   if (id == kIdDataHandler.Get())
     return reinterpret_cast<uint64_t>(&handler);
   if (id == kIdMenuTopicManager.Get())
@@ -42,6 +43,7 @@ extern "C" uint64_t __wrap__ZN4skse4AddrEy(uint64_t id) {
 }
 
 int main() {
+  bfa::testing::address = TestAddress;
   using namespace bfa;
   // Keep persisted race choices isolated from the user's settings.
   char old[MAX_PATH], temp[MAX_PATH], root[MAX_PATH];
@@ -54,50 +56,50 @@ int main() {
   CHECK(CreateDirectoryA("Data\\SKSE", nullptr));
   CHECK(CreateDirectoryA("Data\\SKSE\\Plugins", nullptr));
   constexpr char kIni[] = "Data\\SKSE\\Plugins\\BetterFacialAnimations.ini";
-  race[kFormType] = kFtRace;
+  race[0x1A] = kFtRace;
   uint8_t* records[] = {race.data()};
-  Field<BSTArray>(handler, 0x10 + kFtRace * 0x18) = {records, 1, 0, 1};
+  Field<FixtureArray>(handler, 0x10 + kFtRace * 0x18) = {records, 1, 0, 1};
   for (uint32_t runtime : {skse::Version(1, 5, 97), skse::Version(1, 6, 353),
                            skse::Version(1, 6, 640), skse::Version(1, 6, 1170),
                            skse::Version(1, 4, 15)}) {
     skse::SetRuntime(runtime);
-    actor[kFormType] = kFtActor;
-    base[kFormType] = kFtNpc;
-    Field<uint8_t*>(actor, kRefrBase) = base.data();
-    Field<uint8_t*>(actor, kActorRace.Get()) = race.data();
-    Field<uint32_t>(race.data(), kRaceFlags) = 2;
-    Field<LONG>(actor, kRefrRefCount) = 1;
-    Field<uint32_t>(manager, kMtmSpeaker) = 42;
-    Field<uint8_t*>(node.data(), kAvUserData.Get()) = actor;
+    actor[0x1A] = kFtActor;
+    base[0x1A] = kFtNpc;
+    Field<uint8_t*>(actor, 0x40) = base.data();
+    Field<uint8_t*>(actor, (skse::Runtime() >= skse::Version(1, 6, 629) ? 0x1f8 : 0x1f0)) = race.data();
+    Field<uint32_t>(race.data(), 0x108) = 2;
+    Field<LONG>(actor, 0x28) = 1;
+    Field<uint32_t>(manager, 0x68) = 42;
+    Field<uint8_t*>(node.data(), (skse::IsVr() ? 0x110 : 0xF8)) = actor;
     uint8_t* files[] = {file.data(), override_file.data()};
     struct {
       uint8_t** items;
       uint32_t count;
     } source{files, 2};
-    Field<void*>(race.data(), kFormFiles) = &source;
+    Field<void*>(race.data(), 0x08) = &source;
     SetOwner("dWaLfIqKhAjIiT.EsP");
-    std::strcpy(reinterpret_cast<char*>(override_file.data() + kFileName),
+    std::strcpy(reinterpret_cast<char*>(override_file.data() + 0x58),
                 "Patch.esp");
     // All three shipped races, both plugin encodings, and a future local ID.
     for (uint32_t id : {0xFE123800u, 0xFE123845u, 0xFE12384Eu, 0x05000800u,
                         0x05000845u, 0x0500084Eu, 0xFE123900u}) {
-      Field<uint32_t>(race.data(), kFormId) = id;
+      Field<uint32_t>(race.data(), 0x14) = id;
       LoadRaceSettings();
       CHECK(SnapshotRaces().size() == 1);
       CHECK(!SnapshotRaces()[0].enabled);
       CHECK(!RaceEnabled(id) && !SpeakerOk(actor));
       SetRaceEnabled(id, true);
       CHECK(SpeakerOk(actor));
-      Field<uint32_t>(race.data(), kRaceFlags) = 0;
+      Field<uint32_t>(race.data(), 0x108) = 0;
       CHECK(!SpeakerOk(actor));
-      Field<uint32_t>(race.data(), kRaceFlags) = 2;
+      Field<uint32_t>(race.data(), 0x108) = 2;
       TrackPartner(node.data(), fg.data());
       CHECK(partner_ref == actor);
       SaveIni();
       // The same saved choice survives full/light plugin load-order changes.
       const uint32_t moved =
           id ^ ((id >> 24) == 0xFE ? 0x00333000u : 0x0C000000u);
-      Field<uint32_t>(race.data(), kFormId) = moved;
+      Field<uint32_t>(race.data(), 0x14) = moved;
       LoadRaceSettings();
       CHECK(RaceEnabled(moved) && SpeakerOk(actor));
       ResetTune();
@@ -106,7 +108,7 @@ int main() {
       LoadRaceSettings();
       CHECK(!RaceEnabled(moved));
       CHECK(DeleteFileA(kIni));
-      Field<uint32_t>(race.data(), kFormId) = id;
+      Field<uint32_t>(race.data(), 0x14) = id;
       LoadRaceSettings();
       ready = true;
       uint32_t sound = 123;
@@ -122,7 +124,7 @@ int main() {
     // Same numeric ID in an unrelated plugin remains eligible, even when
     // Alfiq is the last override rather than the owner.
     SetOwner("Other.esp");
-    std::strcpy(reinterpret_cast<char*>(override_file.data() + kFileName),
+    std::strcpy(reinterpret_cast<char*>(override_file.data() + 0x58),
                 "DWAlfiqKhajiit.esp");
     LoadRaceSettings();
     CHECK(SpeakerOk(actor));
@@ -136,26 +138,26 @@ int main() {
     SetOwner("Skyrim.esm");
     // Khajiit, Argonian, their vampire races and Nord are positive controls.
     for (uint32_t id : {0x13745u, 0x88845u, 0x13740u, 0x8883Au, 0x13746u}) {
-      Field<uint32_t>(race.data(), kFormId) = id;
+      Field<uint32_t>(race.data(), 0x14) = id;
       LoadRaceSettings();
       CHECK(SpeakerOk(actor));
     }
     // Eligibility is independent of cached geometry, names and load order.
     CHECK(!LimitLowerLip(nullptr));
-    Field<uint8_t*>(actor, kActorRace.Get()) = nullptr;
+    Field<uint8_t*>(actor, (skse::Runtime() >= skse::Version(1, 6, 629) ? 0x1f8 : 0x1f0)) = nullptr;
     CHECK(!LimitLowerLip(actor));
-    Field<uint8_t*>(actor, kActorRace.Get()) = race.data();
+    Field<uint8_t*>(actor, (skse::Runtime() >= skse::Version(1, 6, 629) ? 0x1f8 : 0x1f0)) = race.data();
     for (uint32_t id : {0x13745u, 0x88845u, 0x13740u, 0x8883Au}) {
-      Field<uint32_t>(race.data(), kFormId) = id;
+      Field<uint32_t>(race.data(), 0x14) = id;
       CHECK(LimitLowerLip(actor));
-      Field<uint32_t>(race.data(), kFormId) = id | 0x05000000;
+      Field<uint32_t>(race.data(), 0x14) = id | 0x05000000;
       CHECK(!LimitLowerLip(actor));
     }
     for (uint32_t id : {0u, 0x13746u, 0x13747u, 0x06000800u, 0xFE123ABCu}) {
-      Field<uint32_t>(race.data(), kFormId) = id;
+      Field<uint32_t>(race.data(), 0x14) = id;
       CHECK(!LimitLowerLip(actor));
     }
-    Field<uint32_t>(race.data(), kFormId) = 0x13746;
+    Field<uint32_t>(race.data(), 0x14) = 0x13746;
     SetOwner("DWAlfiqKhajiit.esp");
     source.count = 0;
     LoadRaceSettings();
@@ -167,13 +169,13 @@ int main() {
     source.items = nullptr;
     LoadRaceSettings();
     CHECK(SpeakerOk(actor));
-    Field<void*>(race.data(), kFormFiles) = nullptr;
+    Field<void*>(race.data(), 0x08) = nullptr;
     LoadRaceSettings();
     CHECK(SpeakerOk(actor));
-    Field<uint32_t>(race.data(), kRaceFlags) = 0;
+    Field<uint32_t>(race.data(), 0x108) = 0;
     CHECK(!SpeakerOk(actor));
     CHECK(!SpeakerOk(nullptr));
-    CHECK(Field<LONG>(actor, kRefrRefCount) == 1);
+    CHECK(Field<LONG>(actor, 0x28) == 1);
   }
   CHECK(RemoveDirectoryA("Data\\SKSE\\Plugins"));
   CHECK(RemoveDirectoryA("Data\\SKSE"));

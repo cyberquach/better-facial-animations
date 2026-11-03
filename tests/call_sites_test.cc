@@ -15,14 +15,14 @@ void Expect(bool ok, const char* label) {
 using Fn = int (*)(int);
 int callee_calls, hook_calls;
 
-__attribute__((noinline)) int Callee(int x) {
+__declspec(noinline) int Callee(int x) {
   ++callee_calls;
   return x + 1;
 }
 // Like the plugin's hooks, and tail-jumping to its original at -O2. A chain
 // that loops would never return: give up after a few rounds.
-__attribute__((noinline)) int Hook(int x) {
-  auto orig = call_sites::Orig<Fn>(__builtin_return_address(0),
+__declspec(noinline) int Hook(int x) {
+  auto orig = call_sites::Orig<Fn>(_ReturnAddress(),
                                    reinterpret_cast<void*>(&Callee));
   if (++hook_calls > 8) return -1;
   return orig(x);

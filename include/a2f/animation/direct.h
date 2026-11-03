@@ -129,7 +129,8 @@ struct Model {
 };
 
 // Whether the shape reads morph m (see Morph).
-constexpr bool Reads(bool skin, Part part, int m, bool mouth_candidate = false) {
+constexpr bool Reads(bool skin, Part part, int m,
+                     bool mouth_candidate = false) {
   if (mouth_candidate && (part == Part::kPinned || part == Part::kNone))
     part = Part::kMouth;
   if (skin) return m < kTonguePhoneme || (m >= kExpression && m < kAah);
@@ -142,13 +143,16 @@ struct ShapeIn {
   std::string name;
   Part part = Part::kNone;
   bool skin = false;  // the head skin itself
-  bool mouth_candidate = false;  // ambiguous name/relationship; validate spatially
+  bool mouth_candidate =
+      false;  // ambiguous name/relationship; validate spatially
   uint32_t nv = 0;
   std::vector<float> verts;  // nv x 3, base (pre-morph)
   // by Morph, nv x 3 each: those it Reads (zero when the shape lacks it),
   // else empty
   std::vector<std::vector<float>> morphs;
 };
+
+constexpr int kFollow = 4;
 
 // One head mapped onto Mark.
 struct Head {
@@ -188,6 +192,11 @@ struct Head {
       uint32_t vertex, skin_vertex;
     };
     std::vector<Seam> seam;
+    // Mouth lining retreats behind nearby skin; jaw opening stays independent.
+    struct Wall {
+      uint32_t vertex, skin[kFollow] = {}, count = 0;
+    };
+    std::vector<Wall> walls;
     // skin and mouth part: the expression morphs, nv x 3 (empty: none)
     std::vector<float> expr[kNumExpressions];
   };
@@ -203,9 +212,9 @@ struct Head {
   // mouth part vertices that follow the jaw and that are tongue
   float scale = 0, residual[kNumLandmarks] = {}, lip_dist = 0;
   uint32_t lips[2] = {}, jaw_verts = 0, tongue_verts = 0;
-  uint32_t calibration_ignored = 0;  // collapsed vertices omitted from landmarks
+  uint32_t calibration_ignored =
+      0;  // collapsed vertices omitted from landmarks
 };
-constexpr int kFollow = 4;
 // The standard heads' morph peaks over Mark's scale (the least of vanilla,
 // Expressive Facial Animation and High Poly Head, female and male).
 constexpr float kAutoBrowUp = 0.53f, kAutoHappy = 1.02f, kAutoBigAah = 2.5f;
@@ -214,8 +223,8 @@ constexpr float kAutoMin = 0.4f;
 // Maps one head (all its dynamic face shapes) onto Mark. False, with why,
 // when it has no skin shape or the skin lacks a morph of kMorphIds: such a
 // head is not animated.
-bool BuildHead(const Mark& mark, const std::vector<ShapeIn>& shapes,
-               Head& out, std::string& why);
+bool BuildHead(const Mark& mark, const std::vector<ShapeIn>& shapes, Head& out,
+               std::string& why);
 
 enum class TongueMode { kAuthored, kModel };
 

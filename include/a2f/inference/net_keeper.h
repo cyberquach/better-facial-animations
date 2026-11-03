@@ -1,5 +1,7 @@
-// Keeps the network loaded: the wanted session (GPU unless ForceCPU=1) is created
-// once and held. CPU is explicit; shared GPU failures retry with backoff.
+// Keeps the network loaded: the wanted session (GPU unless ForceCPU=1) is
+// created once and held. CPU is explicit. Shared GPU failures retry with
+// backoff; independent ones too, a bounded number of times, except failures
+// of the runtime API or device creation (RetryableIndependentFailure).
 #ifndef INCLUDE_A2F_INFERENCE_NET_KEEPER_H_
 #define INCLUDE_A2F_INFERENCE_NET_KEEPER_H_
 
@@ -9,8 +11,8 @@
 #include <utility>
 #include <vector>
 
-#include "a2f/inference/gpu_state.h"
 #include "a2f/inference/gpu_retry.h"
+#include "a2f/inference/gpu_state.h"
 #include "a2f/inference/live_core.h"
 
 namespace a2f {
@@ -37,16 +39,19 @@ class NetKeeper {
   using Logger = std::function<void(const std::string&)>;
   static constexpr double kRetryMin = 2, kRetryMax = 30;
   static constexpr double kCpuRetry = 30;  // s between CPU session attempts
+  // Independent attempts after a failure, before waiting for Try GPU again.
+  static constexpr int kIndependentRetries = 3;
 
   NetKeeper(bool want_gpu, Create create, Clock now, Logger log = nullptr,
-            bool retry_gpu = false)
+            bool independent = false)
       : want_gpu_(want_gpu),
         create_(std::move(create)),
         now_(std::move(now)),
-        log_(std::move(log)), retry_gpu_(retry_gpu) {}
+        log_(std::move(log)),
+        independent_(independent) {}
 
-  // The session to use now (null: none could be created). Tries the GPU once
-  // until an explicit retry for independent mode; shared retries back off.
+  // The session to use now (null: none could be created). GPU retries back
+  // off (2..30 s); a blocked GPU waits for Reconfigure (Try GPU again).
   Net* Ensure();
 
   // use(Net&, err) -> bool with the selected session. A lost session is
@@ -72,13 +77,12 @@ class NetKeeper {
     gpu_error_.clear();
     error_.clear();
     retry_at_ = retry_wait_ = cpu_retry_at_ = 0;
+    independent_retries_ = 0;
   }
   // Only the explicitly selected provider may be loaded.
   bool Wanted() const { return net_ && (on_gpu_ || !want_gpu_); }
-  // Blocked independent attempts sleep until the user requests another attempt.
-  bool needs_poll() const {
-    return !loaded() && (!want_gpu_ || !gpu_blocked_);
-  }
+  // Blocked GPU attempts sleep until the user requests another attempt.
+  bool needs_poll() const { return !loaded() && (!want_gpu_ || !gpu_blocked_); }
   bool loaded() const { return net_ != nullptr; }
   bool on_gpu() const { return net_ && on_gpu_; }
   int version() const { return net_ ? net_->Version() : 0; }
@@ -87,9 +91,8 @@ class NetKeeper {
   // The selected provider's last failure (empty after successful creation).
   const std::string& error() const { return error_; }
   double retry_at() const {
-    const double gpu = want_gpu_ && retry_gpu_ && !gpu_blocked_ && !on_gpu_ ? retry_at_ : 0;
-    if (!want_gpu_ && !loaded() && cpu_retry_at_ > 0)
-      return cpu_retry_at_;
+    const double gpu = want_gpu_ && !gpu_blocked_ && !on_gpu_ ? retry_at_ : 0;
+    if (!want_gpu_ && !loaded() && cpu_retry_at_ > 0) return cpu_retry_at_;
     return gpu;
   }
 
@@ -102,7 +105,8 @@ class NetKeeper {
   Create create_;
   Clock now_;
   Logger log_;
-  bool retry_gpu_ = false, gpu_blocked_ = false;
+  bool independent_ = false, gpu_blocked_ = false;
+  int independent_retries_ = 0;  // since the last success or Reconfigure
   std::unique_ptr<Net> net_;
   bool on_gpu_ = false;
   std::string info_ = "not loaded", error_;

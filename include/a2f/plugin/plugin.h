@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "a2f/animation/direct.h"
+#include "a2f/inference/gpu_state.h"
 
 namespace bfa {
 
@@ -34,10 +35,12 @@ struct ModelInfo {
 const ModelInfo& ModelFor(int network);
 
 struct Config {  // fixed after load
+  bool performance_sentiment_available = false;
   bool sentiment_available = false;  // optional model found at settings load
   bool gpu = true;
-  bool independent_device = true;  // fixed GPU route; change INI and restart
-  int network = a2f::kNetV3;  // the model at startup, see ModelFor
+  int gpu_adapter = 0;              // startup selection
+  bool independent_device = false;  // fixed GPU route; change INI and restart
+  int network = a2f::kNetV3;        // the model at startup, see ModelFor
   int batch = 2;
   int log_lines = 400;
   int cache_lines = 300;
@@ -47,6 +50,7 @@ struct Config {  // fixed after load
   std::wstring model, direct;  // the network's files, by network
 };
 constexpr float kExpressiveMouthScale = 0.85f;
+constexpr int kCpuDevice = -1;
 struct FaceTune {
   // how much louder speech adds to a line's emotion
   float voice_swell = 0.25f;
@@ -70,17 +74,16 @@ struct Tune {  // menu; defaults as dist/BetterFacialAnimations.ini
   bool prefetch = true;
   bool potato_mode = false;
   bool vanilla_emotions = true;
-  bool sentiment_analysis = false;
+  bool sentiment_analysis = true;
+  bool performance_sentiment = true;
   float sentiment_multiplier = 1;
   bool disable_tongue = false;
   bool conversation_gaze = true;
   float gaze_strength = 1;
-  // One model is selected; the three checkboxes show which. Only old_model
-  // and performance_model are stored, v3_model is derived. The worker
-  // applies the selection and force_cpu live (SwitchModel).
+  // The dropdown preserves the legacy INI choices; neither set is V3. The
+  // worker applies the selection and force_cpu live (SwitchModel).
   bool old_model = false;
   bool performance_model = false;
-  bool v3_model = true;
   int SelectedModel() const {
     return performance_model ? a2f::kNetPerformance
            : old_model       ? a2f::kNetV2
@@ -89,9 +92,12 @@ struct Tune {  // menu; defaults as dist/BetterFacialAnimations.ini
   void SelectModel(int network) {
     performance_model = network == a2f::kNetPerformance;
     old_model = network == a2f::kNetV2;
-    v3_model = !performance_model && !old_model;
   }
   bool force_cpu = false;
+  int gpu_adapter = 0;  // remembered while CPU is selected
+  int emotion_device =
+      0;  // CPU (-1) or DXGI GPU index; independent of Audio2Face
+  bool EmotionUsesGpu() const { return emotion_device >= 0; }
   bool logging = true;
   FaceTune male, female, player_face;
   const FaceTune& ForActor(bool is_female, bool is_player) const {
@@ -103,6 +109,10 @@ struct Tune {  // menu; defaults as dist/BetterFacialAnimations.ini
 };
 extern Config& config;
 Tune SnapshotTune();  // coherent copy for playback and workers
+void SetProcessingDevice(bool cpu, int adapter);
+void SetEmotionDevice(int device);
+a2f::GpuAdapterList SnapshotGpuAdapters();
+void RequestGpuAdapters();  // discovery runs on the inference worker
 extern SRWLOCK
     settings_lock;  // guards all Param pointers; readers use SnapshotTune()
 
@@ -135,7 +145,7 @@ struct Param {
   const char* tip;
   Sec sec;
   bool* flag;
-  int profile = -1;  // -1: shared, 0: male NPC, 1: female NPC, 2: player
+  int profile = -1;    // -1: shared, 0: male NPC, 1: female NPC, 2: player
   bool stored = true;  // in the ini
   Needs needs = kNone;
   Group group = Group::kAuto;
@@ -149,11 +159,13 @@ struct Param {
 extern const std::vector<Param> kParams;
 extern const size_t kNumParams;
 
-// After a model checkbox was toggled: that model is the one selected, so
-// the three boxes never show none or several. Caller holds settings_lock.
-void SelectModelCheckbox(const Param& p);
 // Puts the selection back to network, e.g. after a switch failed.
 void SetSelectedModel(int network);
+// 0 disables output while retaining the last facial model.
+void SelectFaceOption(int network);
+// 0 Disabled, 1 Full, 2 Performance (experimental student).
+void SelectEmotionOption(int model);
+bool SentimentAvailable(const Tune& tune);
 
 struct RaceSetting {
   uint32_t id;
@@ -195,12 +207,14 @@ void SetNpcHotkey(int key);
 constexpr wchar_t kPluginDir[] = L"Data\\SKSE\\Plugins\\BetterFacialAnimations";
 std::wstring PluginDir();  // kPluginDir as a full path
 constexpr wchar_t kSentimentModel[] = L"emotion_fp16.onnx";  // optional
+constexpr wchar_t kPerformanceSentimentModel[] = L"emotion_performance.onnx";
 void LoadIni();  // at load
 void SaveIni();
-void ScheduleSaveIni();  // debounce and persist on a dedicated writer thread
+// Menu edits: saves once the edits pause (sliders change every frame).
+void ScheduleSaveIni();
 void RequestGpuRetry();  // retry on the worker between inference calls
 void WakeWorker();  // after menu settings change, with settings_lock released
-void ResetTune();  // menu defaults
+void ResetTune();   // menu defaults
 // Turns the log on / off as tune.logging says; a new log starts with the
 // version.
 void ApplyLogging();
@@ -209,8 +223,7 @@ void ApplyLogging();
 bool LogMore(std::atomic<int>& written);
 
 // ---------------- state ----------------
-// The network is loaded. Only unrestricted mode keeps generating while
-// disabled.
+// The network is loaded (the status page and the provider API).
 extern std::atomic<bool> net_loaded;
 // The A2FDirect bin is loaded and the morph hook in place.
 extern std::atomic<bool> ready;
@@ -221,6 +234,7 @@ struct ModelState {
   bool gpu = true;
   std::wstring file;
   std::shared_ptr<const direct::Model> mapping;
+  int gpu_adapter = 0;
 };
 std::shared_ptr<const ModelState> SnapshotModel();
 
@@ -238,10 +252,14 @@ struct Stats {
   std::vector<std::string> net_error;
   std::string net_detail;
   double net_retry_at = 0;
+  // Adapter 0 and its VRAM as the worker last saw them when it published
+  // the session's state (the menu never asks the driver).
+  a2f::GpuState gpu;
   // The worker's model and device preference, and a switch in progress or
   // the reason the last one failed.
   int network = a2f::kNetV3;
   bool want_gpu = true;
+  int gpu_adapter = 0;
   bool switching_model = false;
   std::string model_error;
   bool net_gpu = false;  // the loaded session is the GPU one

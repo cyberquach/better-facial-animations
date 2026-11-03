@@ -3,6 +3,8 @@
 
 Each capture contains cpu.jsonl (/proc ticks), frames.jsonl (engine counter),
 stages.jsonl (named -start/-end windows), and deployment.json (artifact hashes).
+The deployment files map must include every installed Installer/*.ini fragment
+as well as BetterFacialAnimations.ini; omit fragments only for manual installs.
 Use --baseline DIR ... --candidate DIR ...; fewer than three runs is blocked.
 """
 import argparse
@@ -49,7 +51,11 @@ def capture(path):
     if not result:
         raise ValueError('no measured windows')
     deploy = json.loads((path / 'deployment.json').read_text())
-    return result, (deploy['modlist_sha256'], deploy['files']['BetterFacialAnimations.ini'])
+    files = deploy['files']
+    installer = tuple(sorted(
+        (name.replace('\\', '/').lower(), digest) for name, digest in files.items()
+        if '/installer/' in '/' + name.replace('\\', '/').lower()))
+    return result, (deploy['modlist_sha256'], files['BetterFacialAnimations.ini'], installer)
 
 
 def compare(baseline, candidate):
@@ -59,7 +65,7 @@ def compare(baseline, candidate):
         raise ValueError('duplicate capture directories are not independent launches')
     runs = [capture(p) for p in baseline + candidate]
     if len({r[1] for r in runs}) != 1:
-        raise ValueError('profile modlist or initial INI differs')
+        raise ValueError('profile modlist, initial INI or installer settings differ')
     windows = set(runs[0][0])
     if any(set(r[0]) != windows for r in runs):
         raise ValueError('measured windows differ')

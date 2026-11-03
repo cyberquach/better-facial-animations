@@ -1,9 +1,10 @@
+#include "runtime_fixture.h"
 // Exercise the production registry/classifier using synthetic engine HDPTs.
 #include <algorithm>
 #include <array>
-#include <cmath>
 #include <cassert>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <vector>
 
@@ -14,6 +15,16 @@ uint8_t* handler = storage.data();
 std::array<float, 8> dynamic_vertices{1, 2, 3, 99, 4, 5, 6, 98};
 bool has_morphs = true;
 bool test_se = false, test_vr = false;
+void MockRuntime() {
+  REL::Module::mock(test_vr   ? REL::Version(1, 4, 15, 0)
+                    : test_se ? REL::Version(1, 5, 97, 0)
+                              : REL::Version(1, 6, 353, 0),
+                    test_vr   ? REL::Module::Runtime::VR
+                    : test_se ? REL::Module::Runtime::SE
+                              : REL::Module::Runtime::AE,
+                    L"SkyrimSE.exe",
+                    reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)));
+}
 int apply_count = 0;
 float* LockDynamic(uint8_t*) { return dynamic_vertices.data(); }
 void UnlockDynamic(uint8_t*) {}
@@ -32,7 +43,8 @@ uint64_t Addr(uint64_t id) {
       id == kIdDataHandler.vr)
     return reinterpret_cast<uint64_t>(&handler);
   if (id == kIdLockDynamic.ae) return reinterpret_cast<uint64_t>(&LockDynamic);
-  if (id == kIdUnlockDynamic.ae) return reinterpret_cast<uint64_t>(&UnlockDynamic);
+  if (id == kIdUnlockDynamic.ae)
+    return reinterpret_cast<uint64_t>(&UnlockDynamic);
   if (id == kIdMorphData.ae) return reinterpret_cast<uint64_t>(&MorphData);
   if (id == kIdApplyMorph.ae) return reinterpret_cast<uint64_t>(&ApplyMorph);
   return 0;
@@ -103,9 +115,9 @@ void HairExclusion() {
   std::vector<uint8_t*> ptrs;
   for (size_t i = 0; i < forms.size(); ++i) {
     auto* p = forms[i].data();
-    p[kFormType] = kFtHeadPart;
-    Field<uint32_t>(p, kHeadPartType) = specs[i].type;
-    Field<const char*>(p, kHeadPartName) = specs[i].name;
+    p[0x1A] = kFtHeadPart;
+    Field<uint32_t>(p, 0x6C) = specs[i].type;
+    Field<const char*>(p, 0x118) = FixtureString(specs[i].name);
     ptrs.push_back(p);
   }
   uint8_t* root[] = {ptrs[1], ptrs[4], ptrs[5], nullptr, ptrs[23]};
@@ -116,32 +128,32 @@ void HairExclusion() {
   uint8_t* fallback[] = {ptrs[15]};
   uint8_t* eye_lashes[] = {ptrs[12]};
   uint8_t* ashen_hairline[] = {ptrs[25]};
-  Field<BSTArray>(ptrs[0], kHeadPartExtras) = {root, 5, 0, 5};
-  Field<BSTArray>(ptrs[1], kHeadPartExtras) = {nested, 2, 0, 2};
-  Field<BSTArray>(ptrs[2], kHeadPartExtras) = {cycle, 1, 0, 1};
-  Field<BSTArray>(ptrs[5], kHeadPartExtras) = {unnamed, 1, 0, 1};
-  Field<BSTArray>(ptrs[7], kHeadPartExtras) = {shared, 2, 0, 2};
-  Field<BSTArray>(ptrs[8], kHeadPartExtras) = {shared, 2, 0, 2};
-  Field<BSTArray>(ptrs[13], kHeadPartExtras) = {fallback, 1, 0, 1};
-  Field<BSTArray>(ptrs[17], kHeadPartExtras) = {eye_lashes, 1, 0, 1};
-  Field<BSTArray>(ptrs[24], kHeadPartExtras) = {ashen_hairline, 1, 0, 1};
-  Field<BSTArray>(handler, kDhFormArrays + kFtHeadPart * sizeof(BSTArray)) = {
+  Field<FixtureArray>(ptrs[0], 0x70) = {root, 5, 0, 5};
+  Field<FixtureArray>(ptrs[1], 0x70) = {nested, 2, 0, 2};
+  Field<FixtureArray>(ptrs[2], 0x70) = {cycle, 1, 0, 1};
+  Field<FixtureArray>(ptrs[5], 0x70) = {unnamed, 1, 0, 1};
+  Field<FixtureArray>(ptrs[7], 0x70) = {shared, 2, 0, 2};
+  Field<FixtureArray>(ptrs[8], 0x70) = {shared, 2, 0, 2};
+  Field<FixtureArray>(ptrs[13], 0x70) = {fallback, 1, 0, 1};
+  Field<FixtureArray>(ptrs[17], 0x70) = {eye_lashes, 1, 0, 1};
+  Field<FixtureArray>(ptrs[24], 0x70) = {ashen_hairline, 1, 0, 1};
+  Field<FixtureArray>(handler, 0x10 + kFtHeadPart * sizeof(FixtureArray)) = {
       ptrs.data(), uint32_t(ptrs.size()), 0, uint32_t(ptrs.size())};
 
   std::array<uint8_t, 0x1000> node{}, shape{}, fod{};
   uint8_t* children[] = {shape.data()};
   uint8_t* extras[] = {fod.data()};
   float vertices[] = {1, 2, 3, 4, 5, 6};
-  Field<uint8_t**>(node.data(), kNodeChildren.Get()) = children;
-  Field<uint16_t>(node.data(), kNodeNumChildren.Get()) = 1;
-  shape[kGeomType.Get()] = 4;
-  Field<uint16_t>(shape.data(), kDynNumVerts.Get()) = 2;
-  Field<uint32_t>(shape.data(), kDynDataSize.Get()) = 32;
-  Field<uint8_t**>(shape.data(), kObjExtra) = extras;
-  Field<uint16_t>(shape.data(), kObjNumExtra) = 1;
-  Field<const char*>(fod.data(), kObjName) = "FOD";
-  Field<uint32_t>(fod.data(), kBaseNumVerts) = 2;
-  Field<const float*>(fod.data(), kBaseVerts) = vertices;
+  Field<uint8_t**>(node.data(), (skse::IsVr() ? 0x140 : 0x118)) = children;
+  Field<uint16_t>(node.data(), (skse::IsVr() ? 0x14A : 0x122)) = 1;
+  shape[(skse::IsVr() ? 0x190 : 0x150)] = 4;
+  Field<uint16_t>(shape.data(), (skse::IsVr() ? 0x19A : 0x15A)) = 2;
+  Field<uint32_t>(shape.data(), (skse::IsVr() ? 0x1B0 : 0x170)) = 32;
+  Field<uint8_t**>(shape.data(), 0x20) = extras;
+  Field<uint16_t>(shape.data(), 0x28) = 1;
+  Field<const char*>(fod.data(), 0x10) = FixtureString("FOD");
+  Field<uint32_t>(fod.data(), 0x24) = 2;
+  Field<const float*>(fod.data(), 0x18) = vertices;
   auto check = [&](const char* name, bool excluded) {
     bool skin = true;
     const auto part = Classify(name, skin);
@@ -149,7 +161,7 @@ void HairExclusion() {
       assert(part == direct::Part::kNone && !skin);
       assert(!MouthCandidate(name));
     }
-    Field<const char*>(shape.data(), kObjName) = name;
+    Field<const char*>(shape.data(), 0x10) = FixtureString(name);
     int seen = 0;
     ForFaceShapes(node.data(), [&](uint8_t*, const char*, direct::Part, bool,
                                    uint32_t, const float*) { ++seen; });
@@ -172,21 +184,22 @@ void HairExclusion() {
   for (int runtime = 0; runtime < 3; ++runtime) {
     test_se = runtime == 0;
     test_vr = runtime == 2;
+    MockRuntime();
     const uint32_t shader_offset = test_vr ? 0x168 : 0x128;
     node.fill(0);
     shape.fill(0);
-    Field<uint8_t**>(node.data(), kNodeChildren.Get()) = children;
-    Field<uint16_t>(node.data(), kNodeNumChildren.Get()) = 1;
-    shape[kGeomType.Get()] = 4;
-    Field<uint16_t>(shape.data(), kDynNumVerts.Get()) = 2;
-    Field<uint32_t>(shape.data(), kDynDataSize.Get()) = 32;
-    Field<uint8_t**>(shape.data(), kObjExtra) = extras;
-    Field<uint16_t>(shape.data(), kObjNumExtra) = 1;
+    Field<uint8_t**>(node.data(), (skse::IsVr() ? 0x140 : 0x118)) = children;
+    Field<uint16_t>(node.data(), (skse::IsVr() ? 0x14A : 0x122)) = 1;
+    shape[(skse::IsVr() ? 0x190 : 0x150)] = 4;
+    Field<uint16_t>(shape.data(), (skse::IsVr() ? 0x19A : 0x15A)) = 2;
+    Field<uint32_t>(shape.data(), (skse::IsVr() ? 0x1B0 : 0x170)) = 32;
+    Field<uint8_t**>(shape.data(), 0x20) = extras;
+    Field<uint16_t>(shape.data(), 0x28) = 1;
     std::array<uint8_t, 0x100> shader{};
     Field<uint8_t*>(shape.data(), shader_offset) = shader.data();
     Field<uint64_t>(shader.data(), 0x38) = uint64_t{1} << 18;
     auto admitted = [&](const char* name) {
-      Field<const char*>(shape.data(), kObjName) = name;
+      Field<const char*>(shape.data(), 0x10) = FixtureString(name);
       int seen = 0;
       ForFaceShapes(node.data(), [&](uint8_t*, const char*, direct::Part, bool,
                                      uint32_t, const float*) { ++seen; });
@@ -194,7 +207,10 @@ void HairExclusion() {
     };
     // Replay the fresh KS/SMP resource inventory through the fallback path
     // on each runtime layout. None may enter facial capture or playback.
-    const struct { const char* name; uint64_t flags; } ks_shapes[] = {
+    const struct {
+      const char* name;
+      uint64_t flags;
+    } ks_shapes[] = {
 #include "ks_hair_shapes.inc"
     };
     static_assert(std::size(ks_shapes) == 495);
@@ -229,7 +245,8 @@ void HairExclusion() {
     assert(admitted("SMSHeadAshenFemale"));
     assert(admitted("SMSBrowsAshenFemale25"));
     assert(admitted("SMSEyesAshenFemaleBlue"));
-    assert(!admitted("FemaleMouthHumanoidDefault"));  // hypothetical hair shader
+    assert(
+        !admitted("FemaleMouthHumanoidDefault"));  // hypothetical hair shader
     // No shader or a different flag must not disable ordinary face parts.
     Field<uint64_t>(shader.data(), 0x38) = uint64_t{1} << 17;
     assert(admitted("UnknownHeadOverlay"));
@@ -238,18 +255,19 @@ void HairExclusion() {
     assert(admitted("UnknownHeadOverlay"));
   }
   test_se = test_vr = false;
+  MockRuntime();
   node.fill(0);
   shape.fill(0);
-  Field<uint8_t**>(node.data(), kNodeChildren.Get()) = children;
-  Field<uint16_t>(node.data(), kNodeNumChildren.Get()) = 1;
-  shape[kGeomType.Get()] = 4;
-  Field<uint16_t>(shape.data(), kDynNumVerts.Get()) = 2;
-  Field<uint32_t>(shape.data(), kDynDataSize.Get()) = 32;
-  Field<uint8_t**>(shape.data(), kObjExtra) = extras;
-  Field<uint16_t>(shape.data(), kObjNumExtra) = 1;
+  Field<uint8_t**>(node.data(), (skse::IsVr() ? 0x140 : 0x118)) = children;
+  Field<uint16_t>(node.data(), (skse::IsVr() ? 0x14A : 0x122)) = 1;
+  shape[(skse::IsVr() ? 0x190 : 0x150)] = 4;
+  Field<uint16_t>(shape.data(), (skse::IsVr() ? 0x19A : 0x15A)) = 2;
+  Field<uint32_t>(shape.data(), (skse::IsVr() ? 0x1B0 : 0x170)) = 32;
+  Field<uint8_t**>(shape.data(), 0x20) = extras;
+  Field<uint16_t>(shape.data(), 0x28) = 1;
   // Registry reload must clear old ownership. A missing registry still uses
   // the conservative hair/scalp name guard before any head or mouth fallback.
-  Field<BSTArray>(handler, kDhFormArrays + kFtHeadPart * sizeof(BSTArray)) = {};
+  Field<FixtureArray>(handler, 0x10 + kFtHeadPart * sizeof(FixtureArray)) = {};
   LoadHeadPartTypes();
   check("HeadBrowOverlay", false);
   check("UnregisteredHeadHairline", true);
@@ -290,13 +308,14 @@ void OralInheritance() {
   for (int runtime = 0; runtime < 3; ++runtime) {
     test_se = runtime == 1;
     test_vr = runtime == 2;
+    MockRuntime();
     std::vector<std::array<uint8_t, 0x120>> forms(std::size(specs));
     std::vector<uint8_t*> ptrs;
     for (size_t i = 0; i < forms.size(); ++i) {
       auto* p = forms[i].data();
-      p[kFormType] = kFtHeadPart;
-      Field<uint32_t>(p, kHeadPartType) = specs[i].type;
-      Field<const char*>(p, kHeadPartName) = specs[i].name;
+      p[0x1A] = kFtHeadPart;
+      Field<uint32_t>(p, 0x6C) = specs[i].type;
+      Field<const char*>(p, 0x118) = FixtureString(specs[i].name);
       ptrs.push_back(p);
     }
     uint8_t* face[] = {ptrs[1], ptrs[2], ptrs[3],  ptrs[4], ptrs[5],
@@ -308,15 +327,15 @@ void OralInheritance() {
     uint8_t* cycle[] = {ptrs[7]};
     uint8_t* hair[] = {ptrs[14]};
     uint8_t* shared[] = {ptrs[2], ptrs[7]};
-    Field<BSTArray>(ptrs[0], kHeadPartExtras) = {face, 9, 0, 9};
-    Field<BSTArray>(ptrs[1], kHeadPartExtras) = {oral, 7, 0, 7};
-    Field<BSTArray>(ptrs[18], kHeadPartExtras) = {bridge, 1, 0, 1};
-    Field<BSTArray>(ptrs[7], kHeadPartExtras) = {nested, 1, 0, 1};
-    Field<BSTArray>(ptrs[8], kHeadPartExtras) = {cycle, 1, 0, 1};
-    Field<BSTArray>(ptrs[13], kHeadPartExtras) = {hair, 1, 0, 1};
-    Field<BSTArray>(ptrs[16], kHeadPartExtras) = {shared, 2, 0, 2};
-    Field<BSTArray>(ptrs[17], kHeadPartExtras) = {shared, 2, 0, 2};
-    Field<BSTArray>(handler, kDhFormArrays + kFtHeadPart * sizeof(BSTArray)) = {
+    Field<FixtureArray>(ptrs[0], 0x70) = {face, 9, 0, 9};
+    Field<FixtureArray>(ptrs[1], 0x70) = {oral, 7, 0, 7};
+    Field<FixtureArray>(ptrs[18], 0x70) = {bridge, 1, 0, 1};
+    Field<FixtureArray>(ptrs[7], 0x70) = {nested, 1, 0, 1};
+    Field<FixtureArray>(ptrs[8], 0x70) = {cycle, 1, 0, 1};
+    Field<FixtureArray>(ptrs[13], 0x70) = {hair, 1, 0, 1};
+    Field<FixtureArray>(ptrs[16], 0x70) = {shared, 2, 0, 2};
+    Field<FixtureArray>(ptrs[17], 0x70) = {shared, 2, 0, 2};
+    Field<FixtureArray>(handler, 0x10 + kFtHeadPart * sizeof(FixtureArray)) = {
         ptrs.data(), uint32_t(ptrs.size()), 0, uint32_t(ptrs.size())};
     auto expect = [](const char* name, direct::Part part, bool skin,
                      bool oral) {
@@ -341,7 +360,7 @@ void OralInheritance() {
       std::reverse(ptrs.begin(), ptrs.end());
     }
     // Registry rebuild must discard inherited hints from the old graph.
-    Field<BSTArray>(forms[1].data(), kHeadPartExtras) = {};
+    Field<FixtureArray>(forms[1].data(), 0x70) = {};
     LoadHeadPartTypes();
     assert(!MouthCandidate(specs[7].name));
     assert(!MouthCandidate(specs[8].name));
@@ -349,6 +368,58 @@ void OralInheritance() {
     assert(MouthCandidate(specs[2].name));
   }
   test_se = test_vr = false;
+  MockRuntime();
+}
+
+// Each traversal must reject malformed extra arrays without retaining stale
+// classifications. The same checks protect the top-level form registry.
+void MalformedArrays() {
+  using namespace bfa;
+  std::array<uint8_t, 0x120> parent{}, child{};
+  parent[0x1A] = child[0x1A] = kFtHeadPart;
+  Field<const char*>(parent.data(), 0x118) = FixtureString("MouthParent");
+  Field<const char*>(child.data(), 0x118) = FixtureString("Accessory");
+  Field<uint32_t>(child.data(), 0x6C) = kHpMisc;
+  uint8_t* forms[] = {parent.data(), child.data()};
+  uint8_t* extras[] = {child.data()};
+  auto& registry =
+      Field<FixtureArray>(handler, 0x10 + kFtHeadPart * sizeof(FixtureArray));
+  const FixtureArray valid{forms, 2, 0, 2};
+  for (int runtime = 0; runtime < 3; ++runtime) {
+    test_se = runtime == 0;
+    test_vr = runtime == 2;
+    MockRuntime();
+    for (uint32_t type :
+         {uint32_t(kHpHair), uint32_t(kHpMisc), uint32_t(kHpFace)}) {
+      Field<uint32_t>(parent.data(), 0x6C) = type;
+      registry = valid;
+      Field<FixtureArray>(parent.data(), 0x70) = {extras, 1, 0, 1};
+      LoadHeadPartTypes();
+      assert(type == kHpHair   ? hair_parts.count("accessory") != 0
+             : type == kHpMisc ? mouth_extras.count("accessory") != 0
+                               : head_part_types.at("accessory") == kHpFace);
+      for (const FixtureArray malformed :
+           {FixtureArray{extras, 0, 0, 1}, FixtureArray{nullptr, 1, 0, 1},
+            FixtureArray{extras, 1000001, 0, 1000001}}) {
+        Field<FixtureArray>(parent.data(), 0x70) = malformed;
+        LoadHeadPartTypes();
+        assert(!hair_parts.count("accessory"));
+        assert(!mouth_extras.count("accessory"));
+        assert(head_part_types.at("accessory") == kHpMisc);
+      }
+    }
+    for (const FixtureArray malformed :
+         {FixtureArray{forms, 1, 0, 2}, FixtureArray{nullptr, 2, 0, 2},
+          FixtureArray{forms, 1000001, 0, 1000001}}) {
+      registry = malformed;
+      LoadHeadPartTypes();
+      assert(head_part_types.empty() && hair_parts.empty() &&
+             mouth_extras.empty());
+    }
+  }
+  registry = {};
+  test_se = test_vr = false;
+  MockRuntime();
 }
 
 int main() {
@@ -385,23 +456,24 @@ int main() {
   std::vector<uint8_t*> ptrs;
   for (size_t i = 0; i < forms.size(); ++i) {
     auto* p = forms[i].data();
-    p[kFormType] = kFtHeadPart;
-    Field<uint32_t>(p, kHeadPartType) = specs[i].type;
-    Field<const char*>(p, kHeadPartName) = specs[i].name;
+    p[0x1A] = kFtHeadPart;
+    Field<uint32_t>(p, 0x6C) = specs[i].type;
+    Field<const char*>(p, 0x118) = FixtureString(specs[i].name);
     ptrs.push_back(p);
   }
   uint8_t* hair_extra[] = {ptrs[2]};
-  Field<BSTArray>(ptrs[1], kHeadPartExtras) = {hair_extra, 1, 0, 1};
+  Field<FixtureArray>(ptrs[1], 0x70) = {hair_extra, 1, 0, 1};
   uint8_t* beard_extra[] = {ptrs[10]};
-  Field<BSTArray>(ptrs[11], kHeadPartExtras) = {beard_extra, 1, 0, 1};
-  Field<BSTArray>(handler, kDhFormArrays + kFtHeadPart * sizeof(BSTArray)) = {
+  Field<FixtureArray>(ptrs[11], 0x70) = {beard_extra, 1, 0, 1};
+  Field<FixtureArray>(handler, 0x10 + kFtHeadPart * sizeof(FixtureArray)) = {
       ptrs.data(), uint32_t(ptrs.size()), 0, uint32_t(ptrs.size())};
-  uint8_t* mouth_extra[] = {ptrs[14], ptrs[19], ptrs[21], ptrs[22], ptrs[23], ptrs[24]};
+  uint8_t* mouth_extra[] = {ptrs[14], ptrs[19], ptrs[21],
+                            ptrs[22], ptrs[23], ptrs[24]};
   uint8_t* nested_extra[] = {ptrs[20]};
   uint8_t* cyclic_extra[] = {ptrs[19]};
-  Field<BSTArray>(ptrs[13], kHeadPartExtras) = {mouth_extra, 6, 0, 6};
-  Field<BSTArray>(ptrs[19], kHeadPartExtras) = {nested_extra, 1, 0, 1};
-  Field<BSTArray>(ptrs[20], kHeadPartExtras) = {cyclic_extra, 1, 0, 1};
+  Field<FixtureArray>(ptrs[13], 0x70) = {mouth_extra, 6, 0, 6};
+  Field<FixtureArray>(ptrs[19], 0x70) = {nested_extra, 1, 0, 1};
+  Field<FixtureArray>(ptrs[20], 0x70) = {cyclic_extra, 1, 0, 1};
   LoadHeadPartTypes();
   auto expect = [](const char* n, direct::Part part, bool is_skin) {
     bool skin = true;
@@ -422,16 +494,16 @@ int main() {
   expect("MaleMouthKhajiit", direct::Part::kMouth, false);
   expect("UnregisteredDecoration", direct::Part::kNone, false);
   expect("FemaleHeadNord", direct::Part::kHead, true);
-  for (const char* name : {"Female_Teeth_Lily", "Female_Teeth_Alma",
-                            "Female_Teeth_DVA", "Female_Teeth_Eve",
-                            "Female_Teeth_Squirrel_Girl", "OralChild", "NestedChild",
-                            "UnregisteredTEETH", "UpperTooth", "LowerGums",
-                            "CustomDentition", "SeparateTongue"}) {
+  for (const char* name :
+       {"Female_Teeth_Lily", "Female_Teeth_Alma", "Female_Teeth_DVA",
+        "Female_Teeth_Eve", "Female_Teeth_Squirrel_Girl", "OralChild",
+        "NestedChild", "UnregisteredTEETH", "UpperTooth", "LowerGums",
+        "CustomDentition", "SeparateTongue"}) {
     assert(MouthCandidate(name));
   }
   for (const char* name : {"Tooth_Piercing", "MouthRing", "Teeth_Eyes",
-                            "Teeth_Hair", "Teeth_CustomSlot", "InigoEP",
-                            "UnregisteredDecoration", "FemaleHeadNord"}) {
+                           "Teeth_Hair", "Teeth_CustomSlot", "InigoEP",
+                           "UnregisteredDecoration", "FemaleHeadNord"}) {
     assert(!MouthCandidate(name));
   }
   // Candidate status does not prematurely change the accessory fallback.
@@ -471,33 +543,35 @@ int main() {
   // without admitting unrelated geometry.
   std::array<uint8_t, 0x1000> node{}, fod{};
   std::array<std::array<uint8_t, 0x1000>, 3> geometry{};
-  uint8_t* children[] = {geometry[0].data(), geometry[1].data(), geometry[2].data()};
+  uint8_t* children[] = {geometry[0].data(), geometry[1].data(),
+                         geometry[2].data()};
   uint8_t* extras[] = {fod.data()};
-  const char* names[] = {"UnregisteredTEETH", "UnregisteredDecoration", "MouthRing"};
+  const char* names[] = {"UnregisteredTEETH", "UnregisteredDecoration",
+                         "MouthRing"};
   float vertices[] = {1, 2, 3, 4, 5, 6};
-  Field<uint8_t**>(node.data(), kNodeChildren.Get()) = children;
-  Field<uint16_t>(node.data(), kNodeNumChildren.Get()) = 3;
-  Field<const char*>(fod.data(), kObjName) = "FOD";
-  Field<uint32_t>(fod.data(), kBaseNumVerts) = 2;
-  Field<const float*>(fod.data(), kBaseVerts) = vertices;
+  Field<uint8_t**>(node.data(), (skse::IsVr() ? 0x140 : 0x118)) = children;
+  Field<uint16_t>(node.data(), (skse::IsVr() ? 0x14A : 0x122)) = 3;
+  Field<const char*>(fod.data(), 0x10) = FixtureString("FOD");
+  Field<uint32_t>(fod.data(), 0x24) = 2;
+  Field<const float*>(fod.data(), 0x18) = vertices;
   for (int i = 0; i < 3; ++i) {
     auto* shape = children[i];
-    shape[kGeomType.Get()] = 4;
-    Field<const char*>(shape, kObjName) = names[i];
-    Field<uint16_t>(shape, kDynNumVerts.Get()) = 2;
-    Field<uint32_t>(shape, kDynDataSize.Get()) = 32;
-    Field<uint8_t**>(shape, kObjExtra) = extras;
-    Field<uint16_t>(shape, kObjNumExtra) = 1;
+    shape[(skse::IsVr() ? 0x190 : 0x150)] = 4;
+    Field<const char*>(shape, 0x10) = FixtureString(names[i]);
+    Field<uint16_t>(shape, (skse::IsVr() ? 0x19A : 0x15A)) = 2;
+    Field<uint32_t>(shape, (skse::IsVr() ? 0x1B0 : 0x170)) = 32;
+    Field<uint8_t**>(shape, 0x20) = extras;
+    Field<uint16_t>(shape, 0x28) = 1;
   }
   int seen = 0;
   ForFaceShapes(node.data(), [&](uint8_t*, const char* name, direct::Part part,
-                                bool skin, uint32_t nv, const float* base) {
+                                 bool skin, uint32_t nv, const float* base) {
     ++seen;
     assert(std::string(name) == "UnregisteredTEETH");
     assert(part == direct::Part::kNone && !skin && nv == 2 && base == vertices);
   });
   assert(seen == 1);
-  Field<const char*>(geometry[1].data(), kObjName) = "OtherTeeth";
+  Field<const char*>(geometry[1].data(), 0x10) = FixtureString("OtherTeeth");
   const std::string key = HeadKey(node.data(), false);
   auto different_model = std::make_shared<direct::Model>();
   different_model->network = model.network == 2 ? 3 : 2;
@@ -512,18 +586,19 @@ int main() {
   has_morphs = true;
   assert(HeadKey(node.data(), false) != key);
   has_morphs = false;
-  Field<uint16_t>(node.data(), kNodeNumChildren.Get()) = 1;
+  Field<uint16_t>(node.data(), (skse::IsVr() ? 0x14A : 0x122)) = 1;
   assert(HeadKey(node.data(), false) != key);
-  Field<uint16_t>(node.data(), kNodeNumChildren.Get()) = 3;
-  Field<const char*>(geometry[1].data(), kObjName) = "RenamedTeeth";
+  Field<uint16_t>(node.data(), (skse::IsVr() ? 0x14A : 0x122)) = 3;
+  Field<const char*>(geometry[1].data(), 0x10) = FixtureString("RenamedTeeth");
   assert(HeadKey(node.data(), false) != key);
-  Field<BSTArray>(ptrs[13], kHeadPartExtras) = {};
+  Field<FixtureArray>(ptrs[13], 0x70) = {};
   LoadHeadPartTypes();
   assert(!MouthCandidate("OralChild"));
   assert(!MouthCandidate("NestedChild"));
   assert(MouthCandidate("Female_Teeth_Lily"));
   HairExclusion();
   OralInheritance();
+  MalformedArrays();
   puts(
       "head-part classification passed: custom 32-bit slots, Misc, hair "
       "extras, vanilla and unknown controls");
