@@ -1,18 +1,19 @@
+#include "runtime_fixture.h"
 // Exercise loaded records and live handoff; only engine calls are mocked.
-#include "../src/plugin/better_facial_animations.cc"
-
 #include <array>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 
+#include "../src/plugin/better_facial_animations.cc"
+
 namespace {
-#define CHECK(x)                                                      \
-  do {                                                                \
-    if (!(x)) {                                                       \
-      std::fprintf(stderr, "line %d: %s\n", __LINE__, #x);             \
-      std::exit(1);                                                   \
-    }                                                                 \
+#define CHECK(x)                                           \
+  do {                                                     \
+    if (!(x)) {                                            \
+      std::fprintf(stderr, "line %d: %s\n", __LINE__, #x); \
+      std::exit(1);                                        \
+    }                                                      \
   } while (0)
 
 std::array<uint8_t, 0x1000> data{};
@@ -33,8 +34,8 @@ struct Race {
     form[0x1A] = 0x0E;
     Field<uint32_t>(form.data(), 0x14) = id;
     Field<void*>(form.data(), 0x08) = &source;
-    Field<const char*>(form.data(), 0x28) = "Test race";
-    Field<const char*>(form.data(), 0x2E0) = editor;
+    Field<const char*>(form.data(), 0x28) = FixtureString("Test race");
+    Field<const char*>(form.data(), 0x2E0) = FixtureString(editor);
     Field<uint32_t>(form.data(), 0x108) = 2;
     std::strcpy(reinterpret_cast<char*>(file.data() + 0x58), plugin);
   }
@@ -42,12 +43,12 @@ struct Race {
 
 bool Lookup(const uint32_t& handle, uint8_t** out) {
   *out = handle == 42 ? actor : nullptr;
-  if (*out) ++bfa::Field<LONG>(*out, bfa::kRefrRefCount);
+  if (*out) ++bfa::Field<LONG>(*out, 0x28);
   return *out != nullptr;
 }
 }  // namespace
 
-extern "C" uint64_t __wrap__ZN4skse4AddrEy(uint64_t id) {
+extern "C" uint64_t TestAddress(uint64_t id) {
   if (id == kIdDataHandler.Get()) return reinterpret_cast<uint64_t>(&handler);
   if (id == kIdLookupReference.Get())
     return reinterpret_cast<uint64_t>(&Lookup);
@@ -55,6 +56,7 @@ extern "C" uint64_t __wrap__ZN4skse4AddrEy(uint64_t id) {
 }
 
 int main() {
+  bfa::testing::address = TestAddress;
   using namespace bfa;
   // All INI writes stay inside this contract's temporary working directory.
   char old[MAX_PATH], temp[MAX_PATH], root[MAX_PATH];
@@ -81,15 +83,16 @@ int main() {
   Race light("Light.esl", 0xFE123ABC, "LightRace");
   Race draugr("Skyrim.esm", 0xD53, "DraugrRace");
   Race dragon("Skyrim.esm", 0x12E82, "DragonRace");
-  Field<uint32_t>(draugr.form.data(), kRaceFlags) = 0;
-  Field<uint32_t>(dragon.form.data(), kRaceFlags) = 1;
+  Field<uint32_t>(draugr.form.data(), 0x108) = 0;
+  Field<uint32_t>(dragon.form.data(), 0x108) = 1;
   // Other race flags must not hide a custom FaceGen race.
-  Field<uint32_t>(custom.form.data(), kRaceFlags) = 3;
-  uint8_t* records[] = {custom.form.data(), nullptr, nord.form.data(),
-                        light.form.data(), argonian.form.data(),
-                        vampire.form.data(), draugr.form.data(),
-                        dragon.form.data(), alfiq.form.data()};
-  Field<BSTArray>(handler, 0x10 + 0x0E * 0x18) = {records, 9, 0, 9};
+  Field<uint32_t>(custom.form.data(), 0x108) = 3;
+  uint8_t* records[] = {custom.form.data(),   nullptr,
+                        nord.form.data(),     light.form.data(),
+                        argonian.form.data(), vampire.form.data(),
+                        draugr.form.data(),   dragon.form.data(),
+                        alfiq.form.data()};
+  Field<FixtureArray>(handler, 0x10 + 0x0E * 0x18) = {records, 9, 0, 9};
   LoadRaceSettings();
   CHECK(SnapshotRaces().size() == 6);
   for (const auto& race : SnapshotRaces())
@@ -111,25 +114,28 @@ int main() {
   CHECK(RaceEnabled(0x13746));
   CHECK(SnapshotRaces().size() == 6);
 
-  for (uint32_t runtime : {skse::Version(1, 5, 97),
-                           skse::Version(1, 6, 353),
-                           skse::Version(1, 6, 1170),
-                           skse::Version(1, 4, 15)}) {
+  for (uint32_t runtime :
+       {skse::Version(1, 5, 97), skse::Version(1, 6, 353),
+        skse::Version(1, 6, 1170), skse::Version(1, 4, 15)}) {
     skse::SetRuntime(runtime);
     actor[0x1A] = 0x3E;
     base[0x1A] = 0x2B;
     Field<void*>(actor, 0x40) = base.data();
-    Field<void*>(actor, kActorRace.Get()) = argonian.form.data();
+    Field<void*>(
+        actor, (skse::Runtime() >= skse::Version(1, 6, 629) ? 0x1f8 : 0x1f0)) =
+        argonian.form.data();
     CHECK(SpeakerOk(actor));
-    Field<void*>(actor, kActorRace.Get()) = alfiq.form.data();
+    Field<void*>(
+        actor, (skse::Runtime() >= skse::Version(1, 6, 629) ? 0x1f8 : 0x1f0)) =
+        alfiq.form.data();
     CHECK(!SpeakerOk(actor));
     BeginSpeech(actor, "disabled", 0, 2, 0, 0, Tune(), world_epoch);
     CHECK(queue.empty() && playing.empty());
-    Field<LONG>(actor, kRefrRefCount) = 1;
+    Field<LONG>(actor, 0x28) = 1;
     std::array<uint8_t, 0x400> storage{}, node{};
     auto* fg = storage.data();
     float values[direct::kNumExpressions];
-    auto& ex = Field<skse::KeyframeMultiple>(fg, skse::kFgExpr3);
+    auto& ex = FixtureKeyframe(fg, 0xC0);
     ex.values = values;
     ex.count = direct::kNumExpressions;
     auto seed = [&] {
@@ -157,10 +163,10 @@ int main() {
     CHECK(faces.empty());
     for (float value : values) CHECK(value == 0.65f);
     seed();
-    Field<uint8_t*>(node.data(), kNodeFg.Get()) = fg;
+    Field<uint8_t*>(node.data(), (skse::IsVr() ? 0x178 : 0x150)) = fg;
     AddDirect(node.data(), false);
-    CHECK(faces.empty() && playing.empty() && fg[kFgDirty]);
-    CHECK(Field<LONG>(actor, kRefrRefCount) == 1);
+    CHECK(faces.empty() && playing.empty() && fg[0x218]);
+    CHECK(Field<LONG>(actor, 0x28) == 1);
     SetRaceEnabled(0x06000800, true);
     CHECK(SpeakerOk(actor));
     partner_fg = fg;
@@ -262,6 +268,117 @@ int main() {
       }
       CHECK(frame(target, 1.f / hz) == kNoUpdate);
     }
+    // After its last line a face is kept for kFaceGrace, then handed back
+    // over kOwnOut and dropped: no held expression lingers, on the player or
+    // an NPC. A line of the same speaker within the grace, even one still
+    // awaiting its animation, keeps the face without a dip. The partner's
+    // face is released the same way once the conversation is over.
+    {
+      partner_fg = nullptr;
+      partner_ref = nullptr;
+      partner_handle = 0;
+      faces.clear();
+      Count();
+      auto frame = [&](float dt) {
+        testing::clock_offset = testing::clock_offset.load() + dt;
+        std::fill_n(values, direct::kNumExpressions, 0.65f);
+        return Expressions(fg, dt, Tune(), false, actor, 42);
+      };
+      auto speak = [&](bool player, State state) {
+        Playing line;
+        line.actor = actor;
+        line.actor_handle = 42;
+        line.player = player;
+        line.entry = std::make_shared<Entry>();
+        line.entry->state = state;
+        line.direct_frame = state == State::kReady ? 0 : -1;
+        line.direct_frames = 10;
+        playing[fg] = line;
+        Count();
+      };
+      for (bool player : {false, true}) {
+        speak(player, State::kReady);
+        for (int i = 0; i < 20; ++i) frame(0.1f);
+        Face& f = faces.at(fg);
+        CHECK(f.ownership_blend == 1 && f.speech_blend == 1);
+        playing.erase(fg);  // the line is over, nothing follows
+        Count();
+        const double over = play_clock;
+        // the grace: still the plugin's while the engine's expressions
+        // fade back in, and kept updating towards the hand-back
+        while (play_clock < over + kFaceGrace - 0.15) {
+          CHECK(frame(0.1f) & kKeepUpdating);
+          CHECK(f.ownership_blend == 1);
+        }
+        CHECK(f.speech_blend == 0);
+        while (faces.count(fg)) {
+          CHECK(play_clock < over + kFaceGrace + kOwnOut + 0.3);
+          frame(0.1f);
+        }
+        CHECK(playing.empty());
+        for (float value : values) CHECK(value == 0.65f);  // the engine's
+      }
+      // The next line within the grace: no dip while it is generated, then
+      // its animation fades in from the kept face.
+      speak(false, State::kReady);
+      for (int i = 0; i < 20; ++i) frame(0.1f);
+      Face& f = faces.at(fg);
+      playing.erase(fg);
+      Count();
+      for (int i = 0; i < 10; ++i) frame(0.1f);  // 1 s gap
+      speak(false, State::kPending);
+      Playing& next = playing.at(fg);
+      for (int i = 0; i < 15; ++i) {  // 1.5 s of inference
+        frame(0.1f);
+        CHECK(f.ownership_blend == 1 && &faces.at(fg) == &f);
+      }
+      CHECK(f.speech_blend == 0);  // the engine's expressions, as between lines
+      next.entry->state = State::kReady;
+      next.direct_frame = 0;
+      for (int i = 0; i < 20; ++i) {
+        frame(0.1f);
+        CHECK(f.ownership_blend == 1);
+      }
+      CHECK(f.speech_blend == 1);
+      // but inference longer than the grace hands the face back meanwhile
+      next.entry->state = State::kPending;
+      next.direct_frame = -1;
+      for (int i = 0; i < 50; ++i) frame(0.1f);
+      CHECK(faces.count(fg) && faces.at(fg).ownership_blend == 0);
+      playing.erase(fg);
+      faces.clear();
+      Count();
+      // A first line waits for its animation with the engine's expressions.
+      speak(false, State::kPending);
+      for (int i = 0; i < 10; ++i) frame(0.1f);
+      CHECK(faces.count(fg) && faces.at(fg).ownership_blend == 0);
+      playing.erase(fg);
+      faces.clear();
+      Count();
+      // The partner: the plugin's throughout the conversation, handed back
+      // within the grace and the fade after it.
+      partner_fg = fg;
+      partner_ref = actor;
+      partner_handle = 42;
+      for (int i = 0; i < 20; ++i) frame(0.1f);
+      CHECK(faces.at(fg).ownership_blend == 1);
+      partner_fg = nullptr;  // the conversation is over
+      partner_ref = nullptr;
+      partner_handle = 0;
+      const double over = play_clock;
+      while (play_clock < over + kFaceGrace - 0.15) {
+        frame(0.1f);
+        CHECK(faces.at(fg).ownership_blend == 1);
+      }
+      while (faces.count(fg)) {
+        CHECK(play_clock < over + kFaceGrace + kOwnOut + 0.3);
+        frame(0.1f);
+      }
+      testing::clock_offset = 0;
+      partner_fg = fg;
+      partner_ref = actor;
+      partner_handle = 42;
+    }
     // Disabling a race must release every live animation path.
     SetRaceEnabled(0x06000800, false);
     CHECK(!SpeakerOk(actor));
@@ -287,13 +404,7 @@ int main() {
     ResetPlayback(false);
   }
   // Race defaults and persistence must preserve the candidate's model choice.
-  {
-    ScopedLock guard(settings_lock);
-    for (const Param& param : kParams) {
-      if (std::strcmp(param.key, "UsePerformanceModel") == 0)
-        SelectModelCheckbox(param);
-    }
-  }
+  SelectFaceOption(a2f::kNetPerformance);
   CHECK(SnapshotTune().SelectedModel() == 4);
   ResetTune();
   CHECK(SnapshotTune().SelectedModel() == 4);
@@ -306,10 +417,41 @@ int main() {
   CHECK(RaceEnabled(0x09001234) && RaceEnabled(0x13740));
   CHECK(!RaceEnabled(0x06000800));
   DeleteFileA(kIni);
+  // Installer race choices compose with the main INI and remain overridable.
+  CHECK(
+      CreateDirectoryA("Data\\SKSE\\Plugins\\BetterFacialAnimations", nullptr));
+  CHECK(CreateDirectoryA(
+      "Data\\SKSE\\Plugins\\BetterFacialAnimations\\Installer", nullptr));
+  const char* fragment =
+      "Data\\SKSE\\Plugins\\BetterFacialAnimations\\Installer\\Argonian.ini";
+  FILE* file = fopen(fragment, "wb");
+  CHECK(file);
+  CHECK(fputs("[Races]\nSkyrim.esm|013740=0\nSkyrim.esm|08883A=0\n", file) >=
+        0);
+  CHECK(fclose(file) == 0);
+  LoadIni();
+  LoadRaceSettings();
+  CHECK(!RaceEnabled(0x13740) && !RaceEnabled(0x8883A));
+  SetRaceEnabled(0x13740, true);
+  SaveIni();
+  LoadRaceSettings();
+  CHECK(RaceEnabled(0x13740) && !RaceEnabled(0x8883A));
+  ResetTune();
+  SaveIni();
+  LoadIni();
+  LoadRaceSettings();
+  CHECK(RaceEnabled(0x13740) && RaceEnabled(0x8883A));
+  CHECK(!RaceEnabled(0x06000800));
+  CHECK(DeleteFileA(fragment));
+  CHECK(RemoveDirectoryA(
+      "Data\\SKSE\\Plugins\\BetterFacialAnimations\\Installer"));
+  CHECK(RemoveDirectoryA("Data\\SKSE\\Plugins\\BetterFacialAnimations"));
+  CHECK(DeleteFileA(kIni));
   CHECK(RemoveDirectoryA("Data\\SKSE\\Plugins"));
   CHECK(RemoveDirectoryA("Data\\SKSE"));
   CHECK(RemoveDirectoryA("Data"));
   CHECK(SetCurrentDirectoryA(old) && RemoveDirectoryA(root));
-  std::puts("race settings: discovery, stable persistence, admission, live "
-            "handoff, re-enable and defaults passed");
+  std::puts(
+      "race settings: discovery, stable persistence, admission, live "
+      "handoff, re-enable and defaults passed");
 }

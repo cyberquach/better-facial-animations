@@ -29,8 +29,8 @@ void* HookNativeSpeech(uint8_t* entry, void* hook) {
   const int64_t delta = reinterpret_cast<int64_t>(relay) -
                         reinterpret_cast<int64_t>(entry + kJmpRel32Size);
   if (delta != static_cast<int32_t>(delta)) return nullptr;
-  auto* original = static_cast<uint8_t*>(VirtualAlloc(
-      nullptr, kTrampolineSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+  auto* original =
+      static_cast<uint8_t*>(call_sites::trampoline.allocate(kTrampolineSize));
   if (!original) return nullptr;
   std::memcpy(original, kNativeSpeechPrefix, kPrefixSize);
   // jmp [rip] to the first untouched instruction, without clobbering RAX.
@@ -38,22 +38,13 @@ void* HookNativeSpeech(uint8_t* entry, void* hook) {
   auto* continuation = entry + kPrefixSize;
   std::memcpy(original + kPrefixSize + sizeof kJmpIndirect, &continuation,
               sizeof continuation);
-  DWORD old;
-  if (!VirtualProtect(original, kTrampolineSize, PAGE_EXECUTE_READ, &old)) {
-    VirtualFree(original, 0, MEM_RELEASE);
-    return nullptr;
-  }
   FlushInstructionCache(GetCurrentProcess(), original, kTrampolineSize);
-  if (!VirtualProtect(entry, kPrefixSize, PAGE_EXECUTE_READWRITE, &old)) {
-    VirtualFree(original, 0, MEM_RELEASE);
-    return nullptr;
-  }
+  uint8_t patch[kPrefixSize];
   const int32_t displacement = static_cast<int32_t>(delta);
-  entry[0] = 0xE9;
-  std::memcpy(entry + 1, &displacement, sizeof displacement);
-  std::memset(entry + kJmpRel32Size, 0x90, kPrefixSize - kJmpRel32Size);
-  DWORD ignored;
-  VirtualProtect(entry, kPrefixSize, old, &ignored);
+  patch[0] = 0xE9;
+  std::memcpy(patch + 1, &displacement, sizeof displacement);
+  std::memset(patch + kJmpRel32Size, 0x90, kPrefixSize - kJmpRel32Size);
+  REL::safe_write(reinterpret_cast<uint64_t>(entry), patch, sizeof patch);
   FlushInstructionCache(GetCurrentProcess(), entry, kPrefixSize);
   return original;
 }

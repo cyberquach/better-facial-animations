@@ -42,9 +42,35 @@ std::vector<std::string> DiagnoseNet(bool gpu, const std::string& err,
   };
   std::vector<std::string> out;
   char b[400];
-  if (gpu && (has("GPU attempt failed") || has("independent device:"))) {
-    out.push_back("GPU model unavailable. Vanilla lip-sync remains active.");
-    out.push_back("Choose Try GPU again, or enable Force CPU to use CPU.");
+  if (gpu && (has("independent device:") || has("independent context:") ||
+              has("GPU attempt failed"))) {
+    out.push_back(
+        "GPU model unavailable in Independent GPU mode. Vanilla lip-sync "
+        "remains active.");
+    if (has("runtime API unavailable:"))
+      out.push_back(
+          "The loaded DirectX runtime does not expose the Independent "
+          "Devices API. Independent GPU mode needs Windows 10 22H2 or Windows "
+          "11 with the August 2023 or later cumulative update (Proton: a "
+          "current vkd3d-proton) and a current graphics driver; see "
+          "GPU-SETUP.txt and the OS prerequisite line in the diagnostic "
+          "report. Driver support was not tested.");
+    else if (has("device creation: CreateDevice"))
+      out.push_back(
+          "The Independent Devices API is available, but device "
+          "creation failed. See the diagnostic report for the native error; "
+          "this is not evidence that the Windows API is missing. Update the "
+          "graphics driver.");
+    else if (has("independent context:") || LostDevice(err))
+      out.push_back(
+          "The independent device was lost. It is created again "
+          "automatically, up to 3 times; further failures wait for Try GPU "
+          "again.");
+    out.push_back(
+        "Choose Try GPU again, or enable Force CPU to use CPU. To leave "
+        "Independent GPU mode, untick it in the installer "
+        "(IndependentGpuDevice=0) and restart Skyrim; the shared route needs "
+        "no special Windows or driver support.");
     return out;
   }
   if (has("model file not found")) {
@@ -119,8 +145,9 @@ std::vector<std::string> DiagnoseNet(bool gpu, const std::string& err,
     out.push_back(b);
   }
   if (pressure && !oom)
-    out.push_back("Free VRAM is below what this model usually needs: memory "
-                  "pressure is a likely cause.");
+    out.push_back(
+        "Free VRAM is below what this model usually needs: memory "
+        "pressure is a likely cause.");
   if (lost) {
     if (reason == "887A0006")
       out.push_back(
@@ -150,22 +177,38 @@ std::vector<std::string> DiagnoseNet(bool gpu, const std::string& err,
       out.push_back(
           "Windows gave no device-removal reason: the failure happened inside "
           "DirectML, the graphics driver or a program that hooks Direct3D 12.");
-    out.push_back("Shared GPU retries automatically; Try GPU again starts a manual attempt. Attach "
-                  "BetterFacialAnimations.log to a bug report if it recurs.");
+    out.push_back(
+        "Shared GPU retries automatically with backoff, independent GPU up "
+        "to 3 times; Try GPU again starts a manual attempt. Attach "
+        "BetterFacialAnimations.log to a bug report if it recurs.");
   }
   return out;
 }
 
 void NetKeeper::GpuFailed(const std::string& err) {
   gpu_error_ = error_ = err.empty() ? "GPU initialization failed" : err;
-  gpu_blocked_ = !retry_gpu_ || !RetryableGpuFailure(gpu_error_);
+  if (independent_) {
+    gpu_blocked_ = !RetryableIndependentFailure(gpu_error_) ||
+                   independent_retries_ >= kIndependentRetries;
+    if (!gpu_blocked_) ++independent_retries_;
+  } else {
+    gpu_blocked_ = !RetryableGpuFailure(gpu_error_);
+  }
   if (gpu_blocked_) {
     retry_at_ = 0;
-    Log("GPU attempt failed; choose Try GPU again or Force CPU: " + error_);
+    Log(std::string(independent_ && independent_retries_ >= kIndependentRetries
+                        ? "independent GPU failed " +
+                              std::to_string(kIndependentRetries + 1) +
+                              " times; choose Try GPU again or Force CPU: "
+                        : "GPU attempt failed; choose Try GPU again or Force "
+                          "CPU: ") +
+        error_);
   } else {
-    retry_wait_ = retry_wait_ ? std::min(retry_wait_ * 2, kRetryMax) : kRetryMin;
+    retry_wait_ =
+        retry_wait_ ? std::min(retry_wait_ * 2, kRetryMax) : kRetryMin;
     retry_at_ = now_() + retry_wait_;
-    Log("shared GPU unavailable; retry in " +
+    Log(std::string(independent_ ? "independent" : "shared") +
+        " GPU unavailable; retry in " +
         std::to_string(static_cast<int>(retry_wait_)) + " s: " + error_);
   }
 }
@@ -181,6 +224,7 @@ Net* NetKeeper::Ensure() {
       gpu_error_.clear();
       error_.clear();
       retry_at_ = retry_wait_ = 0;
+      independent_retries_ = 0;
       Log("network loaded: " + info);
     } else {
       GpuFailed(err);

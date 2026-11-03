@@ -58,10 +58,10 @@ bool SkseLoads(HMODULE dll, uint32_t runtime) {
     auto query = reinterpret_cast<bool (*)(const skse::SKSEInterface*,
                                            skse::PluginInfo*)>(
         GetProcAddress(dll, "SKSEPlugin_Query"));
-    skse::SKSEInterface iface = {};
+    SKSE::Impl::SKSEInterface iface = {};
     iface.runtimeVersion = runtime;
     skse::PluginInfo info = {};
-    return query && query(&iface, &info) && info.infoVersion == 1 &&
+    return query && query(reinterpret_cast<const skse::SKSEInterface*>(&iface), &info) && info.infoVersion == 1 &&
            info.name && *info.name;
   }
   auto* data = reinterpret_cast<const skse::SKSEPluginVersionData*>(
@@ -113,7 +113,6 @@ int main(int argc, char** argv) {
     CheckIds(kSpeakCallers, runtime);
     CheckIds(kResponseCallers, runtime);
     CheckIds(kFaceCallers, runtime);
-    CheckIds(kMorphCallers, runtime);
   }
   printf("%s: %zu runtimes, %d failures\n", failures ? "FAILED" : "ok",
          sizeof(kSupported) / sizeof(kSupported[0]), failures);

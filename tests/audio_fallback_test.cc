@@ -1,3 +1,4 @@
+#include "runtime_fixture.h"
 // Production audio and playback paths; engine access, head mapping and the
 // inference network are mocked.
 #include <algorithm>
@@ -30,7 +31,7 @@ uint8_t* GetFace(uint8_t*) { return fg; }
 void Handle(uint32_t& h, uint8_t*) { h = 42; }
 bool Lookup(const uint32_t& h, uint8_t** out) {
   *out = h == 42 ? actor : nullptr;
-  if (*out) ++bfa::Field<LONG>(*out, bfa::kRefrRefCount);
+  if (*out) ++bfa::Field<LONG>(*out, 0x28);
   return *out != nullptr;
 }
 void Resource(skse::ResId* id, const char*) { *id = {}; }
@@ -135,7 +136,7 @@ void Drain(a2f::NetKeeper& keeper) {
 
 }  // namespace
 
-extern "C" uint64_t __wrap__ZN4skse4AddrEy(uint64_t id) {
+extern "C" uint64_t TestAddress(uint64_t id) {
   using namespace bfa;
   if (id == kIdStreamCtor.Get()) return reinterpret_cast<uint64_t>(&Open);
   if (id == kIdStreamDtor.Get()) return reinterpret_cast<uint64_t>(&Close);
@@ -148,15 +149,11 @@ extern "C" uint64_t __wrap__ZN4skse4AddrEy(uint64_t id) {
   return 0;
 }
 extern "C" std::string
-__wrap__ZN3bfa7HeadKeyB5cxx11EPhbSt10shared_ptrIKN6direct5ModelEE(
+TestHeadKey(
     uint8_t*, bool, std::shared_ptr<const direct::Model> mapping) {
   mapped_with = mapping.get();
   return head_key;
 }
-extern "C" bfa::State
-MapHead(uint8_t*, const std::string&, bool, std::shared_ptr<const direct::Head>&, std::shared_ptr<const direct::Model>) asm(
-    "__wrap__ZN3bfa8FindHeadEPhRKNSt7__cxx1112basic_stringIcSt11char_traits"
-    "IcESaIcEEEbRSt10shared_ptrIKN6direct4HeadEES9_IKNSA_5ModelEE");
 extern "C" bfa::State MapHead(uint8_t*, const std::string&, bool,
                               std::shared_ptr<const direct::Head>& head,
                               std::shared_ptr<const direct::Model>) {
@@ -361,7 +358,7 @@ void TestHandoff(const bfa::Tune& t, a2f::NetKeeper& keeper,
   CHECK(FailedSpeech(fg));
   // Morph call before the animation update must release the old pose.
   AddDirect(node.data(), false);
-  CHECK(faces.empty() && FailedSpeech(fg) && fg[kFgDirty]);
+  CHECK(faces.empty() && FailedSpeech(fg) && fg[0x218]);
   for (int i = 0; i < direct::kNumExpressions; ++i)
     CHECK(expr[i] == (direct::PlaysExpression(i) ? .6f : 0.f));
   for (int i = 0; i < direct::kNumPhonemes; ++i) CHECK(phon[i] == .4f);
@@ -533,7 +530,7 @@ void TestSpeechTiming() {
   bool lip;
   const char* why;
   auto reset = [&] {
-    Field<uint8_t*>(fg, skse::kFgDialogue) = resource.data();
+    Field<uint8_t*>(fg, 0x228) = resource.data();
     p = Playing();
     p.entry = std::make_shared<Entry>();
     p.entry->state = State::kReady;
@@ -546,7 +543,7 @@ void TestSpeechTiming() {
   };
   auto sample = [&](double elapsed, float timer, uint32_t sound = 12,
                     int state = 1) {
-    Field<float>(fg, skse::kFgPhon1Timer) = timer;
+    Field<float>(fg, 0x12C) = timer;
     return LineClock(fg, p, 100 + elapsed, lip, why, sound, state);
   };
   for (bool female : {false, true}) {
@@ -562,7 +559,7 @@ void TestSpeechTiming() {
       last = shown;
     }
     CHECK(p.speech_clock.corrected);
-    Field<uint8_t*>(fg, skse::kFgDialogue) = nullptr;
+    Field<uint8_t*>(fg, 0x228) = nullptr;
     for (int frame = 181; frame <= 330; ++frame) {
       const float t = frame / 60.f;
       CHECK(std::fabs(sample(t, 6) - t) < 0.02f && !why);
@@ -580,7 +577,7 @@ void TestSpeechTiming() {
   CHECK(!why);
   for (int frame = 122; frame <= 180; ++frame)
     CHECK(std::fabs(sample(frame / 60., frame / 30.f) - frame / 60.f) < .02f);
-  Field<uint8_t*>(fg, skse::kFgDialogue) = nullptr;
+  Field<uint8_t*>(fg, 0x228) = nullptr;
   CHECK(std::fabs(sample(181 / 60., 6, 12, 0) - 181 / 60.f) < .02f);
   CHECK(!why);
   CHECK(std::fabs(sample(182 / 60., 6) - 182 / 60.f) < .02f && !why);
@@ -600,7 +597,7 @@ void TestSpeechTiming() {
   reset();
   CHECK(sample(0, 0) == 0);
   CHECK(sample(4, 5) == 5 && !p.speech_clock.corrected);
-  Field<uint8_t*>(fg, skse::kFgDialogue) = replacement.data();
+  Field<uint8_t*>(fg, 0x228) = replacement.data();
   sample(4.1, 5);
   CHECK(why);  // a different native lip resource still supersedes the line
   reset();
@@ -613,7 +610,7 @@ void TestSpeechTiming() {
   CHECK(!why);  // the stopped interval restarts after the sound played again
   sample(1.8, 1.8, 12, 0);
   CHECK(why);  // a sound stopped this long wins over its lip resource
-  Field<uint8_t*>(fg, skse::kFgDialogue) = nullptr;
+  Field<uint8_t*>(fg, 0x228) = nullptr;
 }
 
 void TestPlayback(uint32_t runtime, a2f::NetKeeper& keeper) {
@@ -624,21 +621,21 @@ void TestPlayback(uint32_t runtime, a2f::NetKeeper& keeper) {
   cache.clear();
   queue.clear();
   void* vtable[0x100]{};
-  vtable[kVfGetFaceGenAnimationData] = reinterpret_cast<void*>(&GetFace);
+  vtable[0x63] = reinterpret_cast<void*>(&GetFace);
   Field<void**>(actor, 0) = vtable;
-  Field<uint8_t*>(actor, kRefrBase) = base.data();
-  actor[kFormType] = kFtActor;
-  base[kFormType] = kFtNpc;
+  Field<uint8_t*>(actor, 0x40) = base.data();
+  actor[0x1A] = kFtActor;
+  base[0x1A] = kFtNpc;
   // Conversation admission requires a real supported FaceGen race.
-  Field<uint8_t*>(actor, kActorRace.Get()) = race.data();
-  Field<uint32_t>(race.data(), kFormId) = 0x13746;  // Nord
-  Field<uint32_t>(race.data(), kRaceFlags) = 2;
+  Field<uint8_t*>(actor, (skse::Runtime() >= skse::Version(1, 6, 629) ? 0x1f8 : 0x1f0)) = race.data();
+  Field<uint32_t>(race.data(), 0x14) = 0x13746;  // Nord
+  Field<uint32_t>(race.data(), 0x108) = 2;
   CHECK(SpeakerOk(actor));
-  Field<uint32_t>(actor, kFormId) = 0x123;
-  Field<LONG>(actor, kRefrRefCount) = 1;
-  Field<uint32_t>(mtm, kMtmSpeaker) = 42;
-  Field<uint8_t*>(node.data(), kNodeFg.Get()) = fg;
-  Field<uint8_t*>(node.data(), kAvUserData.Get()) = actor;
+  Field<uint32_t>(actor, 0x14) = 0x123;
+  Field<LONG>(actor, 0x28) = 1;
+  Field<uint32_t>(mtm, 0x68) = 42;
+  Field<uint8_t*>(node.data(), (skse::IsVr() ? 0x178 : 0x150)) = fg;
+  Field<uint8_t*>(node.data(), (skse::IsVr() ? 0x110 : 0xF8)) = actor;
   Tune t;
   std::string stem;
   CHECK(VoiceStem("Data\\Sound\\Voice\\Fuz Ro Doh\\Stock_10.xwm", stem));
@@ -652,10 +649,10 @@ void TestPlayback(uint32_t runtime, a2f::NetKeeper& keeper) {
   files["Sound/Voice/Skyrim.esm/owned.wav"] = Wav(true);
   files[stem + ".wav"] = Wav(false);
   float expr[direct::kNumExpressions], phon[direct::kNumPhonemes];
-  auto& ex = Field<skse::KeyframeMultiple>(fg, skse::kFgExpr3);
+  auto& ex = FixtureKeyframe(fg, 0xC0);
   ex.values = expr;
   ex.count = direct::kNumExpressions;
-  auto& ph = Field<skse::KeyframeMultiple>(fg, skse::kFgPhon3);
+  auto& ph = FixtureKeyframe(fg, 0x140);
   ph.values = phon;
   ph.count = direct::kNumPhonemes;
   TestHandoff(t, keeper, stem, expr, phon);
@@ -673,10 +670,10 @@ void TestPlayback(uint32_t runtime, a2f::NetKeeper& keeper) {
   BeginSpeech(actor, stem, 12, 2, 0, 0, t, world_epoch);
   std::array<uint8_t, 0x20> lip_resource{};
   Field<uint32_t>(lip_resource.data(), 0x0C) = 0x30000000;
-  Field<uint8_t*>(fg, skse::kFgDialogue) = lip_resource.data();
+  Field<uint8_t*>(fg, 0x228) = lip_resource.data();
   Apply(fg, t, false, actor, 42, 12, 1);
   CHECK(playing.at(fg).lip_seen);
-  Field<uint8_t*>(fg, skse::kFgDialogue) = nullptr;
+  Field<uint8_t*>(fg, 0x228) = nullptr;
   Apply(fg, t, false, actor, 42, 12, 1);
   CHECK(playing.count(fg));
   playing.at(fg).voice.requested_at -= 1;
@@ -685,6 +682,76 @@ void TestPlayback(uint32_t runtime, a2f::NetKeeper& keeper) {
   playing.at(fg).voice.stopped_at -= a2f::VoiceStart::kLipStop + .01;
   Apply(fg, t, false, actor, 42, 12, 0);
   CHECK(playing.empty());
+  // A skipped line must clear both the cached native mouth and the saved
+  // BFA pose, for player and NPC, even when the lip resource remains alive.
+  for (bool player : {false, true}) {
+    for (bool external : {false, true}) {
+      t.male.face_out = external ? 0.f : .8f;
+      t.player_face.face_out = external ? 0.f : .4f;
+      Field<uint32_t>(actor, 0x14) = player ? kPlayerFormId : 0x123;
+      BeginSpeech(actor, stem, 12, 2, 0, 0, t, world_epoch);
+      auto& p = playing.at(fg);
+      p.direct_frames = 12;
+      p.direct_tail = kDirectTail;
+      p.voice.seen = true;
+      p.voice.requested_at = Now() - 2;
+      p.voice.stopped_at = Now() - 1;
+      if (external) {
+        p.external = std::make_shared<PlayerSpeech>();
+        p.external->stopped = true;
+      }
+      float source[direct::kNumPhonemes];
+      std::fill_n(source, direct::kNumPhonemes, .8f);
+      auto& source_phon = FixtureKeyframe(fg, 0x120);
+      source_phon.values = source;
+      source_phon.count = direct::kNumPhonemes;
+      std::fill_n(phon, direct::kNumPhonemes, .8f);
+      std::fill_n(expr, direct::kNumExpressions, .5f);
+      auto& face = faces[fg];
+      float tongue[direct::kNumPhonemes];
+      face.phonemes.Capture(ph, 1, tongue);
+      std::vector<float> pose(1, 1.f);
+      face.transition.Blend(std::make_shared<a2f::Line>(), Now(), 0, true,
+                            true, pose);
+      Count();
+      const int update = Apply(fg, t, false, actor, 42, 12, 0);
+      CHECK(update & kFaceChanged);
+      CHECK(update & kKeepUpdating);
+      CHECK(playing.empty());
+      const float expected_fade = player ? t.player_face.face_out : t.male.face_out;
+      if (expected_fade > 0) {
+        CHECK(faces.count(fg));
+        const double fade_start = faces.at(fg).neutral_started;
+        const float fade = faces.at(fg).neutral_duration;
+        CHECK(fade == expected_fade);
+        // The actual stored speech pose eases halfway to zero, rather than
+        // snapping or fading back to the engine's stale open-mouth phonemes.
+        pose[0] = 0;
+        CHECK(faces.at(fg).transition.Blend(nullptr, fade_start + fade * .5,
+                                          fade, true, false, pose));
+        CHECK(std::fabs(pose[0] - .5f) < .001f);
+        testing::clock_offset = testing::clock_offset.load() + fade * .5;
+        CHECK(Expressions(fg, fade * .5f, t, false, actor, 42) & kKeepUpdating);
+        CHECK(faces.count(fg));
+        testing::clock_offset = testing::clock_offset.load() + fade * .5 + .01;
+        CHECK(Expressions(fg, fade * .5f, t, false, actor, 42) & kFaceChanged);
+      }
+      CHECK(!faces.count(fg));
+      RestoreFaceKeyframes(fg, world_epoch);
+      for (float value : source) CHECK(value == 0);
+      for (int i = 0; i < direct::kNumPhonemes; ++i) CHECK(phon[i] == 0);
+      for (int i = 0; i < direct::kNumExpressions; ++i) CHECK(expr[i] == 0);
+      // Another writer can set the face afterward; no delayed restoration.
+      phon[0] = .25f;
+      expr[0] = .3f;
+      RestoreFaceKeyframes(fg, world_epoch);
+      CHECK(phon[0] == .25f && expr[0] == .3f);
+      source_phon.values = nullptr;
+      source_phon.count = 0;
+    }
+  }
+  t = Tune();
+  Field<uint32_t>(actor, 0x14) = 0x123;
   BeginSpeech(actor, stem, 12, 2, 0, 0, t, world_epoch);
   CHECK(playing.count(fg));
   ResetPlayback(true);
@@ -693,6 +760,9 @@ void TestPlayback(uint32_t runtime, a2f::NetKeeper& keeper) {
 }
 
 int main() {
+  bfa::testing::head_key = TestHeadKey;
+  bfa::testing::find_head = MapHead;
+  bfa::testing::address = TestAddress;
   using namespace bfa;
   model.faces.resize(1);
   model.faces[0].rest.resize(a2f::kNumOut);

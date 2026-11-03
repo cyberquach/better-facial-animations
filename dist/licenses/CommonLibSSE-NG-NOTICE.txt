@@ -1,0 +1,7 @@
+CommonLibSSE-NG 8.4.0
+Source: https://github.com/alandtse/CommonLibSSE-NG
+Revision: adb3e2c4dff61d151370a6777ed9e77f8e005c62
+License: GPL-3.0-or-later (see BetterFacialAnimations-GPL-3.0.txt).
+Official prebuilt all-runtime MSVC CMake archive SHA256:
+7c8e9d4e78e4b1d22bb0b1cd22b24bd172863cc5dcb3912347d60b6000b4e8de
+The plugin statically links the library; no separate CommonLib installation is needed.

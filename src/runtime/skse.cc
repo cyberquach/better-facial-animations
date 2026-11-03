@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -20,8 +21,6 @@ FILE* log_file;
 std::atomic<bool> log_on{false};
 uint32_t runtime;
 const wchar_t* my_games = L"Skyrim Special Edition";
-uint64_t image_base;
-std::vector<std::pair<uint64_t, uint64_t>> ids;  // id -> offset, sorted by id
 
 // Opens the log on first use; false when there is none.
 bool OpenLog() {
@@ -32,7 +31,7 @@ bool OpenLog() {
   if (SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &docs) != S_OK)
     return false;
   _snwprintf(path, MAX_PATH, L"%ls\\My Games\\%ls\\SKSE\\%hs.log", docs,
-             my_games, SKSEPlugin_Version.name);
+             my_games, SKSEPlugin_Version.pluginName);
   CoTaskMemFree(docs);
   log_file = _wfopen(path, L"w");
   return log_file != nullptr;
@@ -46,6 +45,17 @@ void Write(const char* fmt, va_list a) {
 }  // namespace
 
 void Log(const char* fmt, ...) {
+#ifdef ENABLE_COMMONLIBSSE_TESTING
+  if (bfa::testing::log) {
+    va_list args;
+    va_start(args, fmt);
+    char text[16384];
+    vsnprintf(text, sizeof(text), fmt, args);
+    va_end(args);
+    bfa::testing::log("%s", text);
+    return;
+  }
+#endif
   if (!log_on || !OpenLog()) return;
   va_list a;
   va_start(a, fmt);
@@ -54,6 +64,17 @@ void Log(const char* fmt, ...) {
 }
 
 void Report(const char* fmt, ...) {
+#ifdef ENABLE_COMMONLIBSSE_TESTING
+  if (bfa::testing::report) {
+    va_list args;
+    va_start(args, fmt);
+    char text[16384];
+    vsnprintf(text, sizeof(text), fmt, args);
+    va_end(args);
+    bfa::testing::report("%s", text);
+    return;
+  }
+#endif
   static std::atomic<int> lines{0};
   if (!OpenLog()) return;
   const int n = ++lines;
@@ -69,6 +90,15 @@ uint32_t Runtime() { return runtime; }
 
 void SetRuntime(uint32_t runtime_version) {
   runtime = runtime_version;
+#ifdef ENABLE_COMMONLIBSSE_TESTING
+  REL::Module::mock(
+      REL::Version::unpack(runtime_version),
+      runtime_version < Version(1, 5, 0)   ? REL::Module::Runtime::VR
+      : runtime_version < Version(1, 6, 0) ? REL::Module::Runtime::SE
+                                           : REL::Module::Runtime::AE,
+      L"SkyrimSE.exe", reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)));
+  REL::IDDB::reset();
+#endif
   // SKSE's folder per store, from the version's last field (skse_version.h)
   switch (runtime_version & 0xF) {
     case 1:
@@ -88,175 +118,60 @@ bool IsVr() { return runtime && runtime < Version(1, 5, 0); }
 
 void SetLogging(bool on) { log_on = on; }
 
-// version format 1 (SE), versionlib format 2 (CommonLibSSE-NG REL/ID.h; same
-// encoding) or format 5.
+namespace {
+// CommonLib terminates the game on an unknown id (and on a missing library
+// file): the ids the loaded library has, so lookups can fail softly instead.
+std::vector<uint32_t> known_ids;
+
+std::wstring AddressLibraryFile() {
+  const REL::Version version(runtime >> 24, (runtime >> 16) & 255,
+                             (runtime >> 4) & 4095, 0);
+  return std::format(L"Data\\SKSE\\Plugins\\{}-{}.bin",
+                     IsSe() ? L"version" : L"versionlib",
+                     version.wstring(L"-"));
+}
+}  // namespace
+
+// The pinned CommonLib IDDB owns all decoding and runtime selection.
 bool LoadAddressLibrary() {
-  image_base = reinterpret_cast<uint64_t>(GetModuleHandleA(nullptr));
-  if (IsVr()) return true;  // ids are offsets
-  // The last field is always 0, also on GOG (SKSE CheckAddressLibrary).
-  char path[64];
-  snprintf(path, sizeof(path), "Data\\SKSE\\Plugins\\%s-%u-%u-%u-0.bin",
-           IsSe() ? "version" : "versionlib", runtime >> 24,
-           (runtime >> 16) & 0xFF, (runtime >> 4) & 0xFFF);
-  FILE* f = fopen(path, "rb");
-  if (!f) {
-    Log("%s missing", path);
+  if (IsVr()) return true;
+  const std::wstring file = AddressLibraryFile();
+#ifdef ENABLE_COMMONLIBSSE_TESTING
+  const REL::Version version(runtime >> 24, (runtime >> 16) & 255,
+                             (runtime >> 4) & 4095, 0);
+  if (!REL::IDDB::inject(file, version)) return false;
+#else
+  if (GetFileAttributesW(file.c_str()) == INVALID_FILE_ATTRIBUTES) {
+    Log("%ls missing", file.c_str());
     return false;
   }
-  std::vector<uint8_t> d;
-  fseek(f, 0, SEEK_END);
-  const long size = ftell(f);
-  if (size > 0) d.resize(size);
-  fseek(f, 0, SEEK_SET);
-  d.resize(fread(d.data(), 1, d.size(), f));
-  fclose(f);
-  size_t p = 0;
-  bool bad = false;  // a read ran past the end
-  auto rd = [&](size_t n) -> uint64_t {
-    uint64_t v = 0;
-    if (p > d.size() || n > d.size() - p) {
-      bad = true;
-      return 0;
-    }
-    memcpy(&v, &d[p], n);
-    p += n;
-    return v;
-  };
-  ids.clear();
-  const int32_t format = static_cast<int32_t>(rd(4));
-  if (format == 5) {
-    // 1.7.99+ (commonlib-shared REL/IDDB.cpp): game version, 64-byte name,
-    // pointer size, data format and count, then a uint32 offset per id.
-    p += 16 + 64 + 8;
-    const size_t count = rd(4);
-    if (bad || d.size() - p < count * 4) return false;
-    for (uint64_t id = 0; id < count; ++id) {
-      const uint64_t off = rd(4);
-      if (off) ids.emplace_back(id, off);
-    }
-    return true;
-  }
-  if (format != 1 && format != 2) return false;
-  p += 16;
-  p += static_cast<uint32_t>(rd(4));  // name
-  const int32_t ptr_size = static_cast<int32_t>(rd(4));
-  const int32_t count = static_cast<int32_t>(rd(4));
-  if (bad || ptr_size <= 0 || count < 0) return false;
-  ids.reserve(count);
-  uint64_t pid = 0, poff = 0;
-  for (int32_t i = 0; i < count && !bad; ++i) {
-    uint8_t t = static_cast<uint8_t>(rd(1));
-    uint8_t lo = t & 0xF, hi = t >> 4;
-    uint64_t id, off;
-    switch (lo) {
-      case 0:
-        id = rd(8);
-        break;
-      case 1:
-        id = pid + 1;
-        break;
-      case 2:
-        id = pid + rd(1);
-        break;
-      case 3:
-        id = pid - rd(1);
-        break;
-      case 4:
-        id = pid + rd(2);
-        break;
-      case 5:
-        id = pid - rd(2);
-        break;
-      case 6:
-        id = rd(2);
-        break;
-      case 7:
-        id = rd(4);
-        break;
-      default:
-        return false;
-    }
-    uint64_t base = (hi & 8) ? poff / ptr_size : poff;
-    switch (hi & 7) {
-      case 0:
-        off = rd(8);
-        break;
-      case 1:
-        off = base + 1;
-        break;
-      case 2:
-        off = base + rd(1);
-        break;
-      case 3:
-        off = base - rd(1);
-        break;
-      case 4:
-        off = base + rd(2);
-        break;
-      case 5:
-        off = base - rd(2);
-        break;
-      case 6:
-        off = rd(2);
-        break;
-      case 7:
-        off = rd(4);
-        break;
-      default:
-        return false;
-    }
-    if (hi & 8) off *= ptr_size;
-    ids.emplace_back(id, off);
-    pid = id;
-    poff = off;
-  }
-  std::sort(ids.begin(), ids.end());
-  return !bad;
+  (void)REL::IDDB::get();
+#endif
+  known_ids.clear();
+  for (const auto& mapping : REL::Offset2ID())
+    if (mapping.id <= UINT32_MAX) known_ids.push_back(mapping.id);
+  std::sort(known_ids.begin(), known_ids.end());
+  return true;
 }
-
-uint64_t ImageBase() { return image_base; }
-
+uint64_t ImageBase() { return REL::Module::get().base(); }
 uint64_t Addr(uint64_t id) {
-  if (IsVr()) return id ? image_base + id : 0;
-  auto it =
-      std::lower_bound(ids.begin(), ids.end(), std::make_pair(id, uint64_t{0}));
-  return (it != ids.end() && it->first == id) ? image_base + it->second : 0;
-}
-
-void SpinLock::Lock() {
-  LONG me = static_cast<LONG>(GetCurrentThreadId());
-  if (owner == me) {
-    InterlockedIncrement(&count);
-    return;
-  }
-  for (uint32_t spins = 0; InterlockedCompareExchange(&count, 1, 0) != 0;
-       ++spins) {
-    if (spins < 10000) {
-      YieldProcessor();
-    } else {
-      Sleep(0);
-    }
-  }
-  owner = me;
-}
-
-void SpinLock::Unlock() {
-  if (count == 1) {
-    owner = 0;
-    InterlockedCompareExchange(&count, 0, 1);
-  } else {
-    InterlockedDecrement(&count);
-  }
+#ifdef ENABLE_COMMONLIBSSE_TESTING
+  if (bfa::testing::address)
+    return REL::Relocation<uintptr_t>(bfa::testing::address(id)).address();
+#endif
+  if (!id) return 0;
+  if (!IsVr() && !std::binary_search(known_ids.begin(), known_ids.end(), id))
+    return 0;
+  return REL::VariantID(id, id, id).address();
 }
 
 const ResId* ActiveLine(uint8_t* fg) {
-  void* entry = *reinterpret_cast<void**>(fg + kFgDialogue);
+  auto* entry = reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->dialogueData;
   if (!entry) return nullptr;
-  uint32_t ctrl =
-      *reinterpret_cast<uint32_t*>(static_cast<uint8_t*>(entry) + 0x0C);
+  uint32_t ctrl = entry->refCount;
   if ((((ctrl & 0x70000000u) + 0xD0000000u) & 0xEFFFFFFFu) != 0)
     return nullptr;  // lip resource not loaded
-  return static_cast<const ResId*>(entry);
+  return reinterpret_cast<const ResId*>(entry);
 }
 
 }  // namespace skse

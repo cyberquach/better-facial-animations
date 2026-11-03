@@ -15,6 +15,8 @@ import sys
 import time
 import zlib
 
+import commonlib_build
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -98,14 +100,6 @@ def check_asset(spec, path, expected_sha256=None):
             'bytes': len(blob), 'records': found, 'version_label': spec['version']}
 
 
-def build_variable(name):
-    """A quoted assignment in build.sh: the plugin link line lives there only."""
-    match = re.search('^' + name + '="([^"]*)"', (ROOT / 'build.sh').read_text(), re.M)
-    if not match:
-        raise ValueError('build.sh does not define ' + name)
-    ffmpeg = os.environ.get('FFMPEG', 'deps/ffmpeg/win64')
-    return match.group(1).replace('$FFMPEG', ffmpeg).split()
-
 
 def run_command(command, log, timeout):
     with log.open('w') as stream:
@@ -160,22 +154,18 @@ def prepare_case(case, result, fixtures, build_ok, version, out):
         result['reason'] = 'production build failed'
         return
     exe = out / (case['test'] + '.exe')
-    cmd = shlex.split(os.environ.get('CXX', 'x86_64-w64-mingw32-g++'))
-    cmd += ['-std=c++17', '-O2', '-Wall', '-static', '-DBFA_VERSION="' + version + '"']
-    ort = os.environ.get('ORT', 'deps/dml/microsoft.ml.onnxruntime.directml')
-    cmd += ['-I', str(ROOT / 'include'), '-isystem', ort + '/build/native/include']
-    cmd += case['sources']
+    # Tests use the same MSVC/CommonLib ABI, with explicit test hook seams.
+    objects = list((ROOT / 'build/test-objects').glob('*.obj'))
     if case.get('plugin_objects'):
-        objects = [ROOT / o for o in build_variable('PLUGIN_OBJS')]
-        if any(not p.exists() for p in objects):
-            result['reason'] = 'missing build objects; rerun with --build'
+        if not objects:
+            result['reason'] = 'missing test objects; rerun with --build'
             return
         result['object_sha256'] = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
                                    for p in objects}
-        cmd += [str(p) for p in objects] + build_variable('PLUGIN_LIBS')
-    cmd += case.get('link', []) + ['-o', str(exe)]
+    cmd = [sys.executable, str(ROOT / 'tools/commonlib_build.py'), '--case',
+           json.dumps(case), str(exe)]
     result['compile_command'] = cmd
-    rc = run_command(cmd, out / (case['id'] + '-compile.log'), 180)
+    rc = run_command(cmd, out / (case['id'] + '-compile.log'), 600)
     if rc:
         result.update(status='fail', reason='compilation failed', returncode=rc)
         return
@@ -226,15 +216,18 @@ def main():
     out = out.resolve()
     out.mkdir(parents=True, exist_ok=False)
     # Source hashes include dirty edits: HEAD alone is insufficient provenance.
-    inputs = [ROOT / 'build.sh', ROOT / 'tools/build.mk', ROOT / 'VERSION',
+    inputs = [ROOT / 'build.sh', ROOT / 'tools/commonlib_build.py', ROOT / 'VERSION',
               ROOT / 'tests/compatibility.json', Path(__file__)]
     inputs += sorted((ROOT / 'src').rglob('*.cc'))
     inputs += sorted((ROOT / 'include').rglob('*.h'))
     inputs += sorted((ROOT / 'tests').glob('*.cc'))
     inputs += sorted((ROOT / 'tests').glob('*.inc'))
+    inputs += sorted((ROOT / 'tests').glob('*.h'))
     inputs += sorted((ROOT / 'tests').glob('*.py'))
     inputs += [ROOT / c['python'] for c in selected if c.get('python')]
-    inputs += [ROOT / 'tests/follower_teeth.json', ROOT / 'tests/hair_assets.json']
+    inputs += [ROOT / 'tests/follower_teeth.json', ROOT / 'tests/mouth_lining.json', ROOT / 'tests/hair_assets.json',
+               ROOT / 'tests/emotion_performance.fixtures',
+               ROOT / 'dist/emotion_performance.onnx', ROOT / 'dist/emotion_performance.json']
     report = {
         'schema': 1,
         'tier': args.tier,
@@ -251,6 +244,8 @@ def main():
     if args.build:
         build_ok = run_command(['sh', 'build.sh'], out / 'build.log', 900) == 0
         report['build_status'] = 'pass' if build_ok else 'fail'
+    if build_ok and any(c.get('sources') for c in selected):
+        commonlib_build.runtime_files(out)
     fixtures = json.loads(args.fixtures.read_text()) if args.fixtures else {}
     report['results'] = [{'id': case['id'], 'status': 'blocked'} for case in selected]
 

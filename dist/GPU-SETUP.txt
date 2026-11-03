@@ -5,27 +5,48 @@ without having to launch Skyrim. No helper program is launched by this version.
 
 [Requirements and drivers]
 
-Independent GPU + V3 is the normal preset. V3 tries GPU inference after a save loads or a
+Shared GPU + V3 is the initial preset. V3 tries GPU inference after a save loads or a
 new game starts. Early dialogue keeps vanilla animation while the model warms
 up. A returned GPU failure can be retried with Try GPU again.
 Shared GPU retries without metacommands, then conditionally through an observed
 graphics wrapper after device loss. Further shared attempts wait 2/4/8/16/30 seconds;
 sentiment retries after 30 seconds. GPU failures never automatically select CPU.
-ForceCPU explicitly uses your chosen model on CPU. Performance has less facial detail than V3.
+ForceCPU selects CPU for facial processing only; EmotionDevice=-1 selects CPU
+for emotion processing. Performance has less facial detail than V3.
 
-The installer has three independent choices:
-- GPU route: Standard (independent, recommended), or Compatibility (4.0-style
-  shared). Shared is available for Deck/older runtimes or as a deliberate test
-  after independent-device black screens/CTDs. It can also cause conflicts;
-  do not assume it is safer just because your GPU is older.
-- First launch: start with GPU after loading, or Force CPU. CPU startup
-  sets ForceCPU=1 and preserves your selected GPU route for later opt-in.
-  It stays on until you change it; the second launch does not enable GPU.
-- Starting settings: choose V3 for detail, Performance for speed, or Old for
-  its facial style and lower VRAM use than V3. Separate checkboxes control
-  Potato Mode, player animation and early dialogue preparation.
-  These can all be changed in game with SKSE Menu Framework; no reinstall
-  is needed. Speaker coverage is independent of model and GPU/CPU startup.
+The installer offers these choices without requiring SKSE Menu Framework:
+- GPU route: shared GPU by default; it unwraps ReShade by itself and works
+  wherever DirectX 12 does. "Independent GPU mode" is opt-in: check it only if
+  shared mode fails with Community Shaders (including Bottled/Open Shaders),
+  ReShade or another graphics mod, or if Skyrim black-screens on launch.
+  REQUIRES Windows 10 22H2 or Windows 11 with the August 2023 or later
+  cumulative update (D3D12 Independent Devices API; Proton: current
+  vkd3d-proton) AND a graphics driver that supports it. Ordinary DirectX 12
+  support is insufficient. If a requirement is missing the model does not
+  load, vanilla lip-sync plays and the settings page names the failed
+  requirement. A lost independent device is created again automatically (3
+  retries); API or driver failures wait for Try GPU again. Fully restart
+  Skyrim after changing the route; uncheck the option to return to shared.
+- Processing: separate Audio2Face and Audio2Emotion choices of GPU 0 (default),
+  GPU 1, GPU 2, GPU 3, or CPU. Each model saves its own device selection.
+- Audio2Face: V3, Performance, Legacy (Old), or Disabled.
+- Audio2Emotion: Performance (default), Full when included, or Disabled.
+  Voice emotion adds processing beyond Audio2Face; disable it to minimize work.
+- Vanilla / scene emotion cues, active-dialogue-only mode, player animation,
+  advance dialogue preparation, tongue motion, eye gaze, logging, and ordinary
+  Khajiit/Argonian animation. Fine facial strengths remain in the INI/menu.
+
+Installer choices supply defaults. Explicit main INI values and menu saves take
+precedence. Reinstall with Replace to change choices; manual installs use the
+complete INI in SKSE/Plugins. Edit that INI to adjust settings without the menu.
+
+GPU numbers are Windows DXGI adapter indices, not performance rankings. The
+installer cannot detect hardware. Select a named GPU in the optional in-game
+menu, or set any known index in [General]: GpuAdapter selects the facial GPU
+(with ForceCPU=0); EmotionDevice selects the emotion GPU. CPU is ForceCPU=1 for
+facial processing and EmotionDevice=-1 for emotion processing. Missing adapters
+report an error without selecting another GPU. The shared/independent route
+applies to both models.
 
 Model hardware estimates (additional to Skyrim, not total graphics memory):
 - V3: roughly 250 MB device allocations; budget about 300 MB with runtime.
@@ -60,7 +81,7 @@ Card comparison specifications and Deck specifications:
 https://www.nvidia.com/en-us/geforce/graphics-cards/compare/
 https://www.steamdeck.com/en/tech
 
-Independent GPU is recommended with RenoDX + DLSS 5, ReShade, and graphics
+Independent GPU mode requests a separate device for ReShade and graphics
 interactions involving Bottled/Open/Community Shaders, neural rendering,
 upscaling or frame generation. Reports are not limited to one combination,
 and neither route is a guaranteed fix for every setup.
@@ -75,15 +96,22 @@ Use Windows Update and restart. Microsoft introduced the API in the August
 tested BFA minimum or a recommendation to install an old preview update.
 Use current cumulative updates available for your Windows version. Check
 your installed version with Start -> type "winver" -> Enter.
+The diagnostic report includes the Windows update revision, loaded DirectX
+runtime paths/versions, and an OS prerequisite result (met/too old/unknown).
+This is an advisory version check, not a driver test or GPU startup gate.
+Unmapped Windows releases and Wine/Proton report unknown. The independent
+startup separately reports runtime API availability before device creation;
+API availability does not establish driver support. A not-loaded DLL in the
+passive report has not been tested for availability.
 
 Install the current stable driver supported for your exact GPU and Windows
 version from NVIDIA, AMD, Intel, or your laptop manufacturer's support page,
 then restart. An old card may only have a legacy driver branch. There is no
 verified minimum NVIDIA/AMD/Intel driver number or card-generation cutoff for
 this mod's independent-device path; updating does not guarantee success.
-On a laptop, check both integrated and discrete GPU drivers. Check BFA's log
-for the adapter it actually selected; more VRAM on another adapter does not
-mean it was selected. The mod does not yet guarantee matching Skyrim's GPU.
+On a laptop, check both integrated and discrete GPU drivers. Include both GPU
+models in reports. The passive report does not establish which adapter was
+selected; the mod does not yet guarantee matching Skyrim's GPU.
 
 Official driver downloads:
 NVIDIA: https://www.nvidia.com/en-us/drivers/
@@ -100,8 +128,8 @@ generation. The model's usual memory use is not its maximum startup demand.
 SteamOS / Steam Deck / Linux: GPU support depends on Proton and the Linux
 GPU driver. A Deck user reported Performance + Potato working on GPU in the
 4.0 era. This is evidence to offer the older shared route, not proof that
-an independent device worked on that Deck. Try Compatibility GPU + Performance
-+ Potato if independent mode is unsupported, or choose Force CPU first.
+an independent device worked on that Deck. Try Shared / compatibility + Performance
++ Potato if independent mode is unsupported, or choose CPU for both models first.
 The shared route does not require Independent Devices support. It restores
 4.2.1's metacommand/wrapper recovery and delayed shared GPU retries, with newer
 delayed startup. It never probes or automatically selects independent mode.
@@ -123,18 +151,19 @@ https://github.com/HansKristian-Work/vkd3d-proton/blob/master/CHANGELOG.md
 1. Fully close Skyrim. Save a copy of BetterFacialAnimations.log and any
    Crash Logger / Freeze Logger output before another launch replaces it.
 
-2. Reinstall this package and choose "Force CPU", then "Performance" and check
-   "Potato Mode" for lower CPU work. Either GPU route can remain selected for later
-   testing; neither is attempted while ForceCPU is on. Back up your
-   INI first if you want to keep custom sliders or NPC overrides: the preset
-   installs a complete INI. Check that an older INI in MO2's Overwrite or
-   another mod is not overriding the newly installed settings.
+2. Reinstall this package and choose CPU for BOTH Audio2Face and Audio2Emotion.
+   For lower CPU work, choose Performance facial animation, Disabled emotion
+   and Active dialogue only (Potato Mode). Either GPU route can remain selected
+   for later testing; neither is attempted with both devices on CPU. Back up
+   custom settings first: reinstalling replaces the main INI. Check that an
+   older INI in MO2 Overwrite or another mod is not overriding the new choices.
 
    Alternatively, edit your effective file without reinstalling:
    Data/SKSE/Plugins/BetterFacialAnimations.ini
 
    Change these entries in the EXISTING [General] section:
    ForceCPU=1
+   EmotionDevice=-1
    UsePerformanceModel=1
    UseOldModel=0
    PotatoMode=1
@@ -148,43 +177,53 @@ https://github.com/HansKristian-Work/vkd3d-proton/blob/master/CHANGELOG.md
 3. Launch through SKSE and load your save. No new save is required just to
    change these settings. Performance reduces inference work; Potato limits
    BFA to your conversation partner and player dialogue. Other speakers use
-   vanilla animation. ForceCPU=1 prevents BFA's GPU inference initialization,
-   but cannot fix unrelated crashes or every problem elsewhere in the game.
+   vanilla animation. ForceCPU=1 together with EmotionDevice=-1 prevents BFA's
+   GPU inference initialization, but cannot fix unrelated crashes or conflicts.
 
 4. No startup recovery file is created or checked. Old gpu-startup.pending
    files are ignored, so an unrelated crash cannot change the provider choice.
 
-If a CPU launch still freezes, keep CPU enabled while investigating the
-remaining conflict. If standard independent GPU failed, shared GPU is an
+If a CPU launch still freezes, keep BOTH models on CPU while investigating the
+remaining conflict. If independent GPU failed, shared GPU is an
 optional next experiment from this working CPU baseline, following the next
 page. It is not an automatic fallback. Do not repeatedly retry an unchanged
 failing GPU setup hoping the failure will clear.
 
 [Test GPU from a working CPU session]
 
-Force CPU and verify dialogue animates. After updating relevant software,
+Select CPU for both models and verify dialogue animates. After updating software,
 close Skyrim. To test the other GPU path, edit this entry in the SAME existing
 [General] section of BetterFacialAnimations.ini:
-IndependentGpuDevice=1  (standard independent device; default)
-IndependentGpuDevice=0  (optional 4.0-style shared compatibility device)
+IndependentGpuDevice=1  (Independent GPU)
+IndependentGpuDevice=0  (Shared / compatibility GPU; default)
 Use only one of those values. Changing this route requires a restart; retired
 GpuDevice/AutoGpuDevice/UseDeviceWrapper keys are ignored. You can instead
-reinstall and choose the route, keeping Force CPU selected.
+reinstall and change GPU route, keeping CPU selected for both models.
 
-Keep ForceCPU=1 for the next launch. Load a save and let other mods finish
-their startup work. With SKSE Menu Framework installed, open Better Facial
-Animations -> Settings -> Model. Select V3 for full detail, or Performance
-for less computation, then uncheck Force CPU. This queues GPU initialization
-on BFA's worker after current work finishes, using the route chosen before
-launch. It does not require reinstalling.
+Keep ForceCPU=1 and EmotionDevice=-1 for the next launch. Load a save and let
+other mods finish startup. With SKSE Menu Framework installed, open Better
+Facial Animations -> Settings. Select V3 for full detail or Performance for
+less computation, then choose a GPU under Audio2Face processing device. Leave
+Audio2Emotion on CPU while testing facial GPU inference first. The worker
+applies the change after current work finishes, using the selected GPU route.
+Once facial processing works, test emotion GPU processing separately: enable
+the desired emotion model and choose its Audio2Emotion processing device.
 
 After a returned GPU failure, choose Try GPU again to start another attempt, or
-select Force CPU yourself. Switching from CPU to GPU is allowed in the same
+select CPU for the affected model. Switching CPU/GPU is allowed in the same
 session. Shared GPU retries also run automatically; vanilla lip-sync remains
 available while no model is loaded. CPU is never selected automatically.
 Restart only to change the independent/shared route. Menu settings save
-automatically: leaving Force CPU unchecked requests GPU next launch too.
-Without the menu framework, edit ForceCPU=0 while Skyrim is closed and relaunch.
+automatically: leaving a GPU selected requests it next launch too.
+Without the menu framework, close Skyrim and set ForceCPU=0 to test facial GPU
+processing, leaving EmotionDevice=-1. To later test emotion on GPU, set
+EmotionDevice to the intended DXGI index and enable SentimentAnalysis=1.
+Changing one processing device never changes the other.
+
+Use Show diagnostic report / Copy diagnostic report in the settings menu to
+include the current startup stage, elapsed time, native error and last failed
+attempt. A later successful retry or CPU selection keeps that failure history.
+The report uses a cached system/module snapshot; it does not probe the GPU.
 
 Check the actual provider/model status in the menu and log. CPU inference
 is not GPU success even if the log lists your graphics card. Startup
@@ -208,12 +247,13 @@ one graphics feature at a time using that mod's instructions. A reported DLL
 downgrade that helped one NVIDIA setup failed for another; it is not a general
 fix. Independent devices separate API state but still share the physical GPU,
 driver and Skyrim process. A hung driver call cannot safely be cancelled here.
-If GPU startup hangs or crashes, close Skyrim and select Force CPU in the installer or INI.
+If GPU startup hangs or crashes, close Skyrim and select CPU for BOTH models,
+or set ForceCPU=1 and EmotionDevice=-1 in the winning INI before relaunching.
 
 For a bug report include GPU + CPU, Windows build or SteamOS + Proton version,
-driver version, Skyrim/SKSE/BFA versions, model, IndependentGpuDevice and
-ForceCPU settings, graphics
-mods/upscaler versions, whether a CPU launch works, and the last startup stage.
+driver version, Skyrim/SKSE/BFA versions, both models, IndependentGpuDevice,
+ForceCPU, GpuAdapter and EmotionDevice settings, graphics-mod/upscaler versions,
+whether a launch with BOTH models on CPU works, and the last startup stage.
 Attach the full BFA log and crash/freeze log if available. A freeze may leave
 no crash log. The usual BFA log location is:
 Documents/My Games/Skyrim Special Edition/SKSE/BetterFacialAnimations.log

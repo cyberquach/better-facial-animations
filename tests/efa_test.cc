@@ -1,3 +1,4 @@
+#include "runtime_fixture.h"
 // Production detection and playback calibration; only resource I/O is mocked.
 // Optional arguments exercise the user's MaleHead.tri and FemaleHead.tri files.
 #include <array>
@@ -84,13 +85,14 @@ void CheckScales() {
 }
 }  // namespace
 
-extern "C" uint64_t __wrap__ZN4skse4AddrEy(uint64_t id) {
+extern "C" uint64_t TestAddress(uint64_t id) {
   if (id == kIdStreamCtor.Get()) return reinterpret_cast<uint64_t>(&Open);
   if (id == kIdStreamDtor.Get()) return reinterpret_cast<uint64_t>(&Close);
   return 0;
 }
 
 int main(int argc, char** argv) {
+  bfa::testing::address = TestAddress;
   assert(argc == 1 || argc == 3);
   std::vector<uint8_t> originals[2];
   if (argc == 3) {

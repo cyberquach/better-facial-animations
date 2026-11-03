@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build BetterFacialAnimations.dll with mingw-w64 (static FFmpeg + libstdc++) and assemble the mod in build/mod.
+# Build the MSVC/CommonLib plugin and FFmpeg C DLL; assemble the mod in build/mod.
 #   ./build.sh                    build + assemble
 #   ./build.sh install <dir>      also copy into <dir> (e.g. an MO2 mod folder)
 #   ./build.sh release            write matching -with-sentiment and -without-sentiment archives
@@ -54,18 +54,13 @@ if [ "$1" = release ] && [ ! -f "$EMOTION_MODEL" ]; then
 fi
 
 mkdir -p build
-CXX="x86_64-w64-mingw32-g++ -std=c++17 -O2 -Iinclude"
-# a test that includes the plugin's main source links its other objects (also read by tools/compatibility.py)
-PLUGIN_OBJS="build/native_speech_hook.o build/player_speech.o build/provider.o build/settings.o build/gaze.o build/pose.o build/net_keeper.o build/head_cache.o build/menu.o build/skse.o build/direct.o build/live_core.o build/performance_features.o build/ort_net.o"
-PLUGIN_LIBS="-L$FFMPEG/lib -lavformat -lavcodec -lswresample -lavutil -lbcrypt -lshell32 -lole32 -luuid -ldxgi"
-make -f tools/build.mk -B -j "$JOBS" CXX="$CXX" BFA_VERSION="$V" \
-    FFMPEG="$FFMPEG" ORT="$ORT" build/better_facial_animations.o $PLUGIN_OBJS &&
-$CXX -shared -s build/better_facial_animations.o $PLUGIN_OBJS -o build/BetterFacialAnimations.dll \
-    -L$FFMPEG/lib -lavformat -lavcodec -lswresample -lavutil -lbcrypt -lshell32 -lole32 -luuid -ldxgi -static -static-libgcc -static-libstdc++ || exit 1
+# CommonLib and the plugin share the MSVC C++ ABI; FFmpeg remains a C DLL.
+BFA_BUILD_VERSION="$V" python3 tools/commonlib_build.py || exit 1
 
 PKG=build/mod; P=$PKG/SKSE/Plugins; L=$P/BetterFacialAnimations/licenses
 rm -rf $PKG; mkdir -p $L
 cp build/BetterFacialAnimations.dll dist/BetterFacialAnimations.ini $P/
+cp build/BFAFFmpeg.dll $P/BetterFacialAnimations/ || exit 1
 cp $ORT/runtimes/win-x64/native/onnxruntime.dll $ORT/runtimes/win-x64/native/onnxruntime_providers_shared.dll \
    $DML/bin/x64-win/DirectML.dll $MODEL dist/A2FDirect.bin dist/A2FDirect3.bin dist/NOTICE.txt $P/BetterFacialAnimations/ || exit 1
 cp $MODEL3 $P/BetterFacialAnimations/a2f3_fp16.onnx || exit 1
@@ -74,6 +69,7 @@ if [ -f "$EMOTION_MODEL" ]; then
 fi
 cp include/a2f/speech/BFA_API.h $P/BetterFacialAnimations/ || exit 1
 cp dist/performance.onnx dist/performance-model.json $P/BetterFacialAnimations/ || exit 1
+cp dist/emotion_performance.onnx dist/emotion_performance.json $P/BetterFacialAnimations/ || exit 1
 cp dist/GPU-SETUP.txt $P/BetterFacialAnimations/ || exit 1
 sed "s/@VERSION@/$V/" dist/README.txt > $P/BetterFacialAnimations/README.txt
 cp LICENSE $L/BetterFacialAnimations-GPL-3.0.txt
@@ -96,40 +92,17 @@ release)
     for variant in without-sentiment with-sentiment; do
         archive="$R/Better Facial Animations-$V$ARCHIVE_SUFFIX-$variant.7z"
         if [ "$variant" = without-sentiment ]; then
+            python3 tools/package_installer.py build/installer "$V" --without-full-emotion || exit 1
             (cd "$PKG" && 7z a -t7z -mx=9 "$archive" SKSE \
                 -x!SKSE/Plugins/BetterFacialAnimations/emotion_fp16.onnx >/dev/null) || exit 1
         else
+            python3 tools/package_installer.py build/installer "$V" || exit 1
             (cd "$PKG" && 7z a -t7z -mx=9 "$archive" SKSE >/dev/null) || exit 1
         fi
         (cd build/installer && 7z a -t7z -mx=9 "$archive" fomod options >/dev/null) || exit 1
         echo "$archive"
     done ;;
 test)
-    T=build/test; mkdir -p $T/Data && ln -sfn "$(realpath "$ADDRLIB")/SKSE" $T/Data/SKSE &&
-    python3 tools/compatibility.py --tier contracts || exit 1
-    # The test programs compile at once; they run one at a time.
-    pids=""
-    $CXX -Wall -static src/runtime/skse.cc tests/runtimes_test.cc -o $T/runtimes_test.exe -lshell32 -lole32 -luuid & pids="$pids $!"
-    $CXX -Wall -static tests/emotion_test.cc build/live_core.o build/performance_features.o -o $T/emotion_test.exe \
-        -L$FFMPEG/lib -lavformat -lavcodec -lswresample -lavutil -lbcrypt -lole32 & pids="$pids $!"
-    $CXX -Wall -static tests/sentiment_model_test.cc build/ort_net.o -o $T/sentiment_model_test.exe -ldxgi & pids="$pids $!"
-    $CXX -Wall -static tests/reference_test.cc -o $T/reference_test.exe & pids="$pids $!"
-    $CXX -Wall -static tests/passive_report_test.cc build/ort_net.o -o $T/passive_report_test.exe -Wl,--wrap=__imp_CreateDXGIFactory1 -ldxgi & pids="$pids $!"
-    $CXX -Wall -static src/inference/net_keeper.cc tests/net_keeper_test.cc -o $T/net_keeper_test.exe & pids="$pids $!"
-    $CXX -Wall -static tests/ort_net_test.cc build/ort_net.o -o $T/ort_net_test.exe -ldxgi & pids="$pids $!"
-    $CXX -Wall -static src/animation/direct.cc tests/direct_bins_test.cc -o $T/direct_bins_test.exe & pids="$pids $!"
-    status=0
-    for pid in $pids; do wait "$pid" || status=1; done
-    [ "$status" = 0 ] &&
-    WINEDEBUG=-all ${WINE-wine64} $T/emotion_test.exe &&
-    { if [ -f "$EMOTION_MODEL" ]; then
-        WINEDEBUG=-all ${WINE-wine64} $T/sentiment_model_test.exe $P/BetterFacialAnimations "$EMOTION_MODEL";
-      else echo "BLOCKED: optional sentiment model inference test (model absent)"; exit 2; fi; } &&
-    WINEDEBUG=-all ${WINE-wine64} $T/reference_test.exe &&
-    WINEDEBUG=-all ${WINE-wine64} $T/passive_report_test.exe &&
-    WINEDEBUG=-all ${WINE-wine64} $T/runtimes_test.exe build/BetterFacialAnimations.dll $T &&
-    WINEDEBUG=-all ${WINE-wine64} $T/net_keeper_test.exe &&
-    WINEDEBUG=-all ${WINE-wine64} $T/ort_net_test.exe $P/BetterFacialAnimations "$P/BetterFacialAnimations/$(basename "$MODEL")" "$MODEL_FP32" &&
-    WINEDEBUG=-all ${WINE-wine64} $T/ort_net_test.exe $P/BetterFacialAnimations $P/BetterFacialAnimations/a2f3_fp16.onnx "$MODEL3_FP32" 3 &&
-    WINEDEBUG=-all ${WINE-wine64} $T/direct_bins_test.exe dist/A2FDirect.bin dist/A2FDirect3.bin ;;
+    python3 tools/compatibility.py --tier contracts &&
+    python3 tools/commonlib_build.py --extra-tests ;;
 esac

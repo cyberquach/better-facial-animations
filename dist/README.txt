@@ -10,15 +10,28 @@ Vanilla / scene emotion inputs (on by default) passes authored scene and dialogu
 This toggle is independent of Sentiment Analysis; both off keeps audio-driven lip-sync without these emotion inputs.
 The settings menu groups shared controls separately from selectable Male NPCs, Female NPCs and Player profiles.
 Maximum emotion inputs are ceilings on what the model receives, not fixed emotion levels or movement strength.
-Sentiment Analysis (off by default) enables sentiment; disabling it unloads the extra model after any current run.
-Sentiment Analysis only adds voice-detected emotion to the facial model inputs on top of the scene's
-authored emotions. The Sentiment addition multiplier (0-2, default 1) scales only that extra input: 0 =
-none, 0.5 = half, 1 = normal, 2 = double. It is available when Sentiment Analysis is enabled and does not replace, reduce
-or blend away authored emotion. Zero skips sentiment inference; changes apply next line. The combined scene and multiplied sentiment inputs obey the Max emotion caps; there is no separate sentiment cap. Sentiment Analysis is a HEAVY FEATURE: its additional emotion_fp16.onnx model
-requires 600 MB of EXTRA VRAM on GPU, on top of the facial animation model. It requires substantial additional
-processing power and increases animation generation time. Controls are greyed out without it and normal animation
-still works. ForceCPU uses system memory and additional CPU processing instead.
-Release archives are provided with and without the sentiment model. Restart after adding or removing it.
+Audio2Emotion offers Disabled, Full and Performance (default). Hover over the selected
+value or an open dropdown option for resource use and tradeoffs. Full and Performance
+support compatible AMD and NVIDIA GPUs through DirectML, or CPU via the separate
+Audio2Emotion processing device selector. Each model defaults to GPU 0 and saves
+its device choice independently.
+Full uses the original model for each spoken line; typically about 600 MB of extra VRAM
+plus additional processing time. CPU uses system RAM and extra CPU processing.
+Performance is an experimental 21.6 MB student model trained to memorize Full's answers
+on the training dialogue. It does not reliably handle lines it was not trained on:
+results can be hit or miss, especially in obscure quest mods. Even training answers
+are approximate. The weight-file size is not a runtime VRAM estimate. Use Full when
+coverage of unfamiliar dialogue matters. See emotion_performance.json for checkpoint
+identity and measured export validation; no in-game quality acceptance is claimed.
+Both models only add voice-driven emotion alongside authored scene emotion. The
+Sentiment addition multiplier (0-2, default 1) scales that contribution; zero skips it.
+The combined inputs obey the profile's maximum emotion caps. Selecting Disabled
+unloads the extra session after current inference returns. Audio2Face must be enabled
+for Audio2Emotion to contribute; disabling Audio2Face remembers the emotion selection.
+Both archives include Performance. The with-sentiment archive also includes Full;
+without-sentiment omits only Full.
+Restart after adding/removing model files. INI: SentimentAnalysis=0 disables emotion;
+otherwise UsePerformanceEmotion=0 selects Full and UsePerformanceEmotion=1 Performance.
 Each head is fitted to the animated face the first time it speaks, from its own expression morphs, so custom heads,
 NPC replacers and High Poly Head animate like vanilla ones; a head whose .tri lacks one of the morphs it needs keeps
 vanilla lip-sync. Works with Creation Engine Raytracing. Per-region scales and the
@@ -26,45 +39,71 @@ emotion strength are in the settings page. Vanilla, DLC and modded voices all wo
 Lines with missing or silent voice audio (including Fuz Ro D'oh dialogue) keep vanilla lip-sync and expressions. BFA takes over only when an animation from audible audio is ready.
 
 Requirements
+  Microsoft Visual C++ v14 x64 runtime (tested with 14.51).
   Skyrim Special Edition 1.5.97, 1.6.353, 1.6.640, 1.6.659 (GOG), 1.6.1170,
   1.6.1179 (GOG), 1.7.99 or 1.7.104, matching SKSE, Address Library for SKSE Plugins.
   Or Skyrim VR 1.4.15 with SKSEVR (no Address Library needed; not yet looked at in a headset).
   Not the Epic Games Store version: SKSE does not support it.
   V3/Old GPU inference needs DirectX 12 (~250 MB VRAM / ~100 MB respectively).
-  Settings -> Model offers mutually exclusive V3, Performance and Old model checkboxes.
+  Settings -> Animation models offers Audio2Face: Disabled, V3, Performance, Legacy.
+  Audio2Emotion has its own Disabled, Full, Performance dropdown.
   Hover for tradeoffs. Model changes apply live; playing lines finish with their
   original animation. Performance (81k Thin120) runs on GPU, or CPU with ForceCPU=1:
   smaller, but less emotive, 30 fps, no eye gaze feature.
   It is experimental and Skyrim-trained; not yet verified on Steam Deck.
-  UsePerformanceModel=1 selects it; ForceCPU applies to all three models. Potato Mode (PotatoMode=1) processes only the active
+  Audio2Face processing device and Audio2Emotion processing device each select
+  a named GPU or CPU (Force CPU). Both default to GPU 0 and save their own choice;
+  changing one does not change the other. GpuAdapter (default 0) and ForceCPU
+  select facial processing. EmotionDevice=-1 selects emotion CPU, and 0 or higher
+  selects an emotion DXGI GPU (default 0).
+  The shared/independent GPU route applies globally to both models. Open either
+  dropdown after game entry to discover GPUs; Refresh GPU list rescans. Missing
+  GPUs report a failure; choose another device explicitly. Reselect by name after
+  hardware/driver changes that reorder adapters.
+  UsePerformanceModel=1 selects it; ForceCPU applies to all three facial models. Potato Mode (PotatoMode=1) processes only the active
   conversation NPC and the player (DBReV or experimental DBVO 2 support). Other NPC speech stays vanilla.
   Both modes initialize inference after the first successful save load or new game, then keep the model
-  loaded until exit. Early lines use vanilla animation while it warms up. An already submitted GPU run must finish
+  loaded while enabled. Disabled unloads both sessions. Early lines use vanilla animation while it warms up. An already submitted GPU run must finish
   before cancellation. PotatoMode=0 (default) processes all speakers. If the model cannot
   be loaded on the GPU the settings window says why; vanilla lip-sync remains active.
-  GPU inference defaults to an independent device/private queue (IndependentGpuDevice=1).
-  This requires D3D12 Independent Devices (Windows updates from August 2023 or a
-  supporting Proton runtime) and a supporting driver. IndependentGpuDevice=0 explicitly
-  selects 4.0-style shared GPU compatibility for Deck/older runtimes or troubleshooting
-  failures with independent mode. Shared can also conflict with graphics mods.
-  Change the installer/INI and restart to switch routes. Shared mode retries without
-  metacommands and, after eligible device loss, through an observed graphics wrapper.
-  Further shared GPU attempts wait 2/4/8/16/30 seconds; sentiment retries after 30 seconds.
+  GPU inference defaults to a shared device (IndependentGpuDevice=0) that unwraps
+  ReShade by itself. The opt-in installer checkbox "Independent GPU mode" selects a
+  separate device/private queue (IndependentGpuDevice=1). It requires Windows 10 22H2
+  or Windows 11 with the August 2023 or later update (D3D12 Independent Devices API;
+  Proton: current vkd3d-proton) AND a graphics driver that supports it; ordinary
+  DirectX 12 support is insufficient. Read the installer text and GPU-SETUP.txt. No
+  universal minimum driver version is verified. Neither route guarantees compatibility
+  with graphics mods. Change the installer/INI and restart to switch routes. Shared
+  mode retries without metacommands and, after eligible device loss, through an
+  observed graphics wrapper; further attempts wait 2/4/8/16/30 seconds. Independent
+  mode creates a lost device again, 3 retries at 2/4/8 seconds; a missing API or
+  failed device creation waits for Try GPU again. Sentiment retries after 30 seconds.
   No Auto probe or automatic independent/shared switch. GPU-first V3 is the normal preset.
   GPU errors never select CPU automatically. Choose Try GPU again for a new attempt,
-  or Force CPU to explicitly use your chosen model on CPU. Unchecking Force CPU
-  tries GPU in the same session, including after an earlier failure.
-  The FOMOD separately selects GPU route, GPU/CPU startup and starting settings. Force CPU
-  makes no GPU attempt and keeps your chosen route for later opt-in by unchecking
-  Force CPU in-game. It persists until changed, including after the first launch.
-  Choose a starting model and independently enable Potato Mode, player
-  animation and early dialogue preparation. Change these in game with SKSE Menu
-  Framework; no reinstall needed. Manual installation defaults to independent GPU
-  + V3 after game entry.
+  or select CPU for the relevant model. Selecting a GPU in either processing-device
+  dropdown tries GPU in the same session, including after an earlier failure.
+  The FOMOD selects the GPU route and separate facial/emotion processing devices.
+  Both device groups offer GPU 0 (default), GPU 1, GPU 2, GPU 3, or CPU. The
+  installer cannot detect adapter names. Select other slots only when you know
+  their Windows DXGI indices; use the menu or INI for any higher index. Each
+  model saves its choice independently. For recovery without GPU inference,
+  select CPU for both facial and emotion processing. Choices persist until changed;
+  CPU processing remembers the selected GPU route for later opt-in.
+  Choose facial and emotion models, or disable either. Full emotion is offered
+  only in with-sentiment. Independent options cover vanilla emotion cues, Potato
+  Mode, player animation, early preparation, tongue, eye gaze, logging and ordinary
+  Khajiit/Argonian animation. No settings menu is required. Fine strength/timing
+  controls and individual NPC/custom-race settings remain in the INI/menu.
+  Installer defaults live in BetterFacialAnimations/Installer. Explicit values in
+  BetterFacialAnimations.ini override them; menu saves preserve effective choices.
+  Back up custom settings before reinstalling. Check MO2 Overwrite for a winning
+  INI; deploy changes in Vortex. Manual installation defaults to shared GPU, V3
+  and Performance emotion after game entry.
   GPU-SETUP.txt in this folder has the installer guide: Windows/driver and Proton
   requirements, exact CPU recovery INI edits, and how to try GPU from a working CPU session.
   No startup recovery marker is created or checked; old gpu-startup.pending files
-  are ignored. If GPU startup hangs/crashes, reinstall with Force CPU or set ForceCPU=1.
+  are ignored. If GPU startup hangs/crashes, select CPU for both models, or set
+  ForceCPU=1 and EmotionDevice=-1 in the winning INI before restarting.
   A driver call already hanging cannot safely be cancelled inside Skyrim. No helper is launched.
   Old GpuDevice, AutoGpuDevice and UseDeviceWrapper keys are ignored.
   Optional: SKSE Menu Framework, for the in-game settings page (Better Facial Animations -> Settings).
@@ -123,7 +162,9 @@ Contents of this folder
   DirectML.dll                                         Microsoft DirectML 1.15.4 (licenses/DirectML-LICENSE.txt)
   a2f3_fp16.onnx                                       Audio2Face-3D v3.0, FP16 (NOTICE.txt)
   A2FDirect3.bin                                       its faces (Claire, Mark): basis, landmarks and network projection
-  performance.onnx                                   Experimental Thin120 performance model
+  performance.onnx                                   Experimental Thin120 facial model
+  emotion_fp16.onnx                                  Full Audio2Emotion (with-sentiment only)
+  emotion_performance.onnx, emotion_performance.json  Performance Audio2Emotion and provenance (both archives)
   network_fp16.onnx                                    Audio2Face-3D v2.3 Mark, FP16 (NOTICE.txt): UseOldModel=1
   A2FDirect.bin                                        its face (Mark)
 BetterFacialAnimations.dll statically links FFmpeg 8.0.1 (LGPL 2.1): wmav1/wmav2/pcm decoders, xwma/wav demuxers, swresample.

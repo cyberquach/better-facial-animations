@@ -1,3 +1,4 @@
+#include "runtime_fixture.h"
 // Exercise the real message handler and hooks without starting Skyrim.
 // Poison pointers deliberately make any access to the departing world fail.
 #include "../src/plugin/better_facial_animations.cc"
@@ -17,15 +18,13 @@ bool inject_reset = false;
 
 // Deterministically schedule a load while RestoreFaceKeyframes waits for the
 // face lock. The retired keyframe must never be touched on cancellation.
-extern "C" void __real__ZN4skse8SpinLock4LockEv(skse::SpinLock*);
-extern "C" void __wrap__ZN4skse8SpinLock4LockEv(skse::SpinLock* self) {
+void BeforeFaceLock() {
   if (inject_reset) {
     inject_reset = false;
     bfa::ResetPlayback(true);
     DWORD old;
     CHECK(VirtualProtect(retired_keyframe, 4096, PAGE_NOACCESS, &old));
   }
-  __real__ZN4skse8SpinLock4LockEv(self);
 }
 
 namespace {
@@ -91,6 +90,8 @@ void Empty() {
 }
 }
 int main() {
+  bfa::testing::address = [](uint64_t) -> uint64_t { return 0; };
+  bfa::testing::before_face_lock = BeforeFaceLock;
   using namespace bfa;
   ready = true;
   net_loaded = true;
@@ -178,7 +179,7 @@ int main() {
   retired_keyframe = static_cast<float*>(VirtualAlloc(
       nullptr, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
   CHECK(fg && retired_keyframe);
-  auto& ex = Field<skse::KeyframeMultiple>(fg, skse::kFgExpr3);
+  auto& ex = FixtureKeyframe(fg, 0xC0);
   ex.values = retired_keyframe;
   ex.count = direct::kNumExpressions;
   Face parked;
@@ -189,7 +190,7 @@ int main() {
   RestoreFaceKeyframes(fg, world_epoch);
   CHECK(!inject_reset);
   Empty();
-  CHECK(Field<skse::SpinLock>(fg, skse::kFgLock).count == 0);
+  CHECK(Field<uint32_t>(fg, 0x224) == 0);
   CHECK(VirtualFree(retired_keyframe, 0, MEM_RELEASE));
   CHECK(VirtualFree(fg, 0, MEM_RELEASE));
   puts("load lifecycle passed: stale pointers, hook forwarding, idle lock avoidance, failed/new/repeated loads, old speech rejection, owned cache retention, overlapping reset");

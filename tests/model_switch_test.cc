@@ -13,6 +13,7 @@
 namespace a2f {
 int alive = 0, destroyed = 0, created = 0;
 bool fail_gpu = false;
+int adapter_seen = -1;
 struct SwitchNet : Net {
   int version;
   explicit SwitchNet(int v) : version(v) {
@@ -41,16 +42,19 @@ std::unique_ptr<Net> SwitchCreate(int version, bool gpu, std::string& err,
 std::unique_ptr<Net> Switch2(const std::wstring&, const std::wstring&,
                              const OrtOptions& o, std::string& e,
                              std::string& i) {
+  adapter_seen = o.gpu_adapter;
   return SwitchCreate(2, o.gpu, e, i);
 }
 std::unique_ptr<Net> Switch3(const std::wstring&, const std::wstring&,
                              const OrtOptions& o, std::string& e,
                              std::string& i) {
+  adapter_seen = o.gpu_adapter;
   return SwitchCreate(3, o.gpu, e, i);
 }
 std::unique_ptr<Net> Switch4(const std::wstring&, const std::wstring&,
                              const OrtOptions& o, std::string& e,
                              std::string& i) {
+  adapter_seen = o.gpu_adapter;
   return SwitchCreate(4, o.gpu, e, i);
 }
 }  // namespace a2f
@@ -69,7 +73,6 @@ void Select(int network, bool cpu = false) {
     for (const Param& p : kParams) {
       if (!strcmp(p.key, "UsePerformanceModel")) *p.flag = network == 4;
       if (!strcmp(p.key, "UseOldModel")) *p.flag = network == 2;
-      if (!strcmp(p.key, "UseV3Model")) *p.flag = network == 3;
       if (!strcmp(p.key, "ForceCPU")) *p.flag = cpu;
     }
   }
@@ -97,7 +100,7 @@ int main() {
     CHECK(f != INVALID_HANDLE_VALUE);
     CloseHandle(f);
   }
-  Select(3, false); // Explicitly exercise GPU-to-CPU transitions.
+  Select(3, false);  // Explicitly exercise GPU-to-CPU transitions.
   config.network = 3;
   config.gpu = true;
   config.model = L"a2f3_fp16.onnx";
@@ -142,8 +145,11 @@ int main() {
   // The selection goes back to the running model: new lines are generated
   // with it instead of being cancelled, and the worker does not retry.
   CHECK(SnapshotTune().SelectedModel() == 4);
-  auto retained = Request("retained", 0, 0, false, false, SnapshotTune(), 0,
-                          world_epoch);
+  const char* ini = ".\\Data\\SKSE\\Plugins\\BetterFacialAnimations.ini";
+  CHECK(GetPrivateProfileIntA("General", "UsePerformanceModel", 0, ini) == 1);
+  CHECK(GetPrivateProfileIntA("General", "UseOldModel", 1, ini) == 0);
+  auto retained =
+      Request("retained", 0, 0, false, false, SnapshotTune(), 0, world_epoch);
   CHECK(retained->model_state->network == 4 && JobAllowed(queue.front()));
   queue.clear();
   const int before_failed_retry = a2f::created;
@@ -168,17 +174,19 @@ int main() {
   Select(4);
   WorkerStep(keeper, false);
   CHECK(SnapshotModel()->network == 4 && a2f::created == before + 1);
-  // GPU failure leaves no model; explicit retry and CPU selection remain usable.
+  // GPU failure leaves no model; explicit retry and CPU selection remain
+  // usable.
   a2f::fail_gpu = true;
   Select(3);
   WorkerStep(keeper, false);
   CHECK(SnapshotModel()->network == 3 && !keeper.loaded());
-  CHECK(stats.network == 3); // preserve selected model
+  CHECK(stats.network == 3);  // preserve selected model
   CHECK(!stats.net_error.empty() && !stats.switching_model);
   a2f::fail_gpu = false;
   RequestGpuRetry();
   WorkerStep(keeper, false);
-  CHECK(stats.net_error.empty() && keeper.on_gpu() && stats.lines == 0 && stats.gen_sec == 0);
+  CHECK(stats.net_error.empty() && keeper.on_gpu() && stats.lines == 0 &&
+        stats.gen_sec == 0);
   CHECK(SnapshotModel()->network == 3);
   a2f::DisableGpu("injected device loss");
   Select(3, true);
@@ -187,6 +195,13 @@ int main() {
   Select(3, false);
   WorkerStep(keeper, false);
   CHECK(keeper.on_gpu() && a2f::GpuAllowed(error));
+  SelectFaceOption(0);
+  WorkerStep(keeper, false);
+  CHECK(!keeper.loaded() && a2f::alive == 0);
+  const int retained_network = SnapshotTune().SelectedModel();
+  SelectFaceOption(retained_network);
+  WorkerStep(keeper, false);
+  CHECK(keeper.loaded());
   // Disabled switches never load a session until enabled again.
   for (const Param& p : kParams)
     if (!strcmp(p.key, "Enabled")) *p.flag = false;
@@ -197,8 +212,34 @@ int main() {
     if (!strcmp(p.key, "Enabled")) *p.flag = true;
   WorkerStep(keeper, false);
   CHECK(keeper.loaded());
+  // A GPU-only change rebuilds the model and unloads sentiment, while completed
+  // playback keeps the old model snapshot. The selected adapter reaches ORT.
+  a2f::fail_gpu = false;
+  SetProcessingDevice(false, 2);
+  const auto previous_selection = SnapshotModel();
+  const int before_adapter = a2f::created;
+  WorkerStep(keeper, false);
+  CHECK(SnapshotModel()->gpu_adapter == 2 && a2f::adapter_seen == 2);
+  CHECK(a2f::created == before_adapter + 1 && keeper.on_gpu());
+  CHECK(previous_selection->gpu_adapter == 0);
+  SetProcessingDevice(true, 2);
+  WorkerStep(keeper, false);
+  CHECK(!keeper.on_gpu());
+  SetProcessingDevice(false, 0);
+  WorkerStep(keeper, false);
+  CHECK(keeper.on_gpu() && a2f::adapter_seen == 0);
+  // Selecting an emotion device never rebuilds or replaces the facial model.
+  const auto face_selection = SnapshotModel();
+  const int face_creates = a2f::created;
+  for (int device : {kCpuDevice, 2, 0}) {
+    SetEmotionDevice(device);
+    WorkerStep(keeper, false);
+    CHECK(a2f::created == face_creates && keeper.on_gpu());
+    CHECK(SnapshotModel() == face_selection && sentiment_device == device);
+  }
   keeper.Unload();
   CHECK(a2f::alive == 0);
+  CHECK(DeleteFileA(ini));
   for (const wchar_t* name :
        {L"A2FDirect.bin", L"A2FDirect3.bin", L"performance.onnx",
         L"a2f3_fp16.onnx", L"network_fp16.onnx"})

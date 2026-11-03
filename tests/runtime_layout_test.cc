@@ -1,3 +1,4 @@
+#include "runtime_fixture.h"
 // Independent actor layouts: never build fixtures using production offsets.
 #include "../src/plugin/better_facial_animations.cc"
 
@@ -25,10 +26,11 @@ bool SoundPlaying(void* handle) {
 void CheckActor(uint32_t runtime, uint32_t process_offset,
                 uint32_t race_offset) {
   skse::SetRuntime(runtime);
-  CHECK(bfa::kActorProcess.Get() == process_offset);
-  CHECK(bfa::kActorRace.Get() == race_offset);
   alignas(16) std::array<uint8_t, 0x300> actor{}, base{}, race{};
   alignas(16) std::array<uint8_t, 0x400> process{}, high{};
+  auto& runtime_data = reinterpret_cast<RE::Actor*>(actor.data())->GetActorRuntimeData();
+  CHECK(reinterpret_cast<uint8_t*>(&runtime_data.currentProcess) - actor.data() == process_offset);
+  CHECK(reinterpret_cast<uint8_t*>(&runtime_data.race) - actor.data() == race_offset);
   actor[0x1A] = 0x3E;
   base[0x1A] = 0x2B;
   bfa::Field<void*>(actor.data(), 0x40) = base.data();
@@ -58,12 +60,13 @@ void CheckActor(uint32_t runtime, uint32_t process_offset,
 }
 }  // namespace
 
-extern "C" uint64_t __wrap__ZN4skse4AddrEy(uint64_t id) {
+extern "C" uint64_t TestAddress(uint64_t id) {
   CHECK(id == kIdSoundIsPlaying.Get());
   return reinterpret_cast<uint64_t>(&SoundPlaying);
 }
 
 int main() {
+  bfa::testing::address = TestAddress;
   using skse::Version;
   // Keep this expectation independent of the production support lists.
   for (uint32_t runtime : {

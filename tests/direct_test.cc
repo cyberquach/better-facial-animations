@@ -267,6 +267,94 @@ void SharedMouthBorder(const Mark& mk, ShapeIn skin, ShapeIn mouth) {
   }
 }
 
+void CheckMouthWalls(const Mark& mk, ShapeIn skin, ShapeIn mouth) {
+  skin.morphs[kHappy][6 * 3] = -1;
+  skin.morphs[kHappy][7 * 3] = 1;
+  const uint32_t first = mouth.nv;
+  // Two wall depths on each side, then deep, exterior and unmoving controls.
+  for (float x : {-2.f, 2.f})
+    for (float depth : {0.2f, 0.4f, 2.1f, -0.5f, 0.3f}) {
+      mouth.verts.insert(mouth.verts.end(), {x, 8.f - depth, -1.f});
+      ++mouth.nv;
+    }
+  for (auto& morph : mouth.morphs) morph.resize(mouth.nv * 3, 0.f);
+  for (uint32_t v = first; v < mouth.nv; ++v) {
+    mouth.morphs[kBigAah][v * 3 + 2] = -0.2f;
+    if ((v - first) % 5 != 4) {
+      // Real standard-mouth failure: no sideways Happy motion at all.
+      mouth.morphs[kHappy][v * 3 + 1] = -0.3f;
+      mouth.morphs[kHappy][v * 3 + 2] = 0.2f;
+    }
+  }
+  for (float scale : {0.5f, 1.f, 2.f}) {
+    ShapeIn sk = skin, mo = mouth;
+    for (auto* shape : {&sk, &mo}) {
+      for (float& v : shape->verts) v *= scale;
+      for (auto& morph : shape->morphs)
+        for (float& v : morph) v *= scale;
+    }
+    Head h;
+    std::string why;
+    if (!BuildHead(mk, {sk, mo}, h, why)) {
+      Check(false, "mouth-wall fixture builds");
+      continue;
+    }
+    const auto& walls = h.shapes[1].walls;
+    Check(walls.size() == 4, "only shallow smiling side walls follow cheeks");
+    if (walls.size() != 4) continue;
+    Check(std::all_of(walls.begin(), walls.end(), [](const auto& w) {
+            return w.count > 0 && w.count <= kFollow;
+          }), "wall support is bounded across head scales");
+    h.row.assign(h.nv, 0);
+    h.basis = {0.3f, -0.4f, 0.2f};
+    Head legacy = h;
+    legacy.shapes[1].walls.clear();
+    std::vector<float> c(h.k + kNumMouthCoef, 0.f);
+    c[0] = 1;
+    for (int i = 0; i < kNumJawPoints; ++i)
+      c[h.k + a2f::kNumTongue + i * 3 + 1] = -0.25f;
+    const auto speech = c;
+    float expr[kNumExpressions] = {};
+    expr[kHappy - kExpression] = 0.7f;
+    for (auto mode : {TongueMode::kAuthored, TongueMode::kModel}) {
+      std::vector<std::vector<float>> actual, original, expression;
+      Evaluate(h, nullptr, kScales, expr, nullptr, mode, expression);
+      Evaluate(legacy, nullptr, kScales, expr, nullptr, mode, original);
+      Check(expression == original, "wall mapping preserves authored expressions");
+      Evaluate(h, c.data(), kScales, expr, nullptr, mode, actual);
+      Evaluate(legacy, c.data(), kScales, expr, nullptr, mode, original);
+      bool ok = actual[0] == original[0];
+      for (uint32_t v = 0; v < mo.nv; ++v) {
+        auto wall = std::find_if(walls.begin(), walls.end(),
+                                [v](const auto& w) { return w.vertex == v; });
+        for (int j = 0; j < 3; ++j) {
+          float expected = original[1][v * 3 + j];
+          if (wall != walls.end() && j == 1) {
+            float back = 0;
+            for (uint32_t k = 0; k < wall->count; ++k) {
+              float delta[3];
+              for (int q = 0; q < 3; ++q)
+                delta[q] = actual[0][wall->skin[k] * 3 + q] -
+                           expression[0][wall->skin[k] * 3 + q];
+              back = std::min(back, delta[1] - std::sqrt(
+                  delta[0]*delta[0] + delta[1]*delta[1] + delta[2]*delta[2]));
+            }
+            expected = expression[1][v * 3 + 1] +
+                       std::min(expected - expression[1][v * 3 + 1], back);
+          }
+          ok &= std::fabs(actual[1][v * 3 + j] - expected) < 1e-5f;
+        }
+      }
+      Check(ok, "wall clearance preserves jaw opening, face, teeth and rejected walls");
+      std::fill(c.begin(), c.end(), 0.f);
+      Evaluate(h, c.data(), kScales, kNoExpressions, nullptr, mode, actual);
+      Evaluate(legacy, c.data(), kScales, kNoExpressions, nullptr, mode, original);
+      Check(actual == original, "neutral mouth unchanged in both tongue modes");
+      c = speech;
+    }
+  }
+}
+
 // Mark himself, with upper/lower teeth, optional tongue and two pinned rings.
 bool BuildFixture(TongueMotion mode, MouthFixture& fixture) {
   Mark mk;
@@ -363,6 +451,7 @@ bool BuildFixture(TongueMotion mode, MouthFixture& fixture) {
       rings.verts.push_back(c);
   }
   rings.morphs.assign(kNumMorphs, {});
+  if (mode == TongueMotion::kNone) CheckMouthWalls(mk, skin, mouth);
   Head& h = fixture.head;
   std::string why;
   const bool built = BuildHead(mk, {skin, mouth, rings}, h, why);

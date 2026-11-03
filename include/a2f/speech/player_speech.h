@@ -10,10 +10,7 @@
 #include <vector>
 
 #include "a2f/inference/live_core.h"
-
-namespace skse {
-struct SKSEInterface;
-}  // namespace skse
+#include "a2f/runtime/skse.h"  // namespace skse
 
 namespace bfa {
 
@@ -30,7 +27,7 @@ struct PlayerSpeech {
   // ---- provider interface lines; handle 0 otherwise ----
   uint64_t handle = 0, utterance_id = 0;
   uint32_t segment = 0;
-  uint32_t form_id = 0;             // the speaker's
+  uint32_t form_id = 0;  // the speaker's
   // provider RIFF WAVE bytes; DBVO/DBReV use path instead
   std::shared_ptr<const std::vector<uint8_t>> audio;
   std::string stem;  // the line's name in the cache and the log
@@ -39,8 +36,9 @@ struct PlayerSpeech {
   // Pending terminal event; accessed only by provider.cc under provider_lock.
   uint32_t end_event = 1;  // BFA_kEnded
   uint32_t end_reason = 0;
-  std::atomic<bool> play_requested{false}, animation_started{false}, expired{false};
-  std::atomic<bool> on_face{false};   // Start was accepted; cleared when it left
+  std::atomic<bool> play_requested{false}, animation_started{false},
+      expired{false};
+  std::atomic<bool> on_face{false};  // Start was accepted; cleared when it left
   std::atomic<bool> reported{false};  // its end (ended, failed, declined) was
   std::atomic<double> touched{0};     // the provider's last call about it
 

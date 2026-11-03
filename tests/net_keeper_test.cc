@@ -59,7 +59,9 @@ class FakeNet : public a2f::Net {
   bool gpu_;
 };
 
-a2f::NetKeeper Keeper(Machine* m, bool want_gpu = true, bool retry_gpu = false) {
+// shared: the shared route's unbounded backoff; otherwise the independent
+// route's bounded retries.
+a2f::NetKeeper Keeper(Machine* m, bool want_gpu = true, bool shared = false) {
   return a2f::NetKeeper(
       want_gpu,
       [m](bool gpu, std::string& err,
@@ -72,7 +74,7 @@ a2f::NetKeeper Keeper(Machine* m, bool want_gpu = true, bool retry_gpu = false) 
         info = gpu ? "GPU" : "CPU";
         return std::make_unique<FakeNet>(m, gpu);
       },
-      [m] { return m->now; }, nullptr, retry_gpu);
+      [m] { return m->now; }, nullptr, !shared);
 }
 
 // One line: a single network run.
@@ -89,16 +91,28 @@ bool Line(a2f::NetKeeper& k, bool* no_net = nullptr) {
 }
 
 // Failure never selects CPU; the user can explicitly choose either provider.
+// The independent route retries three times (2/4/8 s), then waits.
 void LoadFails(const char* error, const char* name) {
   printf("-- load fails: %s\n", name);
   Machine m;
   m.gpu_error = error;
   auto k = Keeper(&m);
-  Expect(!k.Ensure() && !k.loaded() && !k.needs_poll(), "GPU failure leaves vanilla, no automatic CPU");
-  Expect(k.error() == error && k.retry_at() == 0, "error retained without idle retries");
-  for (double now : {2., 30., 120., 1e6}) {
+  Expect(!k.Ensure() && !k.loaded() && k.needs_poll(), "GPU failure leaves vanilla, no automatic CPU");
+  Expect(k.error() == error && k.retry_at() == m.now + 2, "error retained; bounded retry scheduled");
+  for (double wait : {4., 8.}) {
+    const int before = m.gpu_creates;
+    m.now = k.retry_at() - .01;
+    Expect(!Line(k) && m.gpu_creates == before, "no attempt before the deadline");
+    m.now += .01;
+    Expect(!Line(k) && m.gpu_creates == before + 1 && k.retry_at() == m.now + wait,
+           "independent retry backs off");
+  }
+  m.now = k.retry_at();
+  Expect(!Line(k) && m.gpu_creates == 4 && !k.needs_poll() && k.retry_at() == 0,
+         "the fourth failure waits for Try GPU again");
+  for (double now : {30., 120., 1e6}) {
     m.now = now;
-    Expect(!Line(k) && m.cpu_creates == 0, "time and speech never select CPU");
+    Expect(!Line(k) && m.gpu_creates == 4 && m.cpu_creates == 0, "time and speech never select CPU or retry");
   }
   m.gpu_error = nullptr;
   k.Unload();
@@ -107,7 +121,9 @@ void LoadFails(const char* error, const char* name) {
   Expect(k.Ensure() && k.Wanted() && k.error().empty(), "explicit CPU works");
   k.Reconfigure(true);
   Expect(k.Ensure() && k.on_gpu() && k.error().empty(), "CPU to GPU works in the same process");
-  Expect(m.gpu_creates == 2 && m.cpu_creates == 1, "only selected providers created");
+  Expect(m.gpu_creates == 5 && m.cpu_creates == 1, "only selected providers created");
+  m.run_error = kRemoved;
+  Expect(!Line(k) && k.needs_poll() && k.retry_at() == m.now + 2, "success reset the retry budget");
 }
 
 void RunFails(const char* error, const char* name) {
@@ -132,6 +148,21 @@ int main() {
   LoadFails(kDriver, "driver error");
   LoadFails(kOom, "out of memory");
   LoadFails(kOther, "other");
+  printf("-- independent API or device creation failures wait for Try GPU again\n");
+  for (const char* permanent : {
+           "independent device: runtime API unavailable: device factory failed (80004002)",
+           "independent device: device creation: CreateDevice (runtime API available) failed (887A0004)",
+           "independent device: LoadLibraryExW(DirectML.dll) failed [Win32 126]"}) {
+    Machine m;
+    m.gpu_error = permanent;
+    auto k = Keeper(&m);
+    Expect(!k.Ensure() && !k.needs_poll() && k.retry_at() == 0, "no automatic retry");
+    m.now = 1e6;
+    Expect(!Line(k) && m.gpu_creates == 1 && m.cpu_creates == 0, "waits for an explicit retry");
+    m.gpu_error = nullptr;
+    k.Reconfigure(true);
+    Expect(Line(k) && m.gpu_creates == 2, "explicit retry attempts again");
+  }
   RunFails(kRemoved, "device removed");
   RunFails(kHung, "device hung");
   RunFails(kReset, "device reset");
@@ -162,11 +193,21 @@ int main() {
     m.now = k.retry_at();
     Expect(Line(k) && k.on_gpu(), "lost shared session recovers on GPU");
   }
-  {
+  for (const char* terminal : {
+           "device error; GPU attempt failed",
+           "shared device: LoadLibraryExW(DirectML.dll) failed [Win32 126]",
+           "shared device: LoadLibraryExW(DirectML.dll) failed [Win32 193]"}) {
     Machine m;
-    m.gpu_error = "device error; GPU attempt failed";
+    m.gpu_error = terminal;
     auto k = Keeper(&m, true, true);
     Expect(!k.Ensure() && !k.needs_poll(), "returned terminal attempt stops idle retries");
+    Expect(k.error() == terminal && k.retry_at() == 0,
+           "terminal loader error remains visible without a retry deadline");
+    for (double now : {2., 30., 120., 1e6}) {
+      m.now = now;
+      Expect(!Line(k) && m.gpu_creates == 1 && m.cpu_creates == 0,
+             "time and speech do not repeat terminal GPU setup");
+    }
     m.gpu_error = nullptr;
     k.Reconfigure(true);
     Expect(Line(k) && m.gpu_creates == 2 && m.cpu_creates == 0, "explicit retry clears attempt state");
@@ -238,6 +279,12 @@ int main() {
     return false;
   };
   const std::string removed = kRemoved;
+  Expect(any(DiagnoseNet(true,
+      "independent device: runtime API unavailable: device factory failed (80004002)",
+      unknown), "Driver support was not tested"), "missing API is separate from driver support");
+  Expect(any(DiagnoseNet(true,
+      "independent device: device creation: CreateDevice (runtime API available) failed (887A0004)",
+      unknown), "API is available"), "device creation failure preserves API availability");
   const auto retained_failure = DiagnoseNet(true,
       "independent context: [DirectML removed reason 887A0020]; "
       "GPU attempt failed", roomy);

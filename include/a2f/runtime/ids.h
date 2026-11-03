@@ -28,11 +28,13 @@ constexpr skse::Rel kIdFaceAnimUpdate{25983, 26598, 0x3D38B0};
 constexpr skse::Rel kIdFaceNodeVtable{252410, 200333, 0x1678620};
 // BSFaceGenNiNode: update keyframes, apply morphs
 constexpr skse::Rel kFaceCallers[] = {{26417, 26998, 0x3E8DC0}};
-// BSFaceGenNiNode::ApplyMorphs(node, force): reset to base + morphs, run by
-// the "Face morphing" job (26999) and the player's face update (36564)
+// BSFaceGenNiNode::ApplyMorphs(node, force): reset to base + morphs. Every
+// call in the executable is hooked, not only the "Face morphing" job (26999)
+// and the player's face update (36564): the engine's face rebuild that
+// RaceMenu runs (UpdateModelFace), and so Mu Dynamic NPC Replacer when it
+// re-applies a preset, calls it from elsewhere, and a reset the hook does not
+// see drops that frame's speech deltas (a flicker).
 constexpr skse::Rel kIdApplyMorphs{26407, 26988, 0x3E82F0};
-constexpr skse::Rel kMorphCallers[] = {{26418, 26999, 0x3E91D0},
-                                       {35565, 36564, 0x5BAB10}};
 // shape -> BSFaceGenMorphDataHead
 constexpr skse::Rel kIdMorphData{26441, 27020, 0x3E9B90};
 // add one morph to a shape
