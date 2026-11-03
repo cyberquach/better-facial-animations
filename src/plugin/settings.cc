@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cerrno>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -17,18 +18,20 @@
 #include <utility>
 #include <vector>
 
+#define SI_NO_CONVERSION
 #include "a2f/inference/net_keeper.h"
 #include "a2f/plugin/plugin.h"
 #include "a2f/runtime/engine.h"
 #include "a2f/runtime/scoped_lock.h"
 #include "a2f/runtime/skse.h"
+#include "third_party/simpleini/SimpleIni.h"
 
 namespace bfa {
 
 Config& config = *new Config;
 namespace {
 Tune tune;
-// Sorted by runtime id; settings_lock guards it. Outlives the INI writer.
+// Sorted by runtime id; settings_lock guards it.
 std::vector<RaceSetting>& races = *new std::vector<RaceSetting>;
 std::map<std::string, NpcSetting>& npcs =
     *new std::map<std::string, NpcSetting>;
@@ -69,7 +72,8 @@ extern const std::vector<Param> kParams = [] {
        "animation.",
        Sec::kGeneral, &tune.player},
       {"PotatoMode", nullptr, 0, 0, "Potato Mode",
-       "Only animate the player and NPC in an active dialogue window with one another.",
+       "Only animate the player and NPC in an active dialogue window with one "
+       "another.",
        Sec::kGeneral, &tune.potato_mode},
       {"VanillaEmotions", nullptr, 0, 0, "Vanilla / scene emotion inputs",
        "Pass authored scene and dialogue-mod emotions to the facial model. "
@@ -78,14 +82,18 @@ extern const std::vector<Param> kParams = [] {
        Sec::kGeneral, &tune.vanilla_emotions, -1, true, Param::kNone,
        Group::kSources},
       {"SentimentAnalysis", nullptr, 0, 0, "Sentiment Analysis",
-       "Sentiment Analysis is a HEAVY FEATURE: its additional model needs "
-       "600 MB of EXTRA VRAM on GPU, substantial processing power and longer "
-       "animation generation time. Adds voice-detected emotion to the model "
-       "inputs alongside authored scene emotion. Requires emotion_fp16.onnx. "
-       "Off by default. Disabling unloads it after current inference. "
+       "Enable the selected Audio2Emotion model to add voice-driven emotion "
+       "alongside authored scene emotion. Full typically adds about 600 MB "
+       "of GPU memory; Performance uses smaller experimental weights. "
+       "Performance is enabled by default. Disabling unloads it after current "
+       "inference. "
        "Force CPU uses system memory and additional CPU processing.",
        Sec::kGeneral, &tune.sentiment_analysis, -1, true, Param::kSentiment,
        Group::kSources},
+      {"UsePerformanceEmotion", nullptr, 0, 0, "Skyrim-trained emotion model",
+       "Experimental distilled Audio2Emotion model for Skyrim facial "
+       "animation.",
+       Sec::kModel, &tune.performance_sentiment},
       {"SentimentMultiplier", &tune.sentiment_multiplier, 0, 2,
        "Sentiment addition multiplier",
        "Scales sentiment added to the model inputs: 0 = none, 0.5 = half, "
@@ -96,13 +104,6 @@ extern const std::vector<Param> kParams = [] {
        "Generate a line when its dialogue response is created, before it is "
        "spoken.",
        Sec::kGeneral, &tune.prefetch},
-      {"UseV3Model", nullptr, 0, 0, "V3 model",
-       "Audio2Face v3.0. The most expressive model, with detailed lip syncing "
-       "at 60 fps. Roughly 2x as fast as the Old "
-       "model in RTX 4070 GPU tests; speed varies by system and dialogue. "
-       "About 250 MB of VRAM on GPU. Switches live; already playing lines "
-       "finish with their current animation.",
-       Sec::kModel, &tune.v3_model},
       {"UsePerformanceModel", nullptr, 0, 0, "Performance model (Experimental)",
        "Smaller model distilled from V3's output on Skyrim's dialogue. "
        "Fastest to run: roughly 8x as fast as V3 in RTX 4070 GPU tests; "
@@ -110,7 +111,8 @@ extern const std::vector<Param> kParams = [] {
        "accurate at lip syncing; "
        "lip syncing on modded dialogue may be degraded. Runs at 30 fps. "
        "About 80 MB of VRAM on GPU; usage "
-       "varies by system. Switches live; already playing lines finish with their "
+       "varies by system. Switches live; already playing lines finish with "
+       "their "
        "current animation. Eye gaze is unavailable with this model.",
        Sec::kModel, &tune.performance_model},
       {"UseOldModel", nullptr, 0, 0, "Old model",
@@ -145,8 +147,9 @@ extern const std::vector<Param> kParams = [] {
            "this sex's Expressive Facial Animation edition detected.",
            kExpressiveMouthScale);
   for (int profile = 0; profile < 3; ++profile) {
-    FaceTune& face =
-        profile == 2 ? tune.player_face : profile ? tune.female : tune.male;
+    FaceTune& face = profile == 2 ? tune.player_face
+                     : profile    ? tune.female
+                                  : tune.male;
     auto face_param = [&](Param p, float* (*access)(FaceTune&, size_t),
                           size_t index = 0) {
       p.face_value = access;
@@ -251,14 +254,15 @@ extern const std::vector<Param> kParams = [] {
       params.push_back(p);
     }
     static const char* const kKeys[a2f::kNumMod] = {
-        "MaxAmazement", "MaxAnger", "MaxCheekiness", "MaxDisgust", "MaxFear",
-        "MaxGrief", "MaxJoy", "MaxOutOfBreath", "MaxPain", "MaxSadness"};
+        "MaxAmazement", "MaxAnger",  "MaxCheekiness", "MaxDisgust",
+        "MaxFear",      "MaxGrief",  "MaxJoy",        "MaxOutOfBreath",
+        "MaxPain",      "MaxSadness"};
     static const char* const kLabels[a2f::kNumMod] = {
-        "Maximum surprise input",       "Maximum anger input",
-        "Maximum cheekiness input",     "Maximum disgust input",
-        "Maximum fear input",           "Maximum grief input",
-        "Maximum happiness input",      "Maximum breathlessness input",
-        "Maximum pain input",           "Maximum sadness input"};
+        "Maximum surprise input",   "Maximum anger input",
+        "Maximum cheekiness input", "Maximum disgust input",
+        "Maximum fear input",       "Maximum grief input",
+        "Maximum happiness input",  "Maximum breathlessness input",
+        "Maximum pain input",       "Maximum sadness input"};
     for (int c = 0; c < a2f::kNumMod; ++c) {
       const bool unused =
           c == a2f::kGrief || c == a2f::kOutOfBreath || c == a2f::kPain;
@@ -283,8 +287,6 @@ extern const std::vector<Param> kParams = [] {
        "BetterFacialAnimations.log (SKSE log folder). The GPU, the driver and "
        "model problems are logged either way.",
        Sec::kDebug, &tune.logging});
-  for (Param& p : params)
-    if (p.flag == &tune.v3_model) p.stored = false;
   return params;
 }();
 
@@ -307,20 +309,40 @@ namespace {
 
 SRWLOCK ini_write_lock = SRWLOCK_INIT;
 
-DWORD WINAPI IniWriter(void* event) {
-  for (;;) {
-    if (WaitForSingleObject(event, INFINITE) != WAIT_OBJECT_0) return 1;
-    // Every edit restarts the quiet period, including edits after menu close.
-    DWORD result;
-    do {
-      result = WaitForSingleObject(event, 250);
-    } while (result == WAIT_OBJECT_0);
-    if (result != WAIT_TIMEOUT) return 1;
-    SaveIni();
-  }
+constexpr char kIni[] = "Data\\SKSE\\Plugins\\BetterFacialAnimations.ini";
+
+bool ReadIniFile(CSimpleIniA& ini, const char* path, bool* missing = nullptr) {
+  errno = 0;
+  const SI_Error result = ini.LoadFile(path);
+  const bool absent = result == SI_FILE && errno == ENOENT;
+  if (missing) *missing = absent;
+  if (result >= SI_OK || absent) return true;
+  skse::Report(
+      "settings load failed: %s (SimpleIni %d, errno %d); "
+      "keeping current settings",
+      path, result, errno);
+  return false;
 }
 
-constexpr char kIni[] = "Data\\SKSE\\Plugins\\BetterFacialAnimations.ini";
+bool ReadIni(CSimpleIniA& ini, bool* missing = nullptr) {
+  ini.SetUnicode();
+  // Fixed, independent installer choices; no directory scans or frame work.
+  // Explicit user settings load last and always win, including after menu
+  // saves.
+  constexpr const char* kChoices[] = {
+      "GraphicsRoute",   "Startup",      "FaceModel",       "EmotionModel",
+      "VanillaEmotions", "ActiveOnly",   "PlayerAnimation", "PrepareEarly",
+      "Tongue",          "Gaze",         "Logging",         "Khajiit",
+      "Argonian",        "EmotionDevice"};
+  for (const char* choice : kChoices) {
+    const std::string path =
+        std::string(
+            "Data\\SKSE\\Plugins\\BetterFacialAnimations\\Installer\\") +
+        choice + ".ini";
+    if (!ReadIniFile(ini, path.c_str())) return false;
+  }
+  return ReadIniFile(ini, kIni, missing);
+}
 
 // A form's identity across load orders: "<plugin>|<local id>" as the ini
 // stores it; empty without a source plugin.
@@ -329,15 +351,17 @@ std::string FormKey(uint8_t* form) {
   if (!file || !*file) return {};
   char suffix[16];
   snprintf(suffix, sizeof suffix, "|%06X",
-           LocalFormId(Field<uint32_t>(form, kFormId)));
+           LocalFormId(reinterpret_cast<RE::TESForm*>(form)->formID));
   return file + std::string(suffix);
 }
 
 // NPC keys lower the plugin name so that its spelling cannot split entries;
 // the local id stays upper-case hex.
 std::string NpcKey(uint8_t* base) {
-  if (!base || base[kFormType] != kFtNpc) return {};
-  const uint32_t id = Field<uint32_t>(base, kFormId);
+  if (!base ||
+      reinterpret_cast<RE::TESForm*>(base)->formType.underlying() != kFtNpc)
+    return {};
+  const uint32_t id = reinterpret_cast<RE::TESForm*>(base)->formID;
   if (!id || (id >> 24) == 0xFF) return {};  // save-created: not stable
   const std::string key = FormKey(base);
   const size_t split = key.find('|');
@@ -358,7 +382,7 @@ std::string Lower(const char* s) {
 namespace {
 
 std::string NpcLabel(uint8_t* base) {
-  const char* name = Field<const char*>(base, kNpcName);
+  const char* name = reinterpret_cast<RE::TESNPC*>(base)->fullName.c_str();
   return name && *name ? name : "Unnamed NPC";
 }
 
@@ -370,7 +394,11 @@ std::string NpcLabel(uint8_t* base) {
 // Version 5 adds a player profile and normalizes lips to backend calibration.
 // Version 6 turns Argonians on by default and drops their saved off state.
 // Version 7 lowers the emotion caps' default to 1 and adds NPC overrides.
-constexpr int kIniVersion = 8;
+// Version 8 retires GpuDevice/AutoGpuDevice and the Sentiment sliders.
+// Version 9 makes the independent GPU route opt-in: a stored
+// IndependentGpuDevice=1 in the user's INI was 4.0's default, not a choice,
+// so it is cleared unless this install's FOMOD fragment chose it.
+constexpr int kIniVersion = 9;
 
 std::string Section(const Param& p) {
   static const char* const kNames[] = {"General",  "General",
@@ -385,25 +413,31 @@ std::string Section(const Param& p) {
 }  // namespace
 
 void LoadRaceSettings() {
+  ScopedLock reader(ini_write_lock);
+  CSimpleIniA ini;
+  if (!ReadIni(ini)) return;
   std::vector<RaceSetting> loaded;
-  const BSTArray* forms = FormArray(kFtRace);
+  const auto* forms = FormArray(kFtRace);
   if (!forms) return;
-  for (uint32_t i = 0; i < forms->n; ++i) {
-    uint8_t* form = forms->items[i];
-    if (!form || form[kFormType] != kFtRace ||
-        !(Field<uint32_t>(form, kRaceFlags) & 2))
+  for (uint32_t i = 0; i < forms->size(); ++i) {
+    uint8_t* form = reinterpret_cast<uint8_t*>(forms->data()[i]);
+    if (!form ||
+        reinterpret_cast<RE::TESForm*>(form)->formType.underlying() !=
+            kFtRace ||
+        !(reinterpret_cast<RE::TESRace*>(form)->data.flags.underlying() & 2))
       continue;
-    const uint32_t id = Field<uint32_t>(form, kFormId);
+    const uint32_t id = reinterpret_cast<RE::TESForm*>(form)->formID;
     const char* file = SourceFileName(form);
     const std::string key = FormKey(form);
     if (key.empty()) continue;
-    const char* name = Field<const char*>(form, kRaceName);
-    const char* editor = Field<const char*>(form, kRaceEditorId);
+    const char* name = reinterpret_cast<RE::TESRace*>(form)->fullName.c_str();
+    const char* editor =
+        reinterpret_cast<RE::TESRace*>(form)->formEditorID.c_str();
     std::string label = name && *name ? name : "Unnamed race";
     if (editor && *editor) label += " (" + std::string(editor) + ")";
     const bool default_enabled = DefaultRaceEnabled(id, file);
-    const bool enabled = GetPrivateProfileIntA(
-        "Races", key.c_str(), default_enabled, kIni) != 0;
+    const bool enabled =
+        ini.GetLongValue("Races", key.c_str(), default_enabled) != 0;
     loaded.push_back({id, key, label, enabled, default_enabled});
   }
   std::sort(loaded.begin(), loaded.end(),
@@ -423,7 +457,7 @@ bool RaceEnabled(uint32_t id) {
   ScopedLock guard(settings_lock, ScopedLock::kShared);
   const auto it = FindRace(id);
   return it != races.end() && it->id == id ? it->enabled
-                                         : DefaultRaceEnabled(id);
+                                           : DefaultRaceEnabled(id);
 }
 
 void SetRaceEnabled(uint32_t id, bool enabled) {
@@ -433,25 +467,18 @@ void SetRaceEnabled(uint32_t id, bool enabled) {
 }
 
 void LoadNpcSettings() {
+  ScopedLock reader(ini_write_lock);
+  CSimpleIniA ini;
+  if (!ReadIni(ini)) return;
   // Legacy exclusions migrate to disabled overrides. New entries take
   // precedence.
   std::map<std::string, NpcSetting> loaded;
   for (const char* section : {"Blacklist", "Overrides"}) {
-    std::vector<char> keys(4096);
-    for (;;) {
-      const DWORD n = GetPrivateProfileStringA(section, nullptr, "",
-                                               keys.data(), keys.size(), kIni);
-      if (n < keys.size() - 2) break;
-      if (keys.size() >= 1024 * 1024) {
-        skse::Report(
-            "NPC overrides too large to read; keeping current settings");
-        return;
-      }
-      keys.resize(keys.size() * 2);
-    }
-    for (const char* p = keys.data(); *p; p += std::strlen(p) + 1) {
-      if (GetPrivateProfileIntA(section, p, 0, kIni) != 1) continue;
-      std::string key = p;
+    CSimpleIniA::TNamesDepend keys;
+    ini.GetAllKeys(section, keys);
+    for (const auto& entry : keys) {
+      if (ini.GetLongValue(section, entry.pItem, 0) != 1) continue;
+      std::string key = entry.pItem;
       const auto split = key.find('|');
       if (split == std::string::npos || !split || key.size() != split + 7 ||
           key.find_first_of("=[]\r\n/\\") != std::string::npos)
@@ -467,13 +494,10 @@ void LoadNpcSettings() {
       NpcSetting npc{0, key, key, !strcmp(section, "Blacklist")};
       if (!npc.blocked) {
         const std::string detail = "Override:" + key;
-        npc.blocked =
-            !GetPrivateProfileIntA(detail.c_str(), "Enabled", 1, kIni);
+        npc.blocked = !ini.GetLongValue(detail.c_str(), "Enabled", 1);
         for (const Param& param : kParams) {
           if (!NpcParamSupported(param)) continue;
-          char value[128];
-          GetPrivateProfileStringA(detail.c_str(), param.key, "", value,
-                                   sizeof value, kIni);
+          const char* value = ini.GetValue(detail.c_str(), param.key, "");
           char* end;
           const float v = std::strtof(value, &end);
           if (end != value && !*end && std::isfinite(v))
@@ -485,14 +509,16 @@ void LoadNpcSettings() {
     }
   }
   std::unordered_set<uint32_t> ids;
-  if (const BSTArray* forms = FormArray(kFtNpc)) {
-    for (uint32_t i = 0; i < forms->n; ++i) {
-      uint8_t* form = forms->items[i];
+  if (const auto* forms = FormArray(kFtNpc)) {
+    for (uint32_t i = 0; i < forms->size(); ++i) {
+      uint8_t* form = reinterpret_cast<uint8_t*>(forms->data()[i]);
       const auto it = loaded.find(NpcKey(form));
       if (it == loaded.end()) continue;
-      it->second.id = Field<uint32_t>(form, kFormId);
+      it->second.id = reinterpret_cast<RE::TESForm*>(form)->formID;
       it->second.label = NpcLabel(form);
-      it->second.female = (Field<uint32_t>(form, kNpcFlags) & 1) != 0;
+      it->second.female = (reinterpret_cast<RE::TESNPC*>(form)
+                               ->actorData.actorBaseFlags.underlying() &
+                           1) != 0;
       if (it->second.blocked) ids.insert(it->second.id);
     }
   }
@@ -506,15 +532,21 @@ void LoadNpcSettings() {
 }
 
 NpcSetting DescribeNpc(uint8_t* actor) {
-  if (!actor || actor[kFormType] != kFtActor ||
-      Field<uint32_t>(actor, kFormId) == kPlayerFormId)
+  if (!actor ||
+      reinterpret_cast<RE::TESForm*>(actor)->formType.underlying() !=
+          kFtActor ||
+      reinterpret_cast<RE::TESForm*>(actor)->formID == kPlayerFormId)
     return {};
-  auto* base = Field<uint8_t*>(actor, kRefrBase);
+  auto* base = reinterpret_cast<uint8_t*>(
+      reinterpret_cast<RE::TESObjectREFR*>(actor)->data.objectReference);
   const std::string key = NpcKey(base);
   if (key.empty()) return {};
-  NpcSetting npc{Field<uint32_t>(base, kFormId), key, NpcLabel(base), false};
+  NpcSetting npc{reinterpret_cast<RE::TESForm*>(base)->formID, key,
+                 NpcLabel(base), false};
   ScopedLock guard(settings_lock, ScopedLock::kShared);
-  npc.female = (Field<uint32_t>(base, kNpcFlags) & 1) != 0;
+  npc.female = (reinterpret_cast<RE::TESNPC*>(base)
+                    ->actorData.actorBaseFlags.underlying() &
+                1) != 0;
   const auto it = npcs.find(key);
   if (it != npcs.end()) {
     npc.blocked = it->second.blocked;
@@ -536,29 +568,35 @@ bool NpcOverridesActive() { return npc_overrides; }
 
 bool NpcAllowed(uint8_t* actor) {
   if (!npc_overrides || !actor ||
-      Field<uint32_t>(actor, kFormId) == kPlayerFormId)
+      reinterpret_cast<RE::TESForm*>(actor)->formID == kPlayerFormId)
     return true;
-  auto* base = Field<uint8_t*>(actor, kRefrBase);
-  if (!base || base[kFormType] != kFtNpc) return true;
+  auto* base = reinterpret_cast<uint8_t*>(
+      reinterpret_cast<RE::TESObjectREFR*>(actor)->data.objectReference);
+  if (!base ||
+      reinterpret_cast<RE::TESForm*>(base)->formType.underlying() != kFtNpc)
+    return true;
   ScopedLock guard(settings_lock, ScopedLock::kShared);
-  return !blocked_npcs.count(Field<uint32_t>(base, kFormId));
+  return !blocked_npcs.count(reinterpret_cast<RE::TESForm*>(base)->formID);
 }
 
 bool NpcParamSupported(const Param& param) {
   return (param.profile == 0 && param.face_value) ||
          (param.profile == -1 && (param.sec == Sec::kDirect ||
-                                 !strcmp(param.key, "SentimentMultiplier") ||
-                                 !strcmp(param.key, "SentimentAnalysis")));
+                                  !strcmp(param.key, "SentimentMultiplier") ||
+                                  !strcmp(param.key, "SentimentAnalysis")));
 }
 
 Tune NpcSharedTune(Tune result, uint8_t* actor) {
   if (!npc_overrides || !actor ||
-      Field<uint32_t>(actor, kFormId) == kPlayerFormId)
+      reinterpret_cast<RE::TESForm*>(actor)->formID == kPlayerFormId)
     return result;
-  auto* base = Field<uint8_t*>(actor, kRefrBase);
-  if (!base || base[kFormType] != kFtNpc) return result;
+  auto* base = reinterpret_cast<uint8_t*>(
+      reinterpret_cast<RE::TESObjectREFR*>(actor)->data.objectReference);
+  if (!base ||
+      reinterpret_cast<RE::TESForm*>(base)->formType.underlying() != kFtNpc)
+    return result;
   ScopedLock guard(settings_lock, ScopedLock::kShared);
-  const auto id = npc_ids.find(Field<uint32_t>(base, kFormId));
+  const auto id = npc_ids.find(reinterpret_cast<RE::TESForm*>(base)->formID);
   if (id == npc_ids.end()) return result;
   const auto& values = npcs.at(id->second).values;
   auto get = [&](const char* key, float fallback) {
@@ -570,7 +608,8 @@ Tune NpcSharedTune(Tune result, uint8_t* actor) {
       get("ConversationGaze", result.conversation_gaze) != 0;
   result.gaze_strength = get("GazeStrength", result.gaze_strength);
   result.sentiment_analysis =
-      result.sentiment_analysis && get("SentimentAnalysis", result.sentiment_analysis) != 0;
+      result.sentiment_analysis &&
+      get("SentimentAnalysis", result.sentiment_analysis) != 0;
   result.sentiment_multiplier =
       get("SentimentMultiplier", result.sentiment_multiplier);
   return result;
@@ -580,10 +619,13 @@ FaceTune NpcFaceTune(const Tune& defaults, uint8_t* actor, bool female,
                      bool player) {
   FaceTune face = defaults.ForActor(female, player);
   if (!npc_overrides || !actor || player) return face;
-  auto* base = Field<uint8_t*>(actor, kRefrBase);
-  if (!base || base[kFormType] != kFtNpc) return face;
+  auto* base = reinterpret_cast<uint8_t*>(
+      reinterpret_cast<RE::TESObjectREFR*>(actor)->data.objectReference);
+  if (!base ||
+      reinterpret_cast<RE::TESForm*>(base)->formType.underlying() != kFtNpc)
+    return face;
   ScopedLock guard(settings_lock, ScopedLock::kShared);
-  const auto id = npc_ids.find(Field<uint32_t>(base, kFormId));
+  const auto id = npc_ids.find(reinterpret_cast<RE::TESForm*>(base)->formID);
   if (id == npc_ids.end()) return face;
   const auto& values = npcs.at(id->second).values;
   for (const Param& param : kParams) {
@@ -658,16 +700,37 @@ Tune SnapshotTune() {
   return tune;
 }
 
-void SelectModelCheckbox(const Param& p) {
-  if (p.flag == &tune.v3_model) tune.SelectModel(a2f::kNetV3);
-  if (p.flag == &tune.performance_model)
-    tune.SelectModel(a2f::kNetPerformance);
-  if (p.flag == &tune.old_model) tune.SelectModel(a2f::kNetV2);
-}
-
 void SetSelectedModel(int network) {
   ScopedLock guard(settings_lock);
   tune.SelectModel(network);
+}
+
+void SelectFaceOption(int network) {
+  ScopedLock guard(settings_lock);
+  tune.enabled = network != 0;
+  if (network) tune.SelectModel(network);
+}
+
+void SelectEmotionOption(int model) {
+  ScopedLock guard(settings_lock);
+  tune.sentiment_analysis = model != 0;
+  if (model) tune.performance_sentiment = model == 2;
+}
+
+bool SentimentAvailable(const Tune& selected) {
+  return selected.performance_sentiment ? config.performance_sentiment_available
+                                        : config.sentiment_available;
+}
+
+void SetProcessingDevice(bool cpu, int adapter) {
+  ScopedLock guard(settings_lock);
+  tune.force_cpu = cpu;
+  tune.gpu_adapter = std::max(0, adapter);
+}
+
+void SetEmotionDevice(int device) {
+  ScopedLock guard(settings_lock);
+  tune.emotion_device = std::max(kCpuDevice, device);
 }
 
 void ResetTune() {
@@ -677,7 +740,12 @@ void ResetTune() {
   tune = Tune();
   tune.logging = old.logging;
   tune.SelectModel(old.SelectedModel());
+  tune.enabled = old.enabled;
+  tune.sentiment_analysis = old.sentiment_analysis;
+  tune.performance_sentiment = old.performance_sentiment;
   tune.force_cpu = old.force_cpu;
+  tune.gpu_adapter = old.gpu_adapter;
+  tune.emotion_device = old.emotion_device;
   for (RaceSetting& race : races) race.enabled = race.default_enabled;
 }
 
@@ -694,68 +762,92 @@ std::wstring PluginDir() {
 }
 
 void LoadIni() {
+  CSimpleIniA ini;
+  bool missing;
+  if (!ReadIni(ini, &missing)) return;
   const DWORD sentiment_file =
       GetFileAttributesW((PluginDir() + L"\\" + kSentimentModel).c_str());
   config.sentiment_available = sentiment_file != INVALID_FILE_ATTRIBUTES &&
                                !(sentiment_file & FILE_ATTRIBUTE_DIRECTORY);
+  const DWORD performance_file = GetFileAttributesW(
+      (PluginDir() + L"\\" + kPerformanceSentimentModel).c_str());
+  config.performance_sentiment_available =
+      performance_file != INVALID_FILE_ATTRIBUTES &&
+      !(performance_file & FILE_ATTRIBUTE_DIRECTORY);
   // Startup only: no readers or menu callbacks exist yet.
   tune = Tune();
-  SetNpcHotkey(GetPrivateProfileIntA(
-      "General", "OverridesHotkey",
-      GetPrivateProfileIntA("General", "BlacklistHotkey", 0, kIni), kIni));
+  SetNpcHotkey(
+      ini.GetLongValue("General", "OverridesHotkey",
+                       ini.GetLongValue("General", "BlacklistHotkey", 0)));
   const int version =
-      GetFileAttributesA(kIni) == INVALID_FILE_ATTRIBUTES
-          ? kIniVersion
-          : GetPrivateProfileIntA("General", "IniVersion", 0, kIni);
+      missing ? kIniVersion : ini.GetLongValue("General", "IniVersion", 0);
   const bool migrate = version < 2;  // the Direct section is dropped
-  config.batch = std::max(
-      1, static_cast<int>(GetPrivateProfileIntA("General", "Batch", 2, kIni)));
-  config.cache_lines = std::max(8, static_cast<int>(GetPrivateProfileIntA(
-                                       "General", "CacheLines", 300, kIni)));
-  config.log_lines = GetPrivateProfileIntA("Debug", "LogLines", 400, kIni);
+  config.batch =
+      std::max(1, static_cast<int>(ini.GetLongValue("General", "Batch", 2)));
+  config.cache_lines = std::max(
+      8, static_cast<int>(ini.GetLongValue("General", "CacheLines", 300)));
+  config.log_lines = ini.GetLongValue("Debug", "LogLines", 400);
   // UseOldModel was Network=2 (3: v3.0) in earlier 3.0 builds, and ForceCPU
   // GPU=0
-  tune.old_model = GetPrivateProfileIntA("General", "Network", 3, kIni) == 2;
-  tune.force_cpu = GetPrivateProfileIntA("General", "GPU", 1, kIni) == 0;
+  tune.old_model = ini.GetLongValue("General", "Network", 3) == 2;
+  tune.force_cpu = ini.GetLongValue("General", "GPU", 1) == 0;
+  tune.gpu_adapter = std::max(0L, ini.GetLongValue("General", "GpuAdapter", 0));
   // Explicit route, as in 4.0. No Auto probe or GPU-to-GPU fallback. This
   // key takes precedence over retired GpuDevice/AutoGpuDevice settings.
   config.independent_device =
-      GetPrivateProfileIntA("General", "IndependentGpuDevice", 1, kIni) != 0;
-  char b[128], d[128];
+      ini.GetLongValue("General", "IndependentGpuDevice", 0) != 0;
+  if (version < 9 && config.independent_device) {
+    CSimpleIniA user;
+    user.SetUnicode();
+    if (ReadIniFile(user, kIni) &&
+        user.GetValue("General", "IndependentGpuDevice")) {
+      config.independent_device = false;
+      skse::Report(
+          "IndependentGpuDevice=1 was the 4.0 default: cleared; Independent "
+          "GPU mode is opt-in since 5.0 (see GPU-SETUP.txt)");
+    }
+  }
+  char d[128];
   for (size_t i = 0; i < kNumParams; ++i) {
     const Param& p = kParams[i];
     if (!p.stored || (migrate && p.sec == Sec::kDirect)) continue;
     if (p.flag) {
-      *p.flag =
-          GetPrivateProfileIntA(Section(p).c_str(), p.key, *p.flag, kIni) != 0;
+      *p.flag = ini.GetLongValue(Section(p).c_str(), p.key, *p.flag) != 0;
       continue;
     }
     const float calibration =
         !strcmp(p.key, "UpperLip")   ? direct::kUpperLipCalibration
         : !strcmp(p.key, "LowerLip") ? direct::kLowerLipCalibration
                                      : 1.f;
-    const bool old_lip = version < 5 && p.profile >= 0 && p.profile < 2 &&
-                         calibration != 1.f;
+    const bool old_lip =
+        version < 5 && p.profile >= 0 && p.profile < 2 && calibration != 1.f;
     // Missing keys use new defaults; only stored legacy values are converted.
     snprintf(d, sizeof d, "%g", *p.value * (old_lip ? calibration : 1.f));
     if (version < 4 && p.profile >= 0 && p.profile < 2) {
       Param legacy = p;
       legacy.profile = -1;
-      GetPrivateProfileStringA(Section(legacy).c_str(), p.key, d, b, sizeof b,
-                               kIni);
-      snprintf(d, sizeof d, "%s", b);
+      const std::string legacy_value =
+          ini.GetValue(Section(legacy).c_str(), p.key, d);
+      snprintf(d, sizeof d, "%s", legacy_value.c_str());
     }
-    GetPrivateProfileStringA(Section(p).c_str(), p.key, d, b, sizeof b, kIni);
+    const char* b = ini.GetValue(Section(p).c_str(), p.key, d);
     char* end;
     const float value = std::strtof(b, &end);
     if (end != b && *end == '\0' && std::isfinite(value))
-      *p.value = std::clamp(old_lip ? std::clamp(value, 0.f, 3.f) / calibration
-                                    : value,
-                            p.lo, p.hi);
+      *p.value = std::clamp(
+          old_lip ? std::clamp(value, 0.f, 3.f) / calibration : value, p.lo,
+          p.hi);
   }
-  tune.SelectModel(tune.SelectedModel());  // derives v3_model
+  tune.SelectModel(tune.SelectedModel());  // Performance wins over Old
+  // Preserve the former shared choice when upgrading an existing INI. Once
+  // saved, each model has its own device; neither follows later changes.
+  tune.emotion_device = std::max<long>(
+      kCpuDevice,
+      ini.GetLongValue("General", "EmotionDevice",
+                       tune.force_cpu ? kCpuDevice : tune.gpu_adapter));
   config.network = tune.SelectedModel();
   config.gpu = !tune.force_cpu;
+  config.gpu_adapter = tune.gpu_adapter;
   config.model = ModelFor(config.network).model_file;
   config.direct = ModelFor(config.network).mapping_file;
   if (version < 3) tune.logging = true;
@@ -766,23 +858,33 @@ void LoadIni() {
       if (p.value && p.sec == Sec::kEmotion && !strncmp(p.key, "Max", 3) &&
           *p.value == 2)
         *p.value = 1;
-  if (version < 6) {  // Argonians were saved as off while that was the default
-    WritePrivateProfileStringA("Races", "Skyrim.esm|013740", nullptr, kIni);
-    WritePrivateProfileStringA("Races", "Skyrim.esm|08883A", nullptr, kIni);
-  }
-  if (version < 8) {  // 4.3: one fixed GPU route; sentiment is shared
-    WritePrivateProfileStringA("General", "GpuDevice", nullptr, kIni);
-    WritePrivateProfileStringA("General", "AutoGpuDevice", nullptr, kIni);
-    for (const char* section :
-         {"Emotion", "EmotionMale", "EmotionFemale", "EmotionPlayer"})
-      WritePrivateProfileStringA(section, "Sentiment", nullptr, kIni);
-  }
   if (version < kIniVersion) SaveIni();
-  if (migrate) WritePrivateProfileStringA("Direct", nullptr, nullptr, kIni);
   ApplyLogging();
 }
+namespace {
+// Writes once each burst of menu edits has been quiet for a quarter second:
+// a slider drag edits every frame, and SaveIni re-reads and rewrites the file.
+DWORD WINAPI IniWriter(void* event) {
+  for (;;) {
+    if (WaitForSingleObject(event, INFINITE) != WAIT_OBJECT_0) return 1;
+    DWORD result;
+    do {
+      result = WaitForSingleObject(event, 250);
+    } while (result == WAIT_OBJECT_0);
+    if (result != WAIT_TIMEOUT) return 1;
+    SaveIni();
+  }
+}
+}  // namespace
+
 void ScheduleSaveIni() {
-  // Process-lifetime event: the writer remains asleep between edits.
+#ifdef ENABLE_COMMONLIBSSE_TESTING
+  if (testing::save_ini) {
+    SaveIni();
+    return;
+  }
+#endif
+  // Process-lifetime event: the writer sleeps between edits.
   static const HANDLE event = [] {
     HANDLE e = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (!e) return static_cast<HANDLE>(nullptr);
@@ -801,17 +903,30 @@ void ScheduleSaveIni() {
 }
 
 void SaveIni() {
+#ifdef ENABLE_COMMONLIBSSE_TESTING
+  if (testing::save_ini) {
+    testing::save_ini();
+    return;
+  }
+#endif
   // Serialize writers, but release settings_lock before any filesystem I/O.
   ScopedLock writer(ini_write_lock);
+  CSimpleIniA ini;
+  bool missing;
+  // Never replace an existing file we cannot read, or migrate installer-only
+  // defaults as if they were a legacy user INI.
+  if (!ReadIni(ini, &missing)) return;
   std::vector<std::string> values;
   std::vector<RaceSetting> saved_races;
   std::vector<NpcSetting> saved_npcs;
-  int saved_hotkey;
+  int saved_hotkey, saved_gpu_adapter, saved_emotion_device;
   {
     ScopedLock guard(settings_lock, ScopedLock::kShared);
     saved_races = races;
     for (const auto& item : npcs) saved_npcs.push_back(item.second);
     saved_hotkey = npc_hotkey;
+    saved_gpu_adapter = tune.gpu_adapter;
+    saved_emotion_device = tune.emotion_device;
     values.reserve(kNumParams);
     for (const Param& p : kParams) {
       char value[64];
@@ -819,53 +934,81 @@ void SaveIni() {
       values.emplace_back(p.value ? value : *p.flag ? "1" : "0");
     }
   }
+  const int version =
+      missing ? kIniVersion : ini.GetLongValue("General", "IniVersion", 0);
+  if (version < 2) ini.Delete("Direct", nullptr);
+  if (version < 6) {
+    ini.Delete("Races", "Skyrim.esm|013740");
+    ini.Delete("Races", "Skyrim.esm|08883A");
+  }
+  if (version < 8) {
+    ini.Delete("General", "GpuDevice");
+    ini.Delete("General", "AutoGpuDevice");
+    for (const char* section :
+         {"Emotion", "EmotionMale", "EmotionFemale", "EmotionPlayer"})
+      ini.Delete(section, "Sentiment");
+  }
+  auto write = [&](const char* section, const char* key, const char* value) {
+    if (value)
+      ini.SetValue(section, key, value);
+    else
+      ini.Delete(section, key);
+  };
   char b[64];
   snprintf(b, sizeof b, "%d", kIniVersion);
-  WritePrivateProfileStringA("General", "IniVersion", b, kIni);
-  WritePrivateProfileStringA("General", "IndependentGpuDevice",
-                             config.independent_device ? "1" : "0", kIni);
+  write("General", "IniVersion", b);
+  write("General", "IndependentGpuDevice",
+        config.independent_device ? "1" : "0");
   snprintf(b, sizeof b, "%d", saved_hotkey);
-  WritePrivateProfileStringA("General", "OverridesHotkey", b, kIni);
-  WritePrivateProfileStringA("General", "BlacklistHotkey", nullptr, kIni);
+  write("General", "OverridesHotkey", b);
+  snprintf(b, sizeof b, "%d", saved_gpu_adapter);
+  write("General", "GpuAdapter", b);
+  snprintf(b, sizeof b, "%d", saved_emotion_device);
+  write("General", "EmotionDevice", b);
+  write("General", "BlacklistHotkey", nullptr);
   for (const NpcSetting& npc : saved_npcs) {
     const bool active = npc.blocked || !npc.values.empty();
     const std::string section = "Override:" + npc.key;
     if (!active) {
-      WritePrivateProfileStringA("Overrides", npc.key.c_str(), nullptr, kIni);
-      WritePrivateProfileStringA(section.c_str(), nullptr, nullptr, kIni);
+      write("Overrides", npc.key.c_str(), nullptr);
+      write(section.c_str(), nullptr, nullptr);
     } else {
-      // One write replaces the section, dropping keys no longer overridden.
-      std::string body = std::string("Enabled=") + (npc.blocked ? "0" : "1");
-      body += '\0';
+      // Replace the section, dropping keys no longer overridden.
+      ini.Delete(section.c_str(), nullptr);
+      write(section.c_str(), "Enabled", npc.blocked ? "0" : "1");
       for (const auto& [key, value] : npc.values) {
         snprintf(b, sizeof b, "%.9g", value);
-        body += key + "=" + b;
-        body += '\0';
+        write(section.c_str(), key.c_str(), b);
       }
-      WritePrivateProfileSectionA(section.c_str(), body.c_str(), kIni);
-      WritePrivateProfileStringA("Overrides", npc.key.c_str(), "1", kIni);
+      write("Overrides", npc.key.c_str(), "1");
     }
-    WritePrivateProfileStringA("Blacklist", npc.key.c_str(), nullptr, kIni);
+    write("Blacklist", npc.key.c_str(), nullptr);
   }
   for (size_t i = 0; i < kNumParams; ++i) {
     const Param& p = kParams[i];
     if (!p.stored) continue;
-    WritePrivateProfileStringA(Section(p).c_str(), p.key, values[i].c_str(),
-                               kIni);
+    write(Section(p).c_str(), p.key, values[i].c_str());
   }
-  // Only choices that differ from the default: a key per race in the load
-  // order would swamp the ini.
+  // Preserve explicit race choices, including overrides of installer defaults.
+  // Untouched races at the built-in default need no entry.
   for (const RaceSetting& race : saved_races)
-    WritePrivateProfileStringA(
-        "Races", race.key.c_str(),
-        race.enabled == race.default_enabled ? nullptr
-        : race.enabled                       ? "1"
-                                             : "0",
-        kIni);
+    write("Races", race.key.c_str(),
+          race.enabled == race.default_enabled &&
+                  !ini.GetValue("Races", race.key.c_str())
+              ? nullptr
+          : race.enabled ? "1"
+                         : "0");
   // replaced by UseOldModel and ForceCPU
-  WritePrivateProfileStringA("General", "Model", nullptr, kIni);
-  WritePrivateProfileStringA("General", "Network", nullptr, kIni);
-  WritePrivateProfileStringA("General", "GPU", nullptr, kIni);
+  write("General", "Model", nullptr);
+  write("General", "Network", nullptr);
+  write("General", "GPU", nullptr);
+  errno = 0;
+  const SI_Error result = ini.SaveFile(kIni);
+  if (result < SI_OK)
+    skse::Report(
+        "settings save failed: %s (SimpleIni %d, errno %d); "
+        "changes may not survive restart",
+        kIni, result, errno);
 }
 
 }  // namespace bfa

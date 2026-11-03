@@ -7,9 +7,10 @@
 
 namespace a2f {
 inline bool RetryableGpuFailure(const std::string& err) {
-  for (const char* permanent : {"GPU attempt failed", "independent device:",
-       "cannot load onnxruntime.dll", "wrong version", "model file not found",
-       "cannot load bundled DirectML.dll"})
+  for (const char* permanent :
+       {"GPU attempt failed",
+        "independent device:", "cannot load onnxruntime.dll", "wrong version",
+        "model file not found", "LoadLibraryExW(DirectML.dll) failed"})
     if (err.find(permanent) != std::string::npos) return false;
   return true;
 }
@@ -17,6 +18,21 @@ inline bool LostDevice(const std::string& err) {
   for (const char* code : {"887A0005", "887A0006", "887A0007", "887A0020"})
     if (err.find(code) != std::string::npos) return true;
   return false;
+}
+// An independent-route failure of the retained context itself (the runtime
+// API, device or DirectML creation, or a lost device), rather than of one
+// session on a healthy context: later attempts wait until RetryGpu rebuilds it.
+inline bool IndependentContextFailure(const std::string& err) {
+  return err.find("independent device:") != std::string::npos ||
+         err.find("independent context:") != std::string::npos ||
+         LostDevice(err);
+}
+// Independent attempts retry (bounded by NetKeeper) after a lost device, which
+// is created again, and after ordinary session failures. A missing runtime
+// API or a failed device creation cannot fix itself: wait for Try GPU again.
+inline bool RetryableIndependentFailure(const std::string& err) {
+  if (err.find("independent device:") != std::string::npos) return false;
+  return LostDevice(err) || RetryableGpuFailure(err);
 }
 struct SharedGpuSettings {
   bool metacommands = true;
@@ -30,7 +46,9 @@ auto CreateSharedGpu(const Create& create, SharedGpuSettings& settings,
                      const Wrapped& wrapped, std::string& err,
                      const std::function<void(const std::string&)>& log = {})
     -> decltype(create(true, false, err)) {
-  auto say = [&](const std::string& text) { if (log) log(text); };
+  auto say = [&](const std::string& text) {
+    if (log) log(text);
+  };
   auto on_device = [&](bool wrapper, std::string& error) {
     if (auto net = create(settings.metacommands, wrapper, error)) return net;
     if (!settings.metacommands || !RetryableGpuFailure(error))
@@ -49,7 +67,8 @@ auto CreateSharedGpu(const Create& create, SharedGpuSettings& settings,
     return decltype(create(true, false, err)){};
   };
   if (auto net = on_device(settings.wrapper, err)) return net;
-  if (settings.wrapper || !RetryableGpuFailure(err) || !LostDevice(err) || !wrapped())
+  if (settings.wrapper || !RetryableGpuFailure(err) || !LostDevice(err) ||
+      !wrapped())
     return decltype(create(true, false, err)){};
   say("GPU session was lost on the device inside the wrapper (" + err +
       "): trying the wrapper itself");

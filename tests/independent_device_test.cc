@@ -88,7 +88,7 @@ class Device : public ID3D12Device {
   HRESULT STDMETHODCALLTYPE GetDeviceRemovedReason() override { return removed; }
   void STDMETHODCALLTYPE GetCopyableFootprints(const D3D12_RESOURCE_DESC *desc, UINT first_sub_resource, UINT sub_resource_count, UINT64 base_offset, D3D12_PLACED_SUBRESOURCE_FOOTPRINT *layouts, UINT *row_count, UINT64 *row_size, UINT64 *total_bytes) override { CHECK(false); }
   HRESULT STDMETHODCALLTYPE CreateQueryHeap(const D3D12_QUERY_HEAP_DESC *desc, REFIID riid, void **heap) override { CHECK(false); return {}; }
-  HRESULT STDMETHODCALLTYPE SetStablePowerState(WINBOOL enable) override { CHECK(false); return {}; }
+  HRESULT STDMETHODCALLTYPE SetStablePowerState(BOOL enable) override { CHECK(false); return {}; }
   HRESULT STDMETHODCALLTYPE CreateCommandSignature(const D3D12_COMMAND_SIGNATURE_DESC *desc, ID3D12RootSignature *root_signature, REFIID riid, void **command_signature) override { CHECK(false); return {}; }
   void STDMETHODCALLTYPE GetResourceTiling(ID3D12Resource *resource, UINT *total_tile_count, D3D12_PACKED_MIP_INFO *packed_mip_info, D3D12_TILE_SHAPE *standard_tile_shape, UINT *sub_resource_tiling_count, UINT first_sub_resource_tiling, D3D12_SUBRESOURCE_TILING *sub_resource_tilings) override { CHECK(false); }
 #ifdef WIDL_EXPLICIT_AGGREGATE_RETURNS
@@ -129,6 +129,7 @@ HRESULT WINAPI CreateDml(ID3D12Device* dev, UINT flags, REFIID iid, void** out) 
   if (SUCCEEDED(dml_result)) { fake_dml.AddRef(); *out = &fake_dml; }
   return dml_result;
 }
+IUnknown* expected_adapter = nullptr;
 class Factory : public a2f::independent::Factory {
  public:
   ULONG refs = 0;
@@ -148,7 +149,7 @@ class Factory : public a2f::independent::Factory {
   HRESULT STDMETHODCALLTYPE CreateDevice(IUnknown* adapter, D3D_FEATURE_LEVEL level,
                                          REFIID iid, void** out) override {
     ++creates;
-    CHECK(!adapter && level == D3D_FEATURE_LEVEL_11_0);
+    CHECK(adapter == expected_adapter && level == D3D_FEATURE_LEVEL_11_0);
     CHECK(iid == __uuidof(ID3D12Device));
     CHECK(flags == 4);  // neither return an existing device nor store a singleton
     *out = nullptr;
@@ -184,20 +185,148 @@ HRESULT WINAPI Get(REFCLSID clsid, REFIID iid, void** out) {
   if (SUCCEEDED(get_result) && !null_factory) { factory.AddRef(); *out = &factory; }
   return get_result;
 }
+
+// Exercise complete production session setup with a retained fake device.
+// Unexpected ORT operations hit null callbacks instead of silently passing.
+void TestSessionOptions(const OrtDmlApi& dml) {
+  using namespace a2f;
+  struct Observed {
+    int intra = 0, inter = 0, sessions = 0, memories = 0;
+    bool sequential = false, no_pattern = false, extended = false;
+    std::map<std::string, std::string> config;
+    std::map<std::string, int64_t> dimensions;
+  };
+  static Observed seen;
+  static OrtDmlApi provider = dml;
+  OrtApi mock{};
+  mock.CreateSessionOptions =
+      [](OrtSessionOptions** out) noexcept -> OrtStatus* {
+    *out = reinterpret_cast<OrtSessionOptions*>(1);
+    return nullptr;
+  };
+  mock.ReleaseSessionOptions = [](OrtSessionOptions*) noexcept {};
+  mock.SetIntraOpNumThreads = [](OrtSessionOptions*,
+                                 int n) noexcept -> OrtStatus* {
+    seen.intra = n;
+    return nullptr;
+  };
+  mock.SetInterOpNumThreads = [](OrtSessionOptions*,
+                                 int n) noexcept -> OrtStatus* {
+    seen.inter = n;
+    return nullptr;
+  };
+  mock.AddSessionConfigEntry = [](OrtSessionOptions*, const char* key,
+                                  const char* value) noexcept -> OrtStatus* {
+    CHECK(seen.config.emplace(key, value).second);
+    return nullptr;
+  };
+  mock.DisableMemPattern = [](OrtSessionOptions*) noexcept -> OrtStatus* {
+    seen.no_pattern = true;
+    return nullptr;
+  };
+  mock.SetSessionExecutionMode = [](OrtSessionOptions*,
+                                    ExecutionMode mode) noexcept -> OrtStatus* {
+    CHECK(mode == ORT_SEQUENTIAL);
+    seen.sequential = true;
+    return nullptr;
+  };
+  mock.GetExecutionProviderApi = [](const char* name, uint32_t version,
+                                    const void** out) noexcept -> OrtStatus* {
+    CHECK(!strcmp(name, "DML") && version == ORT_API_VERSION);
+    *out = &provider;
+    return nullptr;
+  };
+  mock.AddFreeDimensionOverrideByName =
+      [](OrtSessionOptions*, const char* key,
+         int64_t value) noexcept -> OrtStatus* {
+    CHECK(seen.dimensions.emplace(key, value).second);
+    return nullptr;
+  };
+  mock.SetSessionGraphOptimizationLevel =
+      [](OrtSessionOptions*,
+         GraphOptimizationLevel level) noexcept -> OrtStatus* {
+    CHECK(level == ORT_ENABLE_EXTENDED);
+    seen.extended = true;
+    return nullptr;
+  };
+  mock.CreateSession = [](const OrtEnv*, const ORTCHAR_T*,
+                          const OrtSessionOptions*,
+                          OrtSession** out) noexcept -> OrtStatus* {
+    ++seen.sessions;
+    *out = reinterpret_cast<OrtSession*>(1);
+    return nullptr;
+  };
+  mock.ReleaseSession = [](OrtSession*) noexcept {
+    provider_dml.reset();
+    provider_queue.reset();
+  };
+  mock.CreateCpuMemoryInfo = [](OrtAllocatorType allocator, OrtMemType type,
+                                OrtMemoryInfo** out) noexcept -> OrtStatus* {
+    CHECK(allocator == OrtArenaAllocator && type == OrtMemTypeDefault);
+    ++seen.memories;
+    *out = reinterpret_cast<OrtMemoryInfo*>(1);
+    return nullptr;
+  };
+  mock.ReleaseMemoryInfo = [](OrtMemoryInfo*) noexcept {};
+  const OrtApi* original = api;
+  api = &mock;
+  const int before = attachments;
+  for (bool gpu : {false, true}) {
+    seen = {};
+    {
+      Session session;
+      std::string error;
+      CHECK(CreateSession(L"model.onnx", gpu, true, true, L"",
+                          {{"batch", 1}, {"seq_len", kVoiceWindow}}, session,
+                          error));
+      CHECK(session.device.get() == (gpu ? &device : nullptr));
+      CHECK(seen.intra == 2 && seen.inter == 1);
+      CHECK(seen.config.size() == 2);
+      CHECK(seen.config.at("session.intra_op.allow_spinning") == "0");
+      CHECK(seen.config.at("session.inter_op.allow_spinning") == "0");
+      CHECK(seen.sessions == 1 && seen.memories == 1);
+      CHECK(seen.sequential == gpu && seen.no_pattern == gpu);
+      CHECK(seen.extended == !gpu);
+      if (gpu) {
+        CHECK(seen.dimensions.size() == 2);
+        CHECK(seen.dimensions.at("batch") == 1);
+        CHECK(seen.dimensions.at("seq_len") == kVoiceWindow);
+      } else {
+        CHECK(seen.dimensions.empty());
+        CHECK(attachments == before);
+      }
+    }
+    CHECK(!provider_dml && !provider_queue);
+    CHECK(device.refs == 1 && fake_dml.refs == 1 && queue.refs == 1);
+  }
+  CHECK(attachments == before + 1 && !DeviceRedirected());
+  api = original;
+  puts(
+      "CPU/independent sessions: bounded sleeping threads, provider, shapes "
+      "and arena passed");
 }
+}  // namespace
 int main() {
   using namespace a2f;
   std::string err;
+  diagnostics::Attempt diagnostic(diagnostics::Component::kFace, true, true,
+                                  err);
   CHECK(!MakeIndependentDevice(nullptr, err));
   CHECK(err.find("unavailable") != std::string::npos);
   get_result = E_NOINTERFACE;
   CHECK(!MakeIndependentDevice(Get, err) && !factory.refs && !factory.creates);
+  CHECK(err.find("runtime API unavailable:") != std::string::npos);
+  CHECK(diagnostics::State().Read().independent_api.find("unavailable:") == 0);
+  get_result = E_OUTOFMEMORY;
+  CHECK(!MakeIndependentDevice(Get, err) && !factory.creates);
+  CHECK(diagnostics::State().Read().independent_api.find("query failed:") == 0);
   get_result = S_OK;
   null_factory = true;
   CHECK(!MakeIndependentDevice(Get, err));
   null_factory = false;
   factory.flag_result = E_INVALIDARG;
   CHECK(!MakeIndependentDevice(Get, err) && !factory.refs && !factory.creates);
+  CHECK(diagnostics::State().Read().components[0].stage == diagnostics::Stage::kFlags);
   factory.flag_result = S_OK;
   for (HRESULT failure : {DXGI_ERROR_UNSUPPORTED, DXGI_ERROR_ALREADY_EXISTS,
                            DXGI_ERROR_DEVICE_REMOVED, E_OUTOFMEMORY}) {
@@ -205,6 +334,9 @@ int main() {
     const int before = factory.creates;
     CHECK(!MakeIndependentDevice(Get, err));
     CHECK(factory.creates == before + 1 && !factory.refs);
+    CHECK(diagnostics::State().Read().components[0].stage == diagnostics::Stage::kDevice);
+    CHECK(diagnostics::State().Read().independent_api.find("available") == 0);
+    CHECK(err.find("device creation:") != std::string::npos);
     CHECK(err.find("shared-device fallback disabled") != std::string::npos);
   }
   factory.create_result = S_OK;
@@ -217,6 +349,14 @@ int main() {
   CHECK(device.refs == 0 && device.final_releases == 1);
   device.final_releases = 0;
   CHECK(!factory.refs);
+  expected_adapter = &fake_dml; // opaque identity; the factory must receive it unchanged
+  auto selected = MakeIndependentDevice(Get, err, expected_adapter);
+  CHECK(selected.get() == &device);
+  selected.reset();
+  expected_adapter = nullptr;
+  device.final_releases = 0;
+  CHECK(&IndependentGpu(0) != &IndependentGpu(2));
+  CHECK(&IndependentGpu(2) == &IndependentGpu(2));
   OrtDmlApi dml{};
   ComPtr<IUnknown> dml_device;
   CHECK(!AppendIndependentProvider(L"", &dml, nullptr, nullptr, dml_device, err));
@@ -228,7 +368,7 @@ int main() {
   CHECK(GetTempPathW(MAX_PATH, temp));
   CHECK(!AppendIndependentProvider(std::wstring(temp) + L"bfa-no-directml",
                                    &dml, nullptr, nullptr, dml_device, err));
-  CHECK(err.find("DMLCreateDevice unavailable") != std::string::npos &&
+  CHECK(err.find("LoadLibraryExW(DirectML.dll) failed [Win32 ") != std::string::npos &&
         !dml_device);
   // An unsupported metacommand mode must fail before touching any graphics API.
   Session session;
@@ -292,6 +432,7 @@ int main() {
   }
   CHECK(attachments == 12 && factory.creates == creates_before + 1);
   CHECK(dml_creates == creates_dml_before && device.queues == creates_queue_before);
+  TestSessionOptions(dml);
   // DML-only loss disables the retained context even if D3D12 is healthy.
   fake_dml.removed = DXGI_ERROR_DEVICE_REMOVED;
   CHECK(!OpenIndependentDevice(err));
@@ -300,7 +441,7 @@ int main() {
   CHECK(!OpenIndependentDevice(err));  // latch persists, never silently revived
   CHECK(err.find("GPU attempt failed") != std::string::npos);
   CHECK(!AppendIndependentProvider(L"", &dml, nullptr, &device, dml_device, err));
-  CHECK(attachments == 12 && factory.creates == creates_before + 1);
+  CHECK(attachments == 13 && factory.creates == creates_before + 1);
   CHECK(device.refs == 1 && fake_dml.refs == 1 && queue.refs == 1);
   CHECK(!device.final_releases && !fake_dml.final_releases && !queue.final_releases);
   RetryGpu();

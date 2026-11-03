@@ -1,45 +1,23 @@
-<?xml version='1.0' encoding='utf-8'?>
 <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://qconsulting.ca/fo3/ModConfig5.0.xsd">
   <moduleName>Better Facial Animations</moduleName>
   <requiredInstallFiles>
     <folder source="SKSE" destination="SKSE" priority="0" />
   </requiredInstallFiles>
   <installSteps order="Explicit">
-    <installStep name="1. GPU mode">
+    <installStep name="1. Independent GPU mode">
       <optionalFileGroups order="Explicit">
-        <group name="Start with Standard. Trouble? Try Compatibility or Force CPU." type="SelectExactlyOne">
+        <group name="Independent GPU mode (opt-in; read the requirements first)" type="SelectAny">
           <plugins order="Explicit">
-            <plugin name="Standard GPU (recommended)">
-              <description>Use this option if you are installing for the first time or use graphics mods, upscaling or frame generation.
+            <plugin name="I use Community Shaders or ReShade (Warning — read description)">
+              <description>REQUIRES Windows 10 22H2 or Windows 11 with the August 2023 or later updates (Proton: a recent build whose vkd3d-proton supports Independent Devices) AND a driver that supports it. Basic DirectX 12 alone is not enough.
 
+Enable Independent GPU mode if you use Community Shaders (including Bottled/Open Shaders), ReShade or another graphics mod and the default shared GPU mode has problems.
 
-------------------------------------------------------------
-TECHNICAL DETAILS
+Inference then uses the DirectX 12 Independent Devices API: BFA gets the device factory from D3D12GetInterface and creates its own device and compute queue on the same GPU, apart from the game's graphics device.
 
-BFA creates its own D3D12 device and compute queue for DirectML inference, separate from the game's graphics device. This reduces shared-device interactions with shader mods, ReShade, upscaling and frame generation.
-
-The device still uses the same physical GPU and driver. Windows / Proton and the driver must support Independent Devices; ordinary DirectX 12 support alone is not enough. A returned error leaves vanilla lip-sync active. Try GPU again or select Force CPU in settings. No automatic CPU or shared-route switch occurs. Changing routes requires restarting Skyrim.
-
-INI equivalent: set IndependentGpuDevice=1 under [General] in Data/SKSE/Plugins/BetterFacialAnimations.ini.</description>
+If a requirement is missing the model does not load, vanilla lip-sync plays and the settings page names it. A lost device is recreated. Restart Skyrim after changing this. See GPU-SETUP.txt.</description>
               <conditionFlags>
-                <flag name="GpuRoute">independent</flag>
-              </conditionFlags>
-              <typeDescriptor>
-                <type name="Recommended" />
-              </typeDescriptor>
-            </plugin>
-            <plugin name="Compatibility GPU — try if Standard crashes or hangs">
-              <description>Use this option if Standard GPU crashes, hangs or is unsupported on your Steam Deck or older system.
-
-
-------------------------------------------------------------
-TECHNICAL DETAILS
-
-Uses the shared-device GPU path for DirectML inference. It can work on runtimes that do not support independent devices, including some Steam Deck / Proton setups. Shared-device access can also conflict with graphics hooks, so it is an alternative to test rather than a guaranteed fix.
-
-This route keeps delayed startup. It retries without driver metacommands, then through an observed graphics wrapper after eligible device loss. Further shared GPU attempts wait 2/4/8/16/30 seconds while vanilla lip-sync remains available. It never selects CPU or independent mode automatically. Change routes with Skyrim closed. If both routes fail, select Force CPU.</description>
-              <conditionFlags>
-                <flag name="GpuRoute">shared</flag>
+                <flag name="GraphicsRoute">independent</flag>
               </conditionFlags>
               <typeDescriptor>
                 <type name="Optional" />
@@ -49,41 +27,48 @@ This route keeps delayed startup. It retries without driver metacommands, then t
         </group>
       </optionalFileGroups>
     </installStep>
-    <installStep name="2. Startup">
+    <installStep name="2. Processing and graphics compatibility">
       <optionalFileGroups order="Explicit">
-        <group name="Black screen / hang / CTD? Choose Force CPU." type="SelectExactlyOne">
+        <group name="Audio2Face processing device" type="SelectExactlyOne">
           <plugins order="Explicit">
-            <plugin name="Start with GPU (recommended)">
-              <description>Use this option if you want GPU acceleration automatically after loading your game.
-
-
-------------------------------------------------------------
-TECHNICAL DETAILS
-
-After a save loads or a new game starts, BFA initializes and warms up the selected model on its worker, using the GPU route chosen on the previous page. Early dialogue may use vanilla animation while the model gets ready.
-
-A returned GPU error leaves vanilla lip-sync active. Choose Try GPU again or select Force CPU in settings. No automatic CPU fallback or persistent startup lockout. If GPU startup hangs or crashes, reinstall with Force CPU.
-
-INI equivalent: set ForceCPU=0 under [General] in Data/SKSE/Plugins/BetterFacialAnimations.ini.</description>
+            <plugin name="GPU 0 (default)">
+              <description>Use the default DXGI GPU (index 0) for Audio2Face. Devices are selected independently. The installer cannot detect hardware; choose a GPU by name in the optional in-game menu.</description>
               <conditionFlags>
-                <flag name="Startup">gpu</flag>
+                <flag name="Startup">gpu0</flag>
               </conditionFlags>
               <typeDescriptor>
                 <type name="Recommended" />
               </typeDescriptor>
             </plugin>
-            <plugin name="Force CPU — recovery / no GPU startup">
-              <description>Use this option if you get black screens, hangs or CTDs, or want to try GPU manually from a working game.
-
-
-------------------------------------------------------------
-TECHNICAL DETAILS
-
-Skips GPU inference initialization and preserves your selected GPU route for later. CPU startup stays enabled across launches; there is no automatic second-launch GPU attempt. Speaker coverage is chosen separately on the Starting settings page.
-
-To opt in later, load a working save and uncheck Force CPU under Better Facial Animations &gt; Settings &gt; Model (requires SKSE Menu Framework). You can retry GPU in the same session, including after a returned failure. Shared GPU retries never select CPU automatically. CPU honors your selected model, so V3 can still be slow; Performance with Potato Mode reduces the work.
-
-INI equivalent: set ForceCPU=1 under [General] in Data/SKSE/Plugins/BetterFacialAnimations.ini.</description>
+            <plugin name="GPU 1">
+              <description>Use DXGI GPU 1 for Audio2Face, independently of Audio2Emotion. Choose only if you know the intended adapter index. An unavailable adapter reports an error; it does not select another GPU.</description>
+              <conditionFlags>
+                <flag name="Startup">gpu1</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
+            </plugin>
+            <plugin name="GPU 2">
+              <description>Use DXGI GPU 2 for Audio2Face, independently of Audio2Emotion. Choose only if you know the intended adapter index. An unavailable adapter reports an error; it does not select another GPU.</description>
+              <conditionFlags>
+                <flag name="Startup">gpu2</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
+            </plugin>
+            <plugin name="GPU 3">
+              <description>Use DXGI GPU 3 for Audio2Face, independently of Audio2Emotion. Choose only if you know the intended adapter index. An unavailable adapter reports an error; it does not select another GPU.</description>
+              <conditionFlags>
+                <flag name="Startup">gpu3</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
+            </plugin>
+            <plugin name="CPU">
+              <description>Run Audio2Face on CPU. V3 and Legacy can be slow. This choice is independent of Audio2Emotion; select CPU for both models to avoid GPU inference.</description>
               <conditionFlags>
                 <flag name="Startup">cpu</flag>
               </conditionFlags>
@@ -93,84 +78,48 @@ INI equivalent: set ForceCPU=1 under [General] in Data/SKSE/Plugins/BetterFacial
             </plugin>
           </plugins>
         </group>
-      </optionalFileGroups>
-    </installStep>
-    <installStep name="3. Starting settings — change these in game">
-      <optionalFileGroups order="Explicit">
-        <group name="Starting model — change in game anytime" type="SelectExactlyOne">
+        <group name="Audio2Emotion processing device" type="SelectExactlyOne">
           <plugins order="Explicit">
-            <plugin name="V3 — full facial detail (recommended)">
-              <description>Use this option if you want the most facial detail, can spare ~250MB of VRAM, and can afford a medium amount of processing time.
-
----
-
-TECHNICAL DETAILS
-
-The full-detail model produces detailed lip sync at 60 fps. It uses more GPU memory than the other models but is still relatively fast to inference.
-
-VRAM: about 250 MB for model/device allocations; allow roughly 300 MB beyond Skyrim's own use.
-
-Compute: roughly 28 GFLOP per second of generated speech for the main neural-network operations. Rough starting GPU tier to try: 4-6 TFLOPS FP32, around a GTX 1660 class card.
-
-Hardware figures are rough estimates. BFA competes with Skyrim for GPU compute, memory and bandwidth; heavier graphics mods leave less capacity and can delay facial animation. Matching a card tier does not guarantee support for the chosen GPU route.
-
-These are starting settings only. Change them in game under Better Facial Animations &gt; Settings (requires SKSE Menu Framework); changes save automatically. No reinstall needed.
-
-INI equivalent: UseOldModel=0 and UsePerformanceModel=0 under [General] in Data/SKSE/Plugins/BetterFacialAnimations.ini.</description>
+            <plugin name="GPU 0 (default)">
+              <description>Use the default DXGI GPU (index 0) for Audio2Emotion. Devices are selected independently. The installer cannot detect hardware; choose a GPU by name in the optional in-game menu.</description>
               <conditionFlags>
-                <flag name="ModelPreset">quality</flag>
+                <flag name="EmotionDevice">gpu0</flag>
               </conditionFlags>
               <typeDescriptor>
                 <type name="Recommended" />
               </typeDescriptor>
             </plugin>
-            <plugin name="Performance — fastest processing">
-              <description>Use this option if you prefer faster processing over facial detail. Takes 80MB of VRAM.
-
----
-
-TECHNICAL DETAILS
-
-A smaller experimental model with faster inference, less facial detail and less accurate lip sync, especially on modded dialogue. It runs at 30 fps and does not support eye gaze. It does not limit which speakers animate: enable Potato Mode separately to reduce that work.
-
-VRAM: about 80 MB including the GPU runtime in a local standalone test; allow roughly 100 MB beyond Skyrim's own use.
-
-Compute: roughly 0.007 GFLOP per second of generated speech for the main neural-network operations. Audio preparation and GPU dispatch overhead can matter more than this small arithmetic workload. Rough starting GPU tier to try: 1-2 TFLOPS FP32, around a GTX 1630 class card.
-
-Steam Deck has enough theoretical arithmetic throughput for this model.
-
-Hardware figures are rough estimates. BFA competes with Skyrim for GPU compute, memory and bandwidth; heavier graphics mods leave less capacity and can delay facial animation. Matching a card tier does not guarantee support for the chosen GPU route.
-
-These are starting settings only. Change them in game under Better Facial Animations &gt; Settings (requires SKSE Menu Framework); changes save automatically. No reinstall needed.
-
-INI equivalent: UsePerformanceModel=1 and UseOldModel=0 under [General] in Data/SKSE/Plugins/BetterFacialAnimations.ini.</description>
+            <plugin name="GPU 1">
+              <description>Use DXGI GPU 1 for Audio2Emotion, independently of Audio2Face. Choose only if you know the intended adapter index. An unavailable adapter reports an error; it does not select another GPU.</description>
               <conditionFlags>
-                <flag name="ModelPreset">performance</flag>
+                <flag name="EmotionDevice">gpu1</flag>
               </conditionFlags>
               <typeDescriptor>
                 <type name="Optional" />
               </typeDescriptor>
             </plugin>
-            <plugin name="Old model — lower VRAM than V3">
-              <description>Use this option if you prefer the older model's facial style or need less VRAM usage than V3. Slowest to run, needs 100 MB of VRAM and produces moderate quality facial detail.
-
----
-
-TECHNICAL DETAILS
-
-Uses less GPU memory than V3. However, it is slightly less expressive, runs animations at 30 fps rather than 60 fps, and is slower to run than V3.
-
-VRAM: about 100 MB for model/device allocations; allow roughly 150 MB beyond Skyrim's own use.
-
-Compute: roughly 97 GFLOP per second of generated speech for the main neural-network operations at the default batch size. Lower VRAM use does not mean lower compute cost. Rough starting GPU tier to try: 8-12 TFLOPS FP32, around an RTX 2070 Super class card.
-
-Hardware figures are rough estimates. BFA competes with Skyrim for GPU compute, memory and bandwidth; heavier graphics mods leave less capacity and can delay facial animation. Matching a card tier does not guarantee support for the chosen GPU route.
-
-These are starting settings only. Change them in game under Better Facial Animations &gt; Settings (requires SKSE Menu Framework); changes save automatically. No reinstall needed.
-
-INI equivalent: UseOldModel=1 and UsePerformanceModel=0 under [General] in Data/SKSE/Plugins/BetterFacialAnimations.ini.</description>
+            <plugin name="GPU 2">
+              <description>Use DXGI GPU 2 for Audio2Emotion, independently of Audio2Face. Choose only if you know the intended adapter index. An unavailable adapter reports an error; it does not select another GPU.</description>
               <conditionFlags>
-                <flag name="ModelPreset">old</flag>
+                <flag name="EmotionDevice">gpu2</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
+            </plugin>
+            <plugin name="GPU 3">
+              <description>Use DXGI GPU 3 for Audio2Emotion, independently of Audio2Face. Choose only if you know the intended adapter index. An unavailable adapter reports an error; it does not select another GPU.</description>
+              <conditionFlags>
+                <flag name="EmotionDevice">gpu3</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
+            </plugin>
+            <plugin name="CPU">
+              <description>Run Audio2Emotion on CPU. Full emotion can be slow. This choice is independent of Audio2Face; select CPU for both models to avoid GPU inference.</description>
+              <conditionFlags>
+                <flag name="EmotionDevice">cpu</flag>
               </conditionFlags>
               <typeDescriptor>
                 <type name="Optional" />
@@ -178,20 +127,102 @@ INI equivalent: UseOldModel=1 and UsePerformanceModel=0 under [General] in Data/
             </plugin>
           </plugins>
         </group>
-        <group name="Starting options — check to enable; change in game anytime" type="SelectAny">
+      </optionalFileGroups>
+    </installStep>
+    <installStep name="3. Animation models">
+      <optionalFileGroups order="Explicit">
+        <group name="Audio2Face — facial animation" type="SelectExactlyOne">
           <plugins order="Explicit">
-            <plugin name="Potato Mode — less background work">
-              <description>Use this option if you want less processing in busy areas or only need faces animated during your conversations.
-
-
-------------------------------------------------------------
-TECHNICAL DETAILS
-
-Checked: animate the NPC actively talking with you and supported player dialogue. Other speakers keep vanilla animation. Unchecked: animate all supported speakers. The model stays loaded either way. Player animation also depends on the separate player checkbox.
-
-These are starting settings only. Change them in game under Better Facial Animations &gt; Settings (requires SKSE Menu Framework); changes save automatically. No reinstall needed.
-
-INI equivalent: PotatoMode=1 when checked, or PotatoMode=0 when unchecked under [General] in Data/SKSE/Plugins/BetterFacialAnimations.ini.</description>
+            <plugin name="V3 — full facial detail (recommended)">
+              <description>Most expressive model; detailed lip-sync at 60 fps. Approximately 250 MB GPU memory. Women use Claire; men use Mark. Faster than Legacy in local RTX 4070 tests; speed and memory vary with system and dialogue.</description>
+              <conditionFlags>
+                <flag name="FaceModel">quality</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Recommended" />
+              </typeDescriptor>
+            </plugin>
+            <plugin name="Performance — fastest, experimental">
+              <description>Small Skyrim-trained model with less facial detail and less accurate lip-sync, especially on unfamiliar modded dialogue. Approximately 80 MB GPU memory; 30 fps. Eye gaze is unavailable. Speaker coverage is selected separately.</description>
+              <conditionFlags>
+                <flag name="FaceModel">performance</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
+            </plugin>
+            <plugin name="Legacy — Audio2Face v2.3">
+              <description>Older facial style at 30 fps with one shared identity. Approximately 100 MB GPU memory. Uses less memory than V3 but is slower in local RTX 4070 tests.</description>
+              <conditionFlags>
+                <flag name="FaceModel">old</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
+            </plugin>
+            <plugin name="Disabled — vanilla facial animation">
+              <description>Keep vanilla facial animation and skip both inference models. Your Audio2Emotion choice is remembered for later. Re-enable through the installer, INI or optional in-game menu.</description>
+              <conditionFlags>
+                <flag name="FaceModel">disabled</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+        <group name="Audio2Emotion — additional voice-driven emotion" type="SelectExactlyOne">
+          <plugins order="Explicit">
+            <plugin name="Performance (~40 MB VRAM, recommended, experimental)">
+              <description>Estimated additional VRAM usage is about 40 MB on a shared GPU device. Actual usage varies by driver and device mode. Included in both downloads. Small model trained to approximate Full on Skyrim dialogue; unfamiliar quest-mod lines may be hit or miss. The model file is 21.6 MB on disk. Independent of vanilla emotion cues.</description>
+              <conditionFlags>
+                <flag name="EmotionModel">performance</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Recommended" />
+              </typeDescriptor>
+            </plugin>
+            <plugin name="Full — broader dialogue coverage">
+              <description>Included only in the with-sentiment download. Original Audio2Emotion model; use for unfamiliar dialogue. Typically adds about 600 MB GPU memory and substantial generation time. CPU uses system memory and extra processing. Independent of vanilla emotion cues.</description>
+              <conditionFlags>
+                <flag name="EmotionModel">full</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
+            </plugin>
+            <plugin name="Disabled — no extra emotion inference">
+              <description>Skip Audio2Emotion to reduce CPU/GPU work and memory use. Audio2Face lip-sync continues. Vanilla / scene emotion cues can remain enabled independently.</description>
+              <conditionFlags>
+                <flag name="EmotionModel">disabled</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+        <group name="Emotion inputs" type="SelectAny">
+          <plugins order="Explicit">
+            <plugin name="Use vanilla / scene emotion cues">
+              <description>Pass authored dialogue emotions, including dialogue-mod inputs, to Audio2Face. Uncheck to remove those inputs. Audio2Emotion is separate; disabling both keeps audio-driven lip-sync. No SKSE settings menu is required.</description>
+              <conditionFlags>
+                <flag name="VanillaEmotions">on</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Recommended" />
+              </typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+    <installStep name="4. Speakers and preparation">
+      <optionalFileGroups order="Explicit">
+        <group name="Check to enable" type="SelectAny">
+          <plugins order="Explicit">
+            <plugin name="Active dialogue only — Potato Mode">
+              <description>Animate only the NPC in your active conversation and supported player dialogue. Other speakers keep vanilla animation. Reduces background work; models stay loaded while facial animation is enabled. Uncheck to process all supported speakers.</description>
               <conditionFlags>
                 <flag name="ActiveOnly">on</flag>
               </conditionFlags>
@@ -200,17 +231,7 @@ INI equivalent: PotatoMode=1 when checked, or PotatoMode=0 when unchecked under 
               </typeDescriptor>
             </plugin>
             <plugin name="Animate player dialogue">
-              <description>Use this option if you use a supported player voice mod and want BFA to animate your character.
-
-
-------------------------------------------------------------
-TECHNICAL DETAILS
-
-Automatically detects DBReV or experimental DBVO2 support. Uncheck to retain the voice mod's own player animation and avoid BFA processing player lines. NPC animation is unaffected. This option also applies when Potato Mode is checked.
-
-These are starting settings only. Change them in game under Better Facial Animations &gt; Settings (requires SKSE Menu Framework); changes save automatically. No reinstall needed.
-
-INI equivalent: PlayerFacialAnimations=1 when checked, or PlayerFacialAnimations=0 when unchecked under [General] in Data/SKSE/Plugins/BetterFacialAnimations.ini.</description>
+              <description>Animate the player with DBReV 1.4.4+ or experimental DBVO 2 support. Uncheck to keep the voice mod's own player animation and skip BFA player processing. NPCs are unaffected; also applies in active-dialogue-only mode.</description>
               <conditionFlags>
                 <flag name="PlayerAnimation">on</flag>
               </conditionFlags>
@@ -218,18 +239,8 @@ INI equivalent: PlayerFacialAnimations=1 when checked, or PlayerFacialAnimations
                 <type name="Recommended" />
               </typeDescriptor>
             </plugin>
-            <plugin name="Prepare dialogue early — reduce animation delay">
-              <description>Use this option if you want BFA to start preparing dialogue before the actor speaks.
-
-
-------------------------------------------------------------
-TECHNICAL DETAILS
-
-Starts generating when the game creates a dialogue response, giving inference a head start. This can reduce late animation but may process responses that are never spoken. Uncheck to disable this early preparation. It does not make inference itself faster.
-
-These are starting settings only. Change them in game under Better Facial Animations &gt; Settings (requires SKSE Menu Framework); changes save automatically. No reinstall needed.
-
-INI equivalent: Prefetch=1 when checked, or Prefetch=0 when unchecked under [General] in Data/SKSE/Plugins/BetterFacialAnimations.ini.</description>
+            <plugin name="Prepare dialogue early">
+              <description>Begin generation when a response is created, before the actor speaks. Can reduce late animation but may process responses never spoken. Uncheck to begin preparation later.</description>
               <conditionFlags>
                 <flag name="PrepareEarly">on</flag>
               </conditionFlags>
@@ -239,56 +250,77 @@ INI equivalent: Prefetch=1 when checked, or Prefetch=0 when unchecked under [Gen
             </plugin>
           </plugins>
         </group>
+        <group name="Beast races — uncheck to keep vanilla animation" type="SelectAny">
+          <plugins order="Explicit">
+            <plugin name="Animate ordinary Khajiit">
+              <description>Enable Skyrim Khajiit and Khajiit vampire races. Custom races keep their own defaults; Alfiq remains disabled by default. Individual custom races can be configured in the INI or optional Races menu.</description>
+              <conditionFlags>
+                <flag name="Khajiit">on</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Recommended" />
+              </typeDescriptor>
+            </plugin>
+            <plugin name="Animate Argonians">
+              <description>Enable Skyrim Argonian and Argonian vampire races. Uncheck if you prefer vanilla animation on these heads. Custom races keep their own defaults.</description>
+              <conditionFlags>
+                <flag name="Argonian">on</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Recommended" />
+              </typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
       </optionalFileGroups>
     </installStep>
-    <installStep name="Black screen / hang / CTD?">
+    <installStep name="5. Movement and logging">
       <optionalFileGroups order="Explicit">
-        <group name="Close Skyrim, then use one of these fixes." type="SelectAll">
+        <group name="Check to enable" type="SelectAny">
           <plugins order="Explicit">
-            <plugin name="1. Recover: reinstall → Force CPU">
-              <description>Use this option if you need to recover from a black screen, hang or CTD before launching Skyrim again.
-
-
-------------------------------------------------------------
-TECHNICAL DETAILS
-
-With Skyrim closed, reinstall and choose Force CPU on the Startup page, or edit the existing [General] section of the INI. Do not add duplicate settings. Choose Performance with Potato Mode too if you need lower CPU cost.
-
-The installer writes a complete INI, so back up custom settings before reinstalling. In MO2, check Overwrite and edit the winning INI copy; in Vortex, deploy the changed settings. No new save is required. This page only provides instructions; return to the Startup page to select Force CPU.
-
-INI equivalent: set ForceCPU=1 to skip GPU startup under [General] in Data/SKSE/Plugins/BetterFacialAnimations.ini.</description>
+            <plugin name="Tongue animation">
+              <description>Use the current tongue blend with reduced, overlap-limited speech cues. Uncheck to restore the tongue behavior from before this feature; this does not remove the tongue mesh.</description>
+              <conditionFlags>
+                <flag name="Tongue">on</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Recommended" />
+              </typeDescriptor>
+            </plugin>
+            <plugin name="Conversation eye gaze">
+              <description>Add speech-driven eye movement while the conversation NPC looks at you. SE/AE only; unavailable with the Performance facial model. Uncheck to keep the game's eye movement.</description>
+              <conditionFlags>
+                <flag name="Gaze">on</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Recommended" />
+              </typeDescriptor>
+            </plugin>
+            <plugin name="Log generated and played lines">
+              <description>Write bounded dialogue diagnostics to BetterFacialAnimations.log for troubleshooting. Uncheck to reduce routine logging; essential GPU and model errors are still reported. Detailed experimental tracing stays off.</description>
+              <conditionFlags>
+                <flag name="Logging">on</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Recommended" />
+              </typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+      </optionalFileGroups>
+    </installStep>
+    <installStep name="6. Apply settings and recovery">
+      <optionalFileGroups order="Explicit">
+        <group name="Read before reinstalling" type="SelectAll">
+          <plugins order="Explicit">
+            <plugin name="Settings without an in-game menu">
+              <description>These choices work without SKSE Menu Framework. For later edits, use Data/SKSE/Plugins/BetterFacialAnimations.ini and restart Skyrim, or reinstall. The optional menu saves changes automatically. Explicit values in an existing INI override installer defaults. Back up custom settings before reinstalling; check MO2 Overwrite for a winning INI and deploy changes in Vortex. Fine strength, timing, emotion limits and individual NPC/race overrides stay in the INI/menu.</description>
               <typeDescriptor>
                 <type name="Required" />
               </typeDescriptor>
             </plugin>
-            <plugin name="2. Try GPU again: switch Standard ↔ Compatibility">
-              <description>Use this option if you can load on CPU and want to test the other GPU route.
-
-
-------------------------------------------------------------
-TECHNICAL DETAILS
-
-Keep Force CPU enabled while changing routes. Close Skyrim and save the failed launch logs. Old startup recovery markers are ignored. CPU runs only when explicitly selected.
-
-Restart Skyrim, load a save on CPU, then uncheck Force CPU in the menu to try the new route. If it fails again, return to CPU. This page only provides instructions; choose the route on the GPU mode page.
-
-INI equivalent: set IndependentGpuDevice=1 for Standard or IndependentGpuDevice=0 for Compatibility, with ForceCPU=1 until you opt in; unchecking Force CPU sets ForceCPU=0 under [General] in Data/SKSE/Plugins/BetterFacialAnimations.ini.</description>
-              <typeDescriptor>
-                <type name="Required" />
-              </typeDescriptor>
-            </plugin>
-            <plugin name="3. Still stuck? Update graphics drivers / SteamOS">
-              <description>Use this option if GPU remains unavailable or neither GPU route works on your system.
-
-
-------------------------------------------------------------
-TECHNICAL DETAILS
-
-On Windows, update the graphics driver from NVIDIA, AMD, Intel or your laptop manufacturer, and install available Windows updates. Standard GPU needs Independent Devices support from both the runtime and driver; there is no verified universal minimum driver number.
-
-On SteamOS / Linux, update the graphics stack and use a Proton build with supporting vkd3d-proton. Compatibility GPU has different requirements and may work when Standard does not. Full help is installed at Data/SKSE/Plugins/BetterFacialAnimations/GPU-SETUP.txt. For bug reports, include BetterFacialAnimations.log, GPU, OS / Proton version, selected GPU route and graphics mods.
-
-INI equivalent: none. Updating drivers or SteamOS is done outside the mod; this help item changes no settings.</description>
+            <plugin name="Recover from a GPU hang or crash">
+              <description>Close Skyrim, then reinstall with CPU for both Audio2Face and Audio2Emotion. Or set ForceCPU=1 and EmotionDevice=-1 in the existing [General] section of the winning INI. Do not add duplicate keys. For lower CPU cost, choose Performance facial animation, Disabled emotion and Active dialogue only. CPU runs only when explicitly selected; no new save is needed. Read Data/SKSE/Plugins/BetterFacialAnimations/GPU-SETUP.txt for driver requirements and GPU recovery steps.</description>
               <typeDescriptor>
                 <type name="Required" />
               </typeDescriptor>

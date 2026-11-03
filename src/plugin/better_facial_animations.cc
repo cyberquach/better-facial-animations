@@ -1,3 +1,4 @@
+#include "a2f/inference/diagnostics.h"
 // Better Facial Animations: Audio2Face lip-sync generated in the game for every
 // voiced line of every NPC with a FaceGen head. The speak / response hooks
 // queue a line; a worker thread reads the voice file through the engine's
@@ -18,6 +19,7 @@
 #include <initializer_list>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -75,19 +77,20 @@ static_assert(PackVersion(BFA_VERSION) != 0,
 
 }  // namespace
 
-__declspec(dllexport) skse::SKSEPluginVersionData SKSEPlugin_Version = {
-    1,
-    PackVersion(BFA_VERSION),
-    "BetterFacialAnimations",
-    "Cyberquach",
-    "",
-    0,
-    0,
-    {skse::Version(1, 6, 353), skse::Version(1, 6, 640),
-     skse::Version(1, 6, 659, skse::kGog), skse::Version(1, 6, 1170),
-     skse::Version(1, 6, 1179, skse::kGog), skse::Version(1, 7, 99),
-     skse::Version(1, 7, 104), 0},
-    0};
+extern "C"
+    __declspec(dllexport) skse::SKSEPluginVersionData SKSEPlugin_Version = {
+        1,
+        PackVersion(BFA_VERSION),
+        "BetterFacialAnimations",
+        "Cyberquach",
+        "",
+        0,
+        0,
+        {skse::Version(1, 6, 353), skse::Version(1, 6, 640),
+         skse::Version(1, 6, 659, skse::kGog), skse::Version(1, 6, 1170),
+         skse::Version(1, 6, 1179, skse::kGog), skse::Version(1, 7, 99),
+         skse::Version(1, 7, 104), 0},
+        0};
 
 namespace bfa {
 
@@ -104,10 +107,10 @@ auto& active_model = *new std::shared_ptr<const ModelState>;
 std::shared_ptr<const ModelState> SnapshotModel() {
   if (auto state = std::atomic_load(&active_model)) return state;
   // Before worker startup (also used by standalone contract fixtures).
-  return std::make_shared<const ModelState>(
-      ModelState{config.network, config.gpu, config.model,
-                 std::shared_ptr<const direct::Model>(
-                     &model, [](const direct::Model*) {})});
+  return std::make_shared<const ModelState>(ModelState{
+      config.network, config.gpu, config.model,
+      std::shared_ptr<const direct::Model>(&model, [](const direct::Model*) {}),
+      config.gpu_adapter});
 }
 
 namespace {
@@ -132,6 +135,7 @@ struct Entry {
   // Generated without voice sentiment while that was unavailable: generated
   // again once the worker would try sentiment again (sentiment_retry_at).
   bool degraded = false;
+  bool performance_sentiment = false;
   struct Requester {
     uint32_t handle;
     bool player;
@@ -215,7 +219,7 @@ struct PhonemeRestore {
       written[i] = mix >= 1.f ? 0.f : source[i] + (0.f - source[i]) * mix;
       values[i] = written[i];
     }
-    phon.is_updated = true;
+    phon.isUpdated = true;
   }
 
   bool Restore(skse::KeyframeMultiple& phon) {
@@ -226,13 +230,13 @@ struct PhonemeRestore {
     values = nullptr;  // consume even when the engine/another mod took over
     if (!ours) return false;
     std::copy_n(source, direct::kNumPhonemes, phon.values);
-    phon.is_updated = true;
+    phon.isUpdated = true;
     return true;
   }
 };
 // A face the plugin animates (Expressions, AddDirect): anyone speaking a
 // line and the player's conversation partner, for a while after
-// (kFaceLinger). It holds the head's mapping onto Mark.
+// (kFaceGrace). It holds the head's mapping onto Mark.
 struct Face {
   PhonemeRestore phonemes;
   // the engine's own expression keyframe, put back before its update (so
@@ -249,7 +253,7 @@ struct Face {
   // 0..1: from the engine's expressions to the plugin's.
   float ownership_blend = 0;
   float speech_blend = 0;  // 0..1: the expressions faded out for a line
-  double until = 0;  // the plugin's until (then fades back to the engine's)
+  double until = 0;  // had until (kFaceGrace; then fades back to the engine's)
   double seen = 0;   // last update
   // Not updated for kFaceStale (unloaded, or out of sight) with the plugin's
   // values still in the keyframes: keep their restoration state to put the
@@ -268,6 +272,9 @@ struct Face {
   bool female = false;
   bool player = false;
   a2f::PoseTransition transition;
+  double neutral_started = -1;
+  float neutral_duration = 0;
+  float neutral_levels[direct::kNumExpressions] = {};
   std::shared_ptr<const direct::Model> pose_model;
   int pose_face = 0;
   // Provider lines that left the face, told (their terminal event) once it
@@ -277,7 +284,14 @@ struct Face {
   std::vector<PlayerSpeechPtr> leaving;
 };
 // Times on play_clock:
-constexpr double kFaceLinger = 300;  // s after the conversation or line
+// s a face is kept after its line or conversation before it is handed back
+// (kOwnOut): over the gaps between a speaker's lines -- the engine's pause
+// between the responses of one dialogue line, DBReV's post-line delay
+// (PlayerLineStart::totalSeconds) and the next line's inference -- so the
+// face carries its expressions from one line into the next without dipping
+// to the engine's, but not for long after the last.
+constexpr double kFaceGrace = 3;
+constexpr double kFaceParked = 300;  // s a parked face keeps its restoration
 constexpr double kFaceStale = 30;    // s without an update: unloaded
 // s without an update: the line's head is gone (unloaded or rebuilt, as on
 // leaving the race menu) and the line is dropped
@@ -293,7 +307,9 @@ constexpr size_t kMaxFaces = 8;
 SRWLOCK lock = SRWLOCK_INIT;  // guards everything below
 CONDITION_VARIABLE queue_cv = CONDITION_VARIABLE_INIT;
 std::atomic<bool> gpu_retry_requested{false};
-uint64_t settings_revision = 0;  // lock held; prevents a lost settings wakeup
+std::atomic<bool> gpu_adapters_requested{false};
+a2f::GpuAdapterList gpu_adapters;  // protected by lock
+uint64_t settings_revision = 0;    // lock held; prevents a lost settings wakeup
 auto& cache = *new std::unordered_map<std::string, std::shared_ptr<Entry>>;
 auto& queue = *new std::deque<Job>;
 // by FaceGen animation data
@@ -404,7 +420,11 @@ double Now() {
   }();
   LARGE_INTEGER c;
   QueryPerformanceCounter(&c);
-  return static_cast<double>(c.QuadPart) / f.QuadPart;
+  return
+#ifdef ENABLE_COMMONLIBSSE_TESTING
+      testing::clock_offset.load() +
+#endif
+      static_cast<double>(c.QuadPart) / f.QuadPart;
 }
 
 Stats SnapshotStats(size_t& cached, size_t& queued) {
@@ -419,6 +439,22 @@ void WakeWorker() {
   ScopedLock guard(lock);
   ++settings_revision;
   WakeConditionVariable(&queue_cv);
+}
+
+a2f::GpuAdapterList SnapshotGpuAdapters() {
+  ScopedLock guard(lock, ScopedLock::kShared);
+  return gpu_adapters;
+}
+void RequestGpuAdapters() {
+  {
+    ScopedLock guard(lock);
+    if (gpu_adapters.requested && !gpu_adapters.complete) return;
+    gpu_adapters.requested = true;
+    gpu_adapters.complete = false;
+    gpu_adapters.error.clear();
+  }
+  gpu_adapters_requested = true;
+  WakeWorker();
 }
 
 void RequestGpuRetry() {
@@ -458,17 +494,26 @@ bool FailedSpeech(uint8_t* fg) {
 
 // Whether the actor (its base an NPC) is female.
 bool IsFemale(uint8_t* ref) {
-  uint8_t* base = Field<uint8_t*>(ref, kRefrBase);
-  return base && base[kFormType] == kFtNpc &&
-         (Field<uint32_t>(base, kNpcFlags) & 1);
+  uint8_t* base = reinterpret_cast<uint8_t*>(
+      reinterpret_cast<RE::TESObjectREFR*>(ref)->data.objectReference);
+  return base &&
+         reinterpret_cast<RE::TESForm*>(base)->formType.underlying() ==
+             kFtNpc &&
+         (reinterpret_cast<RE::TESNPC*>(base)
+              ->actorData.actorBaseFlags.underlying() &
+          1);
 }
 
 // Exact base-game race IDs also cover overridden records and custom NPCs
 // using those races. Shared head geometry alone must not enable this limit.
 bool LimitLowerLip(uint8_t* actor) {
-  uint8_t* race = actor ? Field<uint8_t*>(actor, kActorRace.Get()) : nullptr;
+  uint8_t* race =
+      actor
+          ? reinterpret_cast<uint8_t*>(
+                reinterpret_cast<RE::Actor*>(actor)->GetActorRuntimeData().race)
+          : nullptr;
   if (!race) return false;
-  switch (Field<uint32_t>(race, kFormId)) {
+  switch (reinterpret_cast<RE::TESForm*>(race)->formID) {
     case 0x13745:  // Khajiit
     case 0x88845:  // Khajiit vampire
     case 0x13740:  // Argonian
@@ -480,27 +525,39 @@ bool LimitLowerLip(uint8_t* actor) {
 }
 
 bool RaceAllowed(uint8_t* actor) {
-  uint8_t* race = actor ? Field<uint8_t*>(actor, kActorRace.Get()) : nullptr;
-  return !race || RaceEnabled(Field<uint32_t>(race, kFormId));
+  uint8_t* race =
+      actor
+          ? reinterpret_cast<uint8_t*>(
+                reinterpret_cast<RE::Actor*>(actor)->GetActorRuntimeData().race)
+          : nullptr;
+  return !race || RaceEnabled(reinterpret_cast<RE::TESForm*>(race)->formID);
 }
 
 // Actor with a FaceGen head and an enabled race.
 bool SpeakerOk(uint8_t* ref) {
-  if (!ref || ref[kFormType] != kFtActor) return false;
-  uint8_t* base = Field<uint8_t*>(ref, kRefrBase);
-  uint8_t* race = Field<uint8_t*>(ref, kActorRace.Get());
-  if (!base || base[kFormType] != kFtNpc || !race ||
-      !(Field<uint32_t>(race, kRaceFlags) & 2))
+  if (!ref ||
+      reinterpret_cast<RE::TESForm*>(ref)->formType.underlying() != kFtActor)
+    return false;
+  uint8_t* base = reinterpret_cast<uint8_t*>(
+      reinterpret_cast<RE::TESObjectREFR*>(ref)->data.objectReference);
+  uint8_t* race = reinterpret_cast<uint8_t*>(
+      reinterpret_cast<RE::Actor*>(ref)->GetActorRuntimeData().race);
+  if (!base ||
+      reinterpret_cast<RE::TESForm*>(base)->formType.underlying() != kFtNpc ||
+      !race ||
+      !(reinterpret_cast<RE::TESRace*>(race)->data.flags.underlying() & 2))
     return false;
   return RaceAllowed(ref) && NpcAllowed(ref);
 }
 
 bool IsPlayer(uint8_t* actor) {
-  return Field<uint32_t>(actor, kFormId) == kPlayerFormId;
+  return reinterpret_cast<RE::TESForm*>(actor)->formID == kPlayerFormId;
 }
 
 uint32_t FormIdOf(const uint8_t* actor) {
-  return actor ? Field<uint32_t>(const_cast<uint8_t*>(actor), kFormId) : 0;
+  return actor ? reinterpret_cast<RE::TESForm*>(const_cast<uint8_t*>(actor))
+                     ->formID
+               : 0;
 }
 
 // The plugin animates this face: Enabled and, for the player's, the player
@@ -531,15 +588,16 @@ size_t num_scene_factions;
 // At kMessageDataLoaded.
 void LoadSceneFactions() {
   num_scene_factions = 0;
-  const BSTArray* factions = FormArray(kFtFaction);
+  const auto* factions = FormArray(kFtFaction);
   if (!factions) {
     Log("scene factions: no form array");
     return;
   }
-  for (uint32_t i = 0; i < factions->n; ++i) {
-    uint8_t* f = factions->items[i];
-    if (!f || f[kFormType] != kFtFaction) continue;
-    const uint32_t id = Field<uint32_t>(f, kFormId);
+  for (uint32_t i = 0; i < factions->size(); ++i) {
+    const auto* form = factions->data()[i];
+    if (!form || form->formType.underlying() != kFtFaction) continue;
+    const uint32_t id = form->formID;
+    auto* f = reinterpret_cast<uint8_t*>(factions->data()[i]);
     for (const SceneFaction& sf : kSceneFactions) {
       if (LocalFormId(id) != sf.id) continue;
       const char* name = SourceFileName(f);
@@ -557,33 +615,96 @@ void LoadSceneFactions() {
 // The actor is in a SexLab or OStim scene. Asks the engine: not to be called
 // with the plugin's or a face's lock held.
 bool InScene(const uint8_t* actor) {
-  if (!num_scene_factions || !actor || actor[kFormType] != kFtActor)
+  if (!num_scene_factions || !actor ||
+      reinterpret_cast<const RE::TESForm*>(actor)->formType.underlying() !=
+          kFtActor)
     return false;
-  const auto in_faction = reinterpret_cast<IsInFactionFn>(
-      (*reinterpret_cast<void* const* const*>(actor))[kVfIsInFaction.Get()]);
   for (size_t i = 0; i < num_scene_factions; ++i) {
-    if (in_faction(actor, scene_factions[i])) return true;
+    if (reinterpret_cast<const RE::Actor*>(actor)->IsInFaction(
+            reinterpret_cast<const RE::TESFaction*>(scene_factions[i])))
+      return true;
   }
   return false;
+}
+
+// ZaZ's zbfBondageShell documents gag and mouth-pose keywords as the
+// inter-mod equipment contract. Resolve optional keywords after plugins load;
+// items from dependent mods count too. Never infer restraints from item names.
+std::vector<const RE::BGSKeyword*> mouth_gear_keywords;
+
+bool MouthGearKeyword(const char* name) {
+  if (!name) return false;
+  for (const char* wanted : {"zbfWornGag", "zbfEffectOpenMouth",
+                            "zbfAnimMouthOpen", "zbfAnimMouthClose",
+                            "zbfAnimMouthKhajiitPlug", "zbfAnimMouthShout"})
+    if (!_stricmp(name, wanted)) return true;
+  return false;
+}
+
+void LoadMouthGearKeywords() {
+  mouth_gear_keywords.clear();
+  const auto* forms = FormArray(static_cast<uint8_t>(RE::FormType::Keyword));
+  if (!forms) return;
+  for (auto* form : *forms) {
+    if (!form || form->formType != RE::FormType::Keyword) continue;
+    auto* keyword = static_cast<RE::BGSKeyword*>(form);
+    const char* file = SourceFileName(reinterpret_cast<uint8_t*>(form));
+    if (file && !_stricmp(file, "ZaZAnimationPack.esm") &&
+        MouthGearKeyword(keyword->formEditorID.c_str()))
+      mouth_gear_keywords.push_back(keyword);
+  }
+  Log("mouth gear: %zu ZaZ keywords loaded", mouth_gear_keywords.size());
+}
+
+bool MouthGearItem(const RE::TESForm* item) {
+  if (!item || item->formType != RE::FormType::Armor) return false;
+  const auto* armor = static_cast<const RE::TESObjectARMO*>(item);
+  for (auto* keyword : armor->GetKeywords())
+    for (auto* blocked : mouth_gear_keywords)
+      if (keyword == blocked) return true;
+  return false;
+}
+
+// Read the actor's third-person equipped slots, including for the player in
+// first person. Bounded slot traversal, no inventory initialization or polling
+// cache. A missing biped has no face to animate; recheck when it is rebuilt.
+// Like InScene, call outside the plugin/face locks.
+bool WearingMouthGear(const uint8_t* actor) {
+  if (mouth_gear_keywords.empty() || !actor ||
+      reinterpret_cast<const RE::TESForm*>(actor)->formType != RE::FormType::ActorCharacter)
+    return false;
+  const auto& biped = reinterpret_cast<const RE::Actor*>(actor)->GetBiped(false);
+  if (!biped) return false;
+  for (const auto& slot : biped->objects)
+    if (MouthGearItem(slot.item)) return true;
+  return false;
+}
+
+bool FaceExternallyOwned(const uint8_t* actor) {
+  return InScene(actor) || WearingMouthGear(actor);
 }
 
 // speaker is cleared by the engine when dialogue closes; lastSpeaker (0x6C)
 // deliberately is not used. The same singleton already drives TrackPartner.
 uint32_t PartnerHandle() {
   static auto mtm = reinterpret_cast<uint8_t**>(Addr(kIdMenuTopicManager));
-  return !loading_game && mtm && *mtm ? Field<uint32_t>(*mtm, kMtmSpeaker) : 0;
+  return !loading_game && mtm && *mtm
+             ? reinterpret_cast<RE::MenuTopicManager*>(*mtm)
+                   ->speaker.native_handle()
+             : 0;
 }
 
 // Whether the actor is one the plugin animates at all: everyone, or in Potato
 // mode the player and the dialogue partner. Enabled is not part of it: that
-// pauses (Apply's snap) and resumes, this drops.
+// restores vanilla animation and stops inference; this only filters speakers.
 bool DialogueAllows(const Tune& tune, uint32_t handle, bool player = false) {
   return !tune.potato_mode || player || (handle && handle == PartnerHandle());
 }
 
 // Lock held: keep shared work while at least one requester still needs it.
 bool EntryAllowed(const Entry& entry, const Tune& tune) {
-  return !entry.cancelled && entry.state == State::kPending &&
+  return tune.enabled && !entry.cancelled && entry.state == State::kPending &&
+         entry.performance_sentiment == tune.performance_sentiment &&
          CurrentWorld(entry.epoch) &&
          (!entry.model_state ||
           entry.model_state->network == tune.SelectedModel()) &&
@@ -665,8 +786,10 @@ std::shared_ptr<Entry> Request(
   em.maximum = settings.max_emotion;
   if (em.type == a2f::kExplicitEmotion) em.channels = given->channels;
   const Tune shared = NpcSharedTune(tune, player ? nullptr : actor);
-  em.sentiment_multiplier = shared.sentiment_analysis && config.sentiment_available
-                                ? shared.sentiment_multiplier : 0;
+  em.sentiment_multiplier =
+      shared.sentiment_analysis && SentimentAvailable(shared)
+          ? shared.sentiment_multiplier
+          : 0;
   auto part = [&key](double v) {
     key += '|';
     key += std::to_string(std::lround(v));
@@ -683,6 +806,7 @@ std::shared_ptr<Entry> Request(
   };
   for (float cap : em.maximum) cap_part(cap);
   cap_part(em.sentiment_multiplier);
+  part(tune.performance_sentiment);
   const auto selection = SnapshotModel();
   part(selection->network);
   if (selection->mapping->faces.size() > 1) key += female ? "|f" : "|m";
@@ -702,6 +826,7 @@ std::shared_ptr<Entry> Request(
   if (!e) {
     e = std::make_shared<Entry>();
     e->epoch = epoch;
+    e->performance_sentiment = tune.performance_sentiment;
     e->model_state = selection;
     Job j{key, stem, em, female, e, std::move(audio)};
     if (urgent) {
@@ -737,25 +862,27 @@ std::shared_ptr<Entry> Request(
 bool ReadGameFile(const std::string& path, std::vector<uint8_t>& out) {
   using Ctor = void* (*)(void*, const char*, uint64_t, void*);
   using Dtor = void (*)(void*);
-  using ReadFn = uint32_t (*)(void*, void*, uint32_t, uint32_t*, uint32_t);
-  alignas(16) uint8_t s[0x40] = {};
-  Engine<Ctor, kIdStreamCtor>()(s, path.c_str(), 0, nullptr);
-  // BSResource::Stream*, null when not found
-  void* st = Field<void*>(s, 0x20);
+  // CommonLib's private ctor/dtor lack VR VariantIDs. Keep only these entry
+  // points local; storage, resource size and partial reads use its real types.
+  alignas(RE::BSResourceNiBinaryStream)
+      std::byte storage[sizeof(RE::BSResourceNiBinaryStream)]{};
+  auto& stream = *reinterpret_cast<RE::BSResourceNiBinaryStream*>(storage);
+  Engine<Ctor, kIdStreamCtor>()(&stream, path.c_str(), 0, nullptr);
   bool ok = false;
-  if (st) {
-    uint32_t n = Field<uint32_t>(st, 8);
+  if (stream.stream) {
+    const uint32_t n = stream.stream->totalSize;
     out.resize(n);
-    auto rd = Field<ReadFn>(s, 0x10);
     uint32_t got = 0;
     while (got < n) {
-      uint32_t k = rd(s, out.data() + got, n - got, nullptr, 1);
-      if (!k) break;
-      got += k;
+      const auto before = stream.RE::NiBinaryStream::tell();
+      stream.read(out.data() + got, n - got);
+      const auto count = stream.RE::NiBinaryStream::tell() - before;
+      if (!count) break;
+      got += count;
     }
     ok = n > 0 && got == n;
   }
-  Engine<Dtor, kIdStreamDtor>()(s);
+  Engine<Dtor, kIdStreamDtor>()(&stream);
   return ok;
 }
 
@@ -768,10 +895,10 @@ struct ExpressiveHead {
   uint64_t hash;
 };
 constexpr ExpressiveHead kExpressiveHeads[] = {
-    {"meshes\\actors\\character\\character assets\\MaleHead.tri",
-     301905, 0x78d43dd9b2f22ba8ull},  // Male Edition 1.21
-    {"meshes\\actors\\character\\character assets\\FemaleHead.tri",
-     329989, 0x890ed4834ecadef6ull},  // Female Edition 1.7
+    {"meshes\\actors\\character\\character assets\\MaleHead.tri", 301905,
+     0x78d43dd9b2f22ba8ull},  // Male Edition 1.21
+    {"meshes\\actors\\character\\character assets\\FemaleHead.tri", 329989,
+     0x890ed4834ecadef6ull},  // Female Edition 1.7
 };
 
 bool IsExpressiveHead(const std::vector<uint8_t>& bytes, bool female) {
@@ -803,12 +930,21 @@ void NetEvent(const std::string& text) { skse::Report("%s", text.c_str()); }
 // and sentiment (slot 0). Choosing these never creates/probes another device.
 a2f::SharedGpuSettings shared_gpu_settings[5];
 
+void UnloadSentiment();
+
 std::unique_ptr<a2f::Net> CreateNet(bool gpu, std::string& err,
                                     std::string& info) {
+  a2f::diagnostics::Attempt diagnostic(a2f::diagnostics::Component::kFace, gpu,
+                                       config.independent_device, err);
+  const auto finish = [&](std::unique_ptr<a2f::Net> net) {
+    if (net) diagnostic.Ready();
+    return net;
+  };
   const auto selection = SnapshotModel();
   const std::wstring dir = PluginDir(), file = dir + L"\\" + selection->file;
   a2f::OrtOptions o;
   o.gpu = gpu;
+  o.gpu_adapter = selection->gpu_adapter;
   o.batch = config.batch;
   o.independent_device = config.independent_device;
   if (selection->mapping->network !=
@@ -833,24 +969,39 @@ std::unique_ptr<a2f::Net> CreateNet(bool gpu, std::string& err,
         return a2f::CreateOrtNet(dir, file, o, e, i);
     }
   };
-  if (!gpu) return create(err, info);
+  if (!gpu) return finish(create(err, info));
   if (config.independent_device) {
-    auto net = create(err, info);
-    if (!net && err.find("independent device:") != 0)
-      err = "independent device: " + err;
-    return net;
+    // A lost device latches the context (RunFailed); the keeper's bounded
+    // retries arrive here. Both sessions sat on that device: drop the
+    // sentiment one too, then create the context again. A missing API or a
+    // failed device creation stays latched until the user's retry.
+    std::string latched;
+    if (!a2f::GpuAllowed(latched)) {
+      if (!a2f::LostDevice(latched)) {
+        err = latched;
+        return nullptr;
+      }
+      UnloadSentiment();
+      a2f::RetryGpu();
+      skse::Report("independent GPU device lost (%s): creating it again",
+                   latched.c_str());
+    }
+    return finish(create(err, info));
   }
-  return a2f::CreateSharedGpu(
+  return finish(a2f::CreateSharedGpu(
       [&](bool metacommands, bool wrapper, std::string& error) {
         o.metacommands = metacommands;
         a2f::SetUseDeviceWrapper(wrapper);
         const double started = Now();
         auto net = create(error, info);
         skse::Report("GPU session with metacommands %s on %s: %s after %.0f ms",
-            metacommands ? "on" : "off", wrapper ? "the wrapper" : "the device",
-            net ? "loaded" : "failed", (Now() - started) * 1e3);
+                     metacommands ? "on" : "off",
+                     wrapper ? "the wrapper" : "the device",
+                     net ? "loaded" : "failed", (Now() - started) * 1e3);
         return net;
-      }, shared_gpu_settings[selection->network], a2f::DeviceWrapped, err, NetEvent);
+      },
+      shared_gpu_settings[selection->network], a2f::DeviceWrapped, err,
+      NetEvent));
 }
 
 // Copies the keeper's state to the settings window.
@@ -863,13 +1014,10 @@ void PublishNet(const a2f::NetKeeper& keeper) {
     why.clear();
   } else if (keeper.error() != diagnosed) {
     diagnosed = keeper.error();
-    // The VRAM as the session failed, by DXGI alone: on the shared route
-    // that is the game's device; the independent one is not probed.
-    why = a2f::DiagnoseNet(
-        selection->gpu, keeper.error(),
-        selection->gpu && !config.independent_device ? a2f::QueryGpu()
-                                                     : a2f::GpuState{},
-        ModelFor(selection->network).vram_mb);
+    // DXGI only (adapter and VRAM budget); no Direct3D device is created.
+    why = a2f::DiagnoseNet(selection->gpu, keeper.error(),
+                           selection->gpu ? a2f::QueryGpu() : a2f::GpuState{},
+                           ModelFor(selection->network).vram_mb);
     for (const auto& line : why) skse::Report("%s", line.c_str());
     // the system as it is at the first failure (the report at startup is
     // from the main menu)
@@ -877,14 +1025,19 @@ void PublishNet(const a2f::NetKeeper& keeper) {
     if (selection->gpu && !reported) {
       reported = true;
       skse::Report("-- at the first failure");
-      for (const auto& line : a2f::GpuReport(false))
-        skse::Report("%s", line.c_str());
+      auto report = a2f::GpuReport(false);
+      a2f::diagnostics::State().System(report);
+      for (const auto& line : report) skse::Report("%s", line.c_str());
     }
   }
   net_loaded = keeper.loaded();
+  // The menu never asks the driver itself: this is its VRAM and adapter view.
+  const a2f::GpuState gpu = selection->gpu ? a2f::QueryGpu() : a2f::GpuState{};
   ScopedLock guard(lock);
+  stats.gpu = gpu;
   stats.network = keeper.loaded() ? keeper.version() : selection->network;
   stats.want_gpu = selection->gpu;
+  stats.gpu_adapter = selection->gpu_adapter;
   stats.net_info = keeper.info();
   stats.net_error = why;
   stats.net_detail = keeper.error();
@@ -896,25 +1049,39 @@ void PublishNet(const a2f::NetKeeper& keeper) {
 // the session on the worker after an already submitted inference returns.
 std::unique_ptr<a2f::EmotionNet> sentiment_net;
 bool sentiment_gpu = false;
+bool sentiment_performance = false;
+int sentiment_device = 0;
 
 void SentimentStatus(const std::string& message) {
-  static std::string shown;  // worker only
-  if (message == shown) return;
-  shown = message;
   ScopedLock guard(lock);
   stats.sentiment_info = message;
 }
 
 std::string IdleSentimentStatus() {
-  return config.sentiment_available
+  return SentimentAvailable(SnapshotTune())
              ? "off (sentiment model unloaded)"
              : "unavailable (optional sentiment model not installed)";
 }
 
 void UnloadSentiment() {
   sentiment_net.reset();
+  a2f::diagnostics::State().Unload(a2f::diagnostics::Component::kSentiment);
   sentiment_retry_at = 0;
   SentimentStatus(IdleSentimentStatus());
+}
+
+// Worker only: changing emotion settings must not rebuild the facial session.
+void ConfigureSentiment(const Tune& tune) {
+  if (sentiment_performance == tune.performance_sentiment &&
+      sentiment_device == tune.emotion_device)
+    return;
+  UnloadSentiment();
+  if (sentiment_device != tune.emotion_device) {
+    shared_gpu_settings[0] = {};
+    if (tune.EmotionUsesGpu()) a2f::RetryGpu();
+  }
+  sentiment_performance = tune.performance_sentiment;
+  sentiment_device = tune.emotion_device;
 }
 
 enum class Sentiment {
@@ -937,18 +1104,28 @@ Sentiment PrepareSentiment(const Job& job, const std::vector<float>& pcm,
     return JobAllowed(job) && SnapshotTune().sentiment_analysis;
   };
   if (!allowed()) return Sentiment::kCancelled;
+  const Tune tune = SnapshotTune();
+  ConfigureSentiment(tune);
+  const bool performance = tune.performance_sentiment;
   std::string err;
   if (sentiment_gpu && !a2f::GpuAllowed(err)) sentiment_net.reset();
   if (!sentiment_net) {
     if (Now() < sentiment_retry_at) return Sentiment::kUnavailable;
     a2f::OrtOptions options;
-    options.gpu = !SnapshotTune().force_cpu;
+    options.gpu = tune.EmotionUsesGpu();
+    options.gpu_adapter = std::max(0, tune.emotion_device);
     options.independent_device = config.independent_device;
+    a2f::diagnostics::Attempt diagnostic(
+        a2f::diagnostics::Component::kSentiment, options.gpu,
+        options.independent_device, err);
     sentiment_gpu = options.gpu;
     const std::wstring dir = PluginDir();
     const auto create = [&](std::string& error) {
       return a2f::CreateOrtEmotionNet(
-          dir, dir + L"\\" + kSentimentModel, options, error);
+          dir,
+          dir + L"\\" +
+              (performance ? kPerformanceSentimentModel : kSentimentModel),
+          options, error, performance);
     };
     if (options.gpu && !options.independent_device) {
       sentiment_net = a2f::CreateSharedGpu(
@@ -956,20 +1133,33 @@ Sentiment PrepareSentiment(const Job& job, const std::vector<float>& pcm,
             options.metacommands = metacommands;
             a2f::SetUseDeviceWrapper(wrapper);
             return create(error);
-          }, shared_gpu_settings[0], a2f::DeviceWrapped, err, NetEvent);
-    } else sentiment_net = create(err);
-    if (sentiment_net)
-      SentimentStatus(options.gpu ? "sentiment ready (GPU)"
-                                  : "sentiment ready (CPU)");
+          },
+          shared_gpu_settings[0], a2f::DeviceWrapped, err, NetEvent);
+    } else
+      sentiment_net = create(err);
+    if (sentiment_net) {
+      diagnostic.Ready();
+      SentimentStatus(
+          std::string(performance ? "Performance (experimental): " : "Full: ") +
+          (options.gpu ? "sentiment ready (GPU " +
+                             std::to_string(options.gpu_adapter) + ")"
+                       : "sentiment ready (CPU)"));
+    }
   }
-  if (sentiment_net && a2f::AnalyzeSentiment(*sentiment_net, pcm.data(),
-        pcm.size(), emotion.sentiment, err, allowed))
+  if (sentiment_net &&
+      a2f::AnalyzeSentiment(*sentiment_net, pcm.data(), pcm.size(),
+                            emotion.sentiment, err, allowed))
     return Sentiment::kReady;
   if (!allowed()) return Sentiment::kCancelled;
+  if (sentiment_net)
+    a2f::diagnostics::State().RuntimeFailure(
+        a2f::diagnostics::Component::kSentiment, err);
   sentiment_net.reset();
   sentiment_retry_at = Now() + (sentiment_gpu ? 30 : 60);
   SentimentStatus(std::string("dialogue only; ") +
-      (sentiment_gpu ? "GPU sentiment unavailable: " : "CPU sentiment unavailable: ") + err);
+                  (sentiment_gpu ? "GPU sentiment unavailable: "
+                                 : "CPU sentiment unavailable: ") +
+                  err);
   skse::Report("Audio2Emotion unavailable: %s", err.c_str());
   return Sentiment::kUnavailable;
 }
@@ -1022,21 +1212,27 @@ void Process(const Job& j, a2f::NetKeeper& keeper) {
                   generated_network = net.Version();
                   const direct::Mark& face =
                       j.entry->model_state->mapping->Face(j.female);
+                  bool generated;
                   if (net.Version() == a2f::kNetPerformance)
-                    return a2f::GeneratePerformance(net, pcm.data(),
-                                                    pcm.size(), emotion,
-                                                    j.female, *line, e,
-                                                    allowed);
-                  if (net.Version() != a2f::kNetV3)
-                    return a2f::Generate(net, pcm.data(), pcm.size(), emotion,
-                                         face.proj.data(), face.rest.data(),
-                                         face.k, *line, e, allowed);
-                  // Claire speaks the women's lines, Mark the men's
-                  const a2f::Face3 f{j.female ? 0 : 2, face.proj.data(),
-                                     face.tongue_proj.data(), face.rest.data(),
-                                     face.k};
-                  return a2f::Generate3(net, pcm.data(), pcm.size(), emotion, f,
-                                        *line, e, allowed);
+                    generated = a2f::GeneratePerformance(
+                        net, pcm.data(), pcm.size(), emotion, j.female, *line,
+                        e, allowed);
+                  else if (net.Version() != a2f::kNetV3)
+                    generated = a2f::Generate(
+                        net, pcm.data(), pcm.size(), emotion, face.proj.data(),
+                        face.rest.data(), face.k, *line, e, allowed);
+                  else {
+                    // Claire speaks the women's lines, Mark the men's.
+                    const a2f::Face3 f{j.female ? 0 : 2, face.proj.data(),
+                                       face.tongue_proj.data(),
+                                       face.rest.data(), face.k};
+                    generated = a2f::Generate3(net, pcm.data(), pcm.size(),
+                                               emotion, f, *line, e, allowed);
+                  }
+                  if (!generated && net.failed && allowed())
+                    a2f::diagnostics::State().RuntimeFailure(
+                        a2f::diagnostics::Component::kFace, e);
+                  return generated;
                 },
                 err, no_net, allowed))
           line.reset();
@@ -1058,8 +1254,9 @@ void Process(const Job& j, a2f::NetKeeper& keeper) {
     // replace them later. The active line retains its fallback entry.
     if (!line && (no_net || silent || file.empty())) cache.erase(it);
   }
-  j.entry->failure_reason = no_net ? BFA_kResultModelNotLoaded :
-      inference_attempted ? BFA_kResultInferenceFailed : BFA_kResultAudioFailed;
+  j.entry->failure_reason = no_net                ? BFA_kResultModelNotLoaded
+                            : inference_attempted ? BFA_kResultInferenceFailed
+                                                  : BFA_kResultAudioFailed;
   NotifyWatchers(*j.entry);
   if (line) {
     ++stats.lines;
@@ -1102,8 +1299,8 @@ void Process(const Job& j, a2f::NetKeeper& keeper) {
           file.c_str(),
           generated_network == a2f::kNetPerformance ? "Performance"
           : generated_network == a2f::kNetV2        ? "Mark"
-          : j.female                                            ? "Claire"
-                                                                : "Mark 3.0",
+          : j.female                                ? "Claire"
+                                                    : "Mark 3.0",
           j.emotion.type, j.emotion.value, audio_sec, line->frames, ms,
           fed.empty() ? " no emotion" : fed.c_str());
     } else {
@@ -1121,7 +1318,15 @@ void SwitchModel(a2f::NetKeeper& keeper, const Tune& tune) {
   const int network = tune.SelectedModel();
   const bool gpu = !tune.force_cpu;
   const bool retry = gpu_retry_requested.exchange(false);
-  if (old->network == network && old->gpu == gpu && !retry) return;
+  const bool adapter_changed = old->gpu_adapter != tune.gpu_adapter;
+  if (old->network == network && old->gpu == gpu && !adapter_changed && !retry)
+    return;
+  if (retry && !gpu && old->network == network && !old->gpu &&
+      !adapter_changed) {
+    UnloadSentiment();
+    if (tune.EmotionUsesGpu()) a2f::RetryGpu();
+    return;
+  }
   UnloadSentiment();
   {
     ScopedLock guard(lock);
@@ -1134,6 +1339,7 @@ void SwitchModel(a2f::NetKeeper& keeper, const Tune& tune) {
   auto next = std::make_shared<ModelState>();
   next->network = network;
   next->gpu = gpu;
+  next->gpu_adapter = tune.gpu_adapter;
   next->file = files.model_file;
   next->mapping = old->mapping;
   if (old->mapping->network != files.mapping_network) {
@@ -1141,7 +1347,7 @@ void SwitchModel(a2f::NetKeeper& keeper, const Tune& tune) {
     std::string err;
     if (!mapping->Load(PluginDir() + L"\\" + files.mapping_file, err)) {
       SetSelectedModel(old->network);
-      ScheduleSaveIni();
+      SaveIni();
       ScopedLock guard(lock);
       stats.switching_model = false;
       stats.model_error =
@@ -1154,7 +1360,9 @@ void SwitchModel(a2f::NetKeeper& keeper, const Tune& tune) {
     next->mapping = std::move(mapping);
   }
   keeper.Reconfigure(gpu);
-  if (gpu) a2f::RetryGpu();
+  if (adapter_changed)
+    for (auto& settings : shared_gpu_settings) settings = {};
+  if (gpu || tune.EmotionUsesGpu()) a2f::RetryGpu();
   {
     ScopedLock guard(lock);
     for (const auto& job : queue) CancelJob(job);
@@ -1183,11 +1391,21 @@ DWORD WorkerStep(a2f::NetKeeper& keeper, bool wait = true) {
     ScopedLock guard(lock);
     revision = settings_revision;
   }
+  if (gpu_adapters_requested.exchange(false)) {
+    auto discovered = a2f::EnumerateGpuAdapters();
+    ScopedLock guard(lock);
+    gpu_adapters = std::move(discovered);
+  }
   const Tune tune = SnapshotTune();
   SwitchModel(keeper, tune);
-  if (!tune.sentiment_analysis || !tune.enabled || !config.sentiment_available)
+  ConfigureSentiment(tune);
+  if (!tune.enabled && keeper.loaded()) {
+    keeper.Unload();
+    PublishNet(keeper);
+  }
+  if (!tune.sentiment_analysis || !tune.enabled || !SentimentAvailable(tune)) {
     UnloadSentiment();
-  else if (!sentiment_net && sentiment_retry_at == 0)
+  } else if (!sentiment_net && sentiment_retry_at == 0)
     SentimentStatus("waiting for speech");
   // Keep the session ready in both modes; Potato mode restricts speakers,
   // not residency. Shared GPU recovery wakes while vanilla lip-sync is used.
@@ -1205,8 +1423,7 @@ DWORD WorkerStep(a2f::NetKeeper& keeper, bool wait = true) {
     }
   }
   if (queue.empty()) {
-    const DWORD timeout =
-        tune.enabled && keeper.needs_poll() ? 1000 : INFINITE;
+    const DWORD timeout = tune.enabled && keeper.needs_poll() ? 1000 : INFINITE;
     if (revision != settings_revision) return 0;
     if (wait) SleepConditionVariableSRW(&queue_cv, &lock, timeout, 0);
     return timeout;
@@ -1234,40 +1451,86 @@ DWORD WINAPI Worker(void*) {
     ScopedLock guard(lock);
     stats.network = config.network;
     stats.want_gpu = config.gpu;
+    stats.gpu_adapter = config.gpu_adapter;
   }
   ready = true;
   skse::Report("settings: GPU=%d, batch %d, model %ls", config.gpu,
                config.batch, config.model.c_str());
-  skse::Report("GPU route: %s; CPU only when selected, no other GPU route is tried",
-               config.independent_device
-                   ? "independent device, private compute queue"
-                   : "4.0-style shared device");
+  skse::Report(
+      "GPU route: %s; CPU only when selected, no other GPU route is tried",
+      config.independent_device ? "independent device, private compute queue"
+                                : "4.0-style shared device");
+  a2f::diagnostics::State().System(a2f::GpuReport(false));
   a2f::SetOrtLog([](const std::string& s) { skse::Report("%s", s.c_str()); });
-  if (!config.independent_device)
-    skse::Report("shared GPU recovery: metacommands off, conditional wrapper, "
-                 "then 2/4/8/16/30-second retries; no Auto device probe");
+  if (config.independent_device) {
+    // Advisory: the API itself is queried at the first attempt.
+    skse::Report("%s", a2f::IndependentPrerequisite().c_str());
+    skse::Report(
+        "independent GPU recovery: a lost device is created again, %d "
+        "retries at 2/4/8-second intervals; a missing runtime API or failed "
+        "device creation waits for Try GPU again",
+        a2f::NetKeeper::kIndependentRetries);
+  } else {
+    skse::Report(
+        "shared GPU recovery: metacommands off, conditional wrapper, "
+        "then 2/4/8/16/30-second retries; no Auto device probe");
+  }
   a2f::NetKeeper keeper(config.gpu, CreateNet, Now, NetEvent,
-                        !config.independent_device);
+                        config.independent_device);
   for (;;) WorkerStep(keeper);
 }
 
 // ---------------- call-site hooks ----------------
-// Every `call rel32` to the callee inside the caller functions is redirected
-// through a thunk (include/a2f/runtime/call_sites.h). Each site keeps its own
-// original target (looked up by return address), so a plugin that patches a
-// site after us is chained.
+// Every `call rel32` to the callee inside the caller functions (HookCalls) or
+// in the whole code section (HookAllCalls) is redirected through a thunk
+// (include/a2f/runtime/call_sites.h). Each site keeps its own original target
+// (looked up by return address), so a plugin that patches a site after us is
+// chained.
 template <typename Fn>
 Fn SiteOrig(void* ret, skse::Rel callee_id) {
   return call_sites::Orig<Fn>(ret, reinterpret_cast<void*>(Addr(callee_id)));
 }
+IMAGE_NT_HEADERS* NtHeaders(uint64_t base) {
+  return reinterpret_cast<IMAGE_NT_HEADERS*>(
+      base + reinterpret_cast<IMAGE_DOS_HEADER*>(base)->e_lfanew);
+}
+// Hooks the calls to `callee` in [from, to); `caller_id` is 0 for a scan. An
+// E8 whose rel32 only happens to reach the callee (data or the tail of another
+// instruction) would be hooked too; at one chance in 2^32 per E8 byte that is
+// not worth a disassembler, and the hook calls the site's own original anyway.
+int HookCallsIn(const char* what, uint64_t callee, uint64_t from, uint64_t to,
+                void* hook, uint64_t caller_id) {
+  const uint64_t base = skse::ImageBase();
+  const uint64_t end = base + NtHeaders(base)->OptionalHeader.SizeOfImage;
+  to = std::min(to, end);
+  int n = 0;
+  for (uint64_t at = from; at + 5 <= to; ++at) {
+    if (*reinterpret_cast<uint8_t*>(at) != 0xE8 ||
+        call_sites::CallTarget(at) != callee)
+      continue;
+    if (call_sites::num_sites >= call_sites::kMaxSites) {
+      Log("%s: call at rva %llx not hooked (%d sites in use)", what, at - base,
+          call_sites::num_sites);
+      break;
+    }
+    if (!call_sites::Hook(at, hook, what, end)) {
+      Log("%s: call at rva %llx not hooked (no thunk in reach)", what,
+          at - base);
+      continue;
+    }
+    if (caller_id)
+      Log("%s: hooked call at rva %llx (caller id %llu)", what, at - base,
+          caller_id);
+    else
+      Log("%s: hooked call at rva %llx", what, at - base);
+    ++n;
+  }
+  return n;
+}
 template <size_t N>
 int HookCalls(const char* what, skse::Rel callee_id,
               const skse::Rel (&callers)[N], void* hook) {
-  const uint64_t base = skse::ImageBase();
   uint64_t callee = Addr(callee_id);
-  auto* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(
-      base + reinterpret_cast<IMAGE_DOS_HEADER*>(base)->e_lfanew);
-  uint64_t end = base + nt->OptionalHeader.SizeOfImage;
   if (!callee) {
     Log("%s: address id %llu not found", what, callee_id.Get());
     return 0;
@@ -1275,22 +1538,35 @@ int HookCalls(const char* what, skse::Rel callee_id,
   int n = 0;
   for (skse::Rel caller : callers) {
     uint64_t f = Addr(caller);
-    if (!f) continue;
-    for (uint64_t at = f; at < f + 0x2000 && at + 5 < end; ++at) {
-      if (*reinterpret_cast<uint8_t*>(at) != 0xE8 ||
-          call_sites::CallTarget(at) != callee)
-        continue;
-      if (!call_sites::Hook(at, hook, what, base)) {
-        Log("%s: call at rva %llx not hooked (no thunk in reach)", what,
-            at - base);
-        continue;
-      }
-      Log("%s: hooked call at rva %llx (caller id %llu)", what, at - base,
-          caller.Get());
-      ++n;
-    }
+    if (f) n += HookCallsIn(what, callee, f, f + 0x2000, hook, caller.Get());
   }
   if (!n)
+    Log("%s: no call sites found (another plugin may have replaced them)",
+        what);
+  return n;
+}
+// Every call to the callee in the executable's code sections, for callees
+// whose callers are not all known (and differ between runtimes). Runs once at
+// load: a linear pass over the ~30 MB of code takes a few milliseconds.
+int HookAllCalls(const char* what, skse::Rel callee_id, void* hook) {
+  const uint64_t base = skse::ImageBase();
+  uint64_t callee = Addr(callee_id);
+  if (!callee) {
+    Log("%s: address id %llu not found", what, callee_id.Get());
+    return 0;
+  }
+  IMAGE_NT_HEADERS* nt = NtHeaders(base);
+  int n = 0;
+  IMAGE_SECTION_HEADER* section = IMAGE_FIRST_SECTION(nt);
+  for (int i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++section) {
+    if (!(section->Characteristics & IMAGE_SCN_MEM_EXECUTE)) continue;
+    const uint64_t from = base + section->VirtualAddress;
+    n += HookCallsIn(what, callee, from, from + section->Misc.VirtualSize,
+                     hook, 0);
+  }
+  if (n)
+    Log("%s: %d call sites hooked", what, n);
+  else
     Log("%s: no call sites found (another plugin may have replaced them)",
         what);
   return n;
@@ -1333,8 +1609,16 @@ uint32_t HandleOf(uint8_t* ref) {
 
 // The node is in the reference's 3D.
 bool OfRef(uint8_t* node, const uint8_t* ref) {
-  for (int i = 0; node && i < 32; node = Field<uint8_t*>(node, kAvParent), ++i)
-    if (Field<uint8_t*>(node, kAvUserData.Get()) == ref) return true;
+  auto* object = reinterpret_cast<RE::NiAVObject*>(node);
+  const auto* owner = reinterpret_cast<const RE::TESObjectREFR*>(ref);
+  // GetUserData() walks parents itself. Read only this node's field so our
+  // traversal remains bounded, including malformed cycles. These are the
+  // SE/AE and VR offsets used by CommonLib's GetUserData implementation.
+  const auto owner_offset = REL::Relocate(0xF8, 0xF8, 0x110);
+  for (int i = 0; object && i < 32; object = object->parent, ++i) {
+    if (REL::RelocateMember<RE::TESObjectREFR*>(object, owner_offset) == owner)
+      return true;
+  }
   return false;
 }
 
@@ -1342,9 +1626,16 @@ bool OfRef(uint8_t* node, const uint8_t* ref) {
 // unknown (no high process).
 int ActorVoice(uint8_t* actor, uint32_t& sound) {
   auto is_playing = Engine<bool (*)(void*), kIdSoundIsPlaying>();
-  uint8_t* proc = Field<uint8_t*>(actor, kActorProcess.Get());
-  uint8_t* high = proc ? Field<uint8_t*>(proc, kProcessHigh) : nullptr;
-  uint8_t* handle = high ? high + kHighVoiceHandle : nullptr;
+  uint8_t* proc = reinterpret_cast<uint8_t*>(reinterpret_cast<RE::Actor*>(actor)
+                                                 ->GetActorRuntimeData()
+                                                 .currentProcess);
+  uint8_t* high = proc ? reinterpret_cast<uint8_t*>(
+                             reinterpret_cast<RE::AIProcess*>(proc)->high)
+                       : nullptr;
+  uint8_t* handle =
+      high ? reinterpret_cast<uint8_t*>(
+                 &reinterpret_cast<RE::HighProcessData*>(high)->soundHandles[0])
+           : nullptr;
   sound = SoundId(handle);
   return !handle || !is_playing ? -1 : is_playing(handle);
 }
@@ -1353,10 +1644,9 @@ int ActorVoice(uint8_t* actor, uint32_t& sound) {
 // DBVO notification, or a provider interface line); the one place a
 // scene's or a suppressed actor is turned away. Returns BFA_kResultOK once
 // the line is in playing, else the BFA_ResultCode.
-uint32_t BeginSpeech(uint8_t* actor, const std::string& stem,
-                     uint32_t sound_id, float dur, int emo_type,
-                     int emo_value, const Tune& tune, uint64_t epoch,
-                     PlayerSpeechPtr external = {}) {
+uint32_t BeginSpeech(uint8_t* actor, const std::string& stem, uint32_t sound_id,
+                     float dur, int emo_type, int emo_value, const Tune& tune,
+                     uint64_t epoch, PlayerSpeechPtr external = {}) {
   if (!CurrentWorld(epoch)) return BFA_kResultNoFaceGenHead;
   if (!DialogueAllows(tune, HandleOf(actor), IsPlayer(actor)))
     return BFA_kResultNotInDialogue;
@@ -1365,7 +1655,7 @@ uint32_t BeginSpeech(uint8_t* actor, const std::string& stem,
   const uint32_t form_id = FormIdOf(actor);
   const bool provider = external && external->handle != 0;
   static std::atomic<int> logged;
-  if (InScene(actor)) {
+  if (FaceExternallyOwned(actor)) {
     if (LogMore(logged)) Log("skip %s: its actor is in a scene", stem.c_str());
     return BFA_kResultInScene;
   }
@@ -1374,9 +1664,8 @@ uint32_t BeginSpeech(uint8_t* actor, const std::string& stem,
       Log("skip %s: a provider holds its actor's face", stem.c_str());
     return BFA_kResultTakenByOtherLine;
   }
-  auto get_fg = reinterpret_cast<uint8_t* (*)(uint8_t*)>(
-      Field<void**>(actor, 0)[kVfGetFaceGenAnimationData]);
-  uint8_t* fg = get_fg(actor);
+  uint8_t* fg = reinterpret_cast<uint8_t*>(
+      reinterpret_cast<RE::Actor*>(actor)->GetFaceGenAnimationData());
   if (!fg) return BFA_kResultNoFaceGenHead;
   skse::ResId r{};
   Engine<GenerateFromPathFn, kIdGenerateFromPath>()(&r,
@@ -1452,9 +1741,8 @@ uint32_t BeginSpeech(uint8_t* actor, const std::string& stem,
       return BFA_kResultTakenByOtherLine;
     // The other way around: the engine's line replaces DBReV's or DBVO's
     // and keeps its cancellation.
-    if (!p.external && old->second.lip_key == lip_key &&
-        old->second.external && !ProviderLine(old->second) &&
-        !old->second.external->stopped)
+    if (!p.external && old->second.lip_key == lip_key && old->second.external &&
+        !ProviderLine(old->second) && !old->second.external->stopped)
       p.external = old->second.external;
     LineLeft(fg, old->second, BFA_kSuperseded);
   }
@@ -1491,7 +1779,7 @@ float ObserveSpeech(uint8_t* actor, const char* voice, void* handle,
   }
   const Tune tune = SnapshotTune();
   std::string stem;
-  if (!(tune.enabled || net_loaded) || !voice || !ready || !SpeakerOk(actor) ||
+  if (!tune.enabled || !voice || !ready || !SpeakerOk(actor) ||
       !VoiceStem(voice, stem) || (!tune.player && IsPlayer(actor))) {
     note("not for the plugin");
     return dur;
@@ -1502,11 +1790,13 @@ float ObserveSpeech(uint8_t* actor, const char* voice, void* handle,
   return dur;
 }
 
-__attribute__((noinline)) float SpeakHook(
-    uint8_t* actor, const char* voice, void* handle, uint64_t emo_type,
-    uint64_t emo_value, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9,
-    uint64_t a10, uint64_t a11, uint64_t a12, uint64_t a13, uint64_t a14) {
-  auto orig = SiteOrig<SpeakFn>(__builtin_return_address(0), kIdSpeakVoiceLine);
+__declspec(noinline) float SpeakHook(uint8_t* actor, const char* voice,
+                                     void* handle, uint64_t emo_type,
+                                     uint64_t emo_value, uint64_t a6,
+                                     uint64_t a7, uint64_t a8, uint64_t a9,
+                                     uint64_t a10, uint64_t a11, uint64_t a12,
+                                     uint64_t a13, uint64_t a14) {
+  auto orig = SiteOrig<SpeakFn>(_ReturnAddress(), kIdSpeakVoiceLine);
   const uint64_t epoch = world_epoch;
   SpeechCallScope scope;
   float dur = orig(actor, voice, handle, emo_type, emo_value, a6, a7, a8, a9,
@@ -1514,7 +1804,7 @@ __attribute__((noinline)) float SpeakHook(
   return ObserveSpeech(actor, voice, handle, emo_type, emo_value, dur, epoch);
 }
 
-__attribute__((noinline)) float NativeSpeakHook(
+__declspec(noinline) float NativeSpeakHook(
     uint8_t* actor, const char* voice, void* handle, uint64_t emo_type,
     uint64_t emo_value, uint64_t a6, uint64_t a7, uint64_t a8, uint64_t a9,
     uint64_t a10, uint64_t a11, uint64_t a12, uint64_t a13, uint64_t a14) {
@@ -1522,9 +1812,10 @@ __attribute__((noinline)) float NativeSpeakHook(
   const bool nested = speech_depth != 0;
   SpeechCallScope scope;
   float dur = native_speech_original(actor, voice, handle, emo_type, emo_value,
-                                    a6, a7, a8, a9, a10, a11, a12, a13, a14);
+                                     a6, a7, a8, a9, a10, a11, a12, a13, a14);
   if (nested || !CurrentWorld(epoch) || !actor || !IsPlayer(actor) ||
-      !EnabledFor(SnapshotTune(), true)) return dur;
+      !EnabledFor(SnapshotTune(), true))
+    return dur;
   // Native SpeakSound accepts paths relative to Data/Sound; DBVO 2 uses
   // that form. Keep the actual path passed to the engine unchanged.
   std::string stem, absolute;
@@ -1535,26 +1826,29 @@ __attribute__((noinline)) float NativeSpeakHook(
   return ObserveSpeech(actor, voice, handle, emo_type, emo_value, dur, epoch);
 }
 
-__attribute__((noinline)) uint8_t* ResponseHook(uint8_t* self, void* topic,
-                                                void* info, uint8_t* speaker,
-                                                void* response) {
-  auto orig = SiteOrig<ResponseCtorFn>(__builtin_return_address(0),
-                                       kIdDialogueResponseCtor);
+__declspec(noinline) uint8_t* ResponseHook(uint8_t* self, void* topic,
+                                           void* info, uint8_t* speaker,
+                                           void* response) {
+  auto orig =
+      SiteOrig<ResponseCtorFn>(_ReturnAddress(), kIdDialogueResponseCtor);
   const uint64_t epoch = world_epoch;
   uint8_t* r = orig(self, topic, info, speaker, response);
   if (!CurrentWorld(epoch)) return r;
   std::string stem;
   const Tune tune = SnapshotTune();
-  const char* voice = r ? Field<const char*>(r, kRespVoice) : nullptr;
-  if ((tune.enabled || net_loaded) && tune.prefetch && voice && ready &&
-      SpeakerOk(speaker) &&
+  const char* voice =
+      r ? reinterpret_cast<RE::DialogueResponse*>(r)->voice.c_str() : nullptr;
+  if (tune.enabled && tune.prefetch && voice && ready && SpeakerOk(speaker) &&
       DialogueAllows(tune, HandleOf(speaker), IsPlayer(speaker)) &&
-      !ProviderClaims(FormIdOf(speaker)) && !InScene(speaker) &&
+      !ProviderClaims(FormIdOf(speaker)) && !FaceExternallyOwned(speaker) &&
       VoiceStem(voice, stem)) {
-    const int emo = static_cast<int>(Field<uint32_t>(r, kRespEmoType));
-    Request(stem, emo, static_cast<int>(Field<uint32_t>(r, kRespEmoValue)),
-            IsFemale(speaker), false, tune, HandleOf(speaker), epoch,
-            IsPlayer(speaker), nullptr, {}, speaker);
+    const int emo = static_cast<int>(reinterpret_cast<RE::DialogueResponse*>(r)
+                                         ->animFaceArchType.underlying());
+    Request(
+        stem, emo,
+        static_cast<int>(reinterpret_cast<RE::DialogueResponse*>(r)->percent),
+        IsFemale(speaker), false, tune, HandleOf(speaker), epoch,
+        IsPlayer(speaker), nullptr, {}, speaker);
   }
   return r;
 }
@@ -1571,12 +1865,12 @@ inline float Mix(float engine, float ours, float mix) {
 // values. The expressions are Expressions'.
 void PlayFrame(uint8_t* fg, float mix, float* tongue_phonemes,
                PhonemeRestore& preserved) {
-  auto& phon = Field<skse::KeyframeMultiple>(fg, skse::kFgPhon3);
-  auto& mod = Field<skse::KeyframeMultiple>(fg, skse::kFgMod3);
+  auto& phon = (reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->phoneme3);
+  auto& mod = (reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->modifier3);
   preserved.Capture(phon, mix, tongue_phonemes);
   if (mod.values && mod.count >= 14) {
     for (int e : kModZeroed) mod.values[e] = Mix(mod.values[e], 0.f, mix);
-    mod.is_updated = true;
+    mod.isUpdated = true;
   }
 }
 
@@ -1653,8 +1947,9 @@ float LineClock(uint8_t* fg, Playing& p, double now, bool& lip,
       native_voice && p.voice.seen && sound == p.voice.sound_id;
   lip = act && skse::KeyOf(*act) == p.lip_key;
   if (lip) {  // engine lip clock
-    t = p.lip_clock.Update(Field<float>(fg, skse::kFgPhon1Timer), now, p.voice,
-                           hold, p.direct_frames != 0);
+    t = p.lip_clock.Update(
+        reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->phoneme1.timer, now,
+        p.voice, hold, p.direct_frames != 0);
     if (audible || (same_voice && p.speech_clock.initialized))
       t = p.speech_clock.Update(t, now);
     p.lip_seen = true;
@@ -1714,6 +2009,9 @@ FaceActor FaceActorOf(uint8_t* fg) {
 // another face update, including the final resets. actor: the face's, held
 // by the caller, whose handle is actor_handle (null: gone); sound and
 // playing_now: its voice (ActorVoice).
+void ResetEndedFace(uint8_t* fg);
+void ClearEndedKeyframes(uint8_t* fg);
+
 int Apply(uint8_t* fg, const Tune& tune, bool in_scene, uint8_t* actor,
           uint32_t actor_handle, uint32_t sound, int playing_now) {
   double now = Now();
@@ -1770,6 +2068,29 @@ int Apply(uint8_t* fg, const Tune& tune, bool in_scene, uint8_t* actor,
   const char* why;
   const float t = LineClock(fg, p, now, lip, why, sound, playing_now);
   const bool done = why != nullptr;
+  // A completed or interrupted spoken line fades to neutral using FaceFadeOut.
+  // Clear native speech caches now; retain only our pose for the release fade.
+  // A provider explicitly holding an utterance still owns its segment gaps.
+  if (done && p.direct_frames && !ProviderHolder(FormIdOf(actor))) {
+    LogEnd(p, LiveFace(fg) ? LiveFace(fg)->head_state : State::kPending, why, t);
+    LineLeft(fg, p, BFA_kCompleted);
+    playing.erase(it);
+    Face* ending = LiveFace(fg);
+    if (ending && settings.face_out > 0) {
+      ending->neutral_started = now;
+      ending->neutral_duration = settings.face_out;
+      std::copy_n(ending->level, direct::kNumExpressions, ending->neutral_levels);
+      ending->transition.FadeToNeutral(now, settings.face_out);
+      ending->phonemes = {};
+      std::fill_n(ending->src, direct::kNumExpressions, 0.f);
+      std::fill_n(ending->written, direct::kNumExpressions, 0.f);
+      ClearEndedKeyframes(fg);
+    } else {
+      ResetEndedFace(fg);
+    }
+    Count();
+    return kFaceChanged | kKeepUpdating;
+  }
   const bool enabled = EnabledFor(tune, p.player);
   Face* face = LiveFace(fg);
   const State head_state = face ? face->head_state : State::kPending;
@@ -1850,6 +2171,24 @@ void DropFace(uint8_t* fg) {
   Count();
 }
 
+// Both locks held. The neutral release must not restore cached dialogue
+// phonemes/expressions. Once the fade ends, DropFace releases later writers.
+void ClearEndedKeyframes(uint8_t* fg) {
+  auto& data = *reinterpret_cast<RE::BSFaceGenAnimationData*>(fg);
+  for (auto* key : {&data.expressionKeyFrame, &data.expression3,
+                    &data.modifierKeyFrame, &data.modifier1, &data.modifier3,
+                    &data.phenomeKeyFrame, &data.phoneme1, &data.phoneme3}) {
+    if (key->values) std::fill_n(key->values, key->count, 0.f);
+    key->isUpdated = true;
+  }
+  data.unk218 = 1;
+}
+
+void ResetEndedFace(uint8_t* fg) {
+  ClearEndedKeyframes(fg);
+  DropFace(fg);
+}
+
 // Face's lock held: puts the engine's expression values (src) back into the
 // keyframe the plugin overwrote. With written, only while the keyframe is
 // still as the plugin left it (else the engine, a scene or a new head at
@@ -1870,10 +2209,10 @@ bool RestoreAndDropFace(uint8_t* fg) {
   auto face = faces.find(fg);
   if (face == faces.end()) return false;
   face->second.phonemes.Restore(
-      Field<skse::KeyframeMultiple>(fg, skse::kFgPhon3));
-  auto& ex = Field<skse::KeyframeMultiple>(fg, skse::kFgExpr3);
+      (reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->phoneme3));
+  auto& ex = (reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->expression3);
   if (RestoreKeyframe(ex, face->second.src, face->second.written))
-    ex.is_updated = true;
+    ex.isUpdated = true;
   DropFace(fg);
   return true;
 }
@@ -1897,11 +2236,14 @@ void RestoreFaceKeyframes(uint8_t* fg, uint64_t epoch) {
   if (!found) return;
   // the face's lock is waited for without the plugin's; a load may begin
   // meanwhile, and then the keyframe is no longer written
-  skse::ScopedFaceLock face_guard(Field<skse::SpinLock>(fg, skse::kFgLock));
+  skse::ScopedFaceLock face_guard(
+      reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->lock);
   if (!CurrentWorld(epoch)) return;
-  phonemes.Restore(Field<skse::KeyframeMultiple>(fg, skse::kFgPhon3));
-  RestoreKeyframe(Field<skse::KeyframeMultiple>(fg, skse::kFgExpr3), src,
-                  parked ? written : nullptr);
+  phonemes.Restore(
+      (reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->phoneme3));
+  RestoreKeyframe(
+      (reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->expression3), src,
+      parked ? written : nullptr);
 }
 
 // Lock held: the face of this animation data; made when wanted and missing,
@@ -1926,7 +2268,7 @@ Face* FaceFor(uint8_t* fg, bool wanted, double clock) {
 
 // Lock held: now and then, the faces no longer updated (unloaded), but
 // keep's. One that left the plugin's values in the engine's keyframe is
-// parked until it is updated again (RestoreFaceKeyframes) or kFaceLinger
+// parked until it is updated again (RestoreFaceKeyframes) or kFaceParked
 // passes; the others are forgotten.
 void SweepFaces(uint8_t* keep, double clock) {
   static double swept = 0;
@@ -1936,12 +2278,11 @@ void SweepFaces(uint8_t* keep, double clock) {
     Face& f = it->second;
     uint8_t* fg = it->first;
     ++it;  // DropFace erases
-    if (fg == keep || clock - f.seen <= (f.parked ? kFaceLinger : kFaceStale))
+    if (fg == keep || clock - f.seen <= (f.parked ? kFaceParked : kFaceStale))
       continue;
     if (f.parked ||
-        (!f.phonemes.values &&
-         std::equal(std::begin(f.src), std::end(f.src),
-                    std::begin(f.written)))) {
+        (!f.phonemes.values && std::equal(std::begin(f.src), std::end(f.src),
+                                          std::begin(f.written)))) {
       DropFace(fg);
       continue;
     }
@@ -1975,7 +2316,7 @@ int ShowExpressions(Face& f, const float* lv, skse::KeyframeMultiple* ex) {
         (mapped ? 0 : f.ownership_blend * lv[i] * MeanExpressionScale());
     if (ex) ex->values[i] = f.written[i];
   }
-  if (ex) ex->is_updated = true;
+  if (ex) ex->isUpdated = true;
   // the mapping is found in the morph hook: keep it coming
   if (f.head_state == State::kPending) updates = kFaceChanged | kKeepUpdating;
   return updates;
@@ -2009,14 +2350,13 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene,
   // Also for callers other than the hook (which checked FaceNeedsUpdate): a
   // face of a world that is gone must not be read.
   if (fg != partner_fg && !num_faces && !num_playing) return kNoUpdate;
-  auto& ex = Field<skse::KeyframeMultiple>(fg, skse::kFgExpr3);
+  auto& ex = (reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->expression3);
   const bool has_ex = ex.values && ex.count >= direct::kNumExpressions;
   const double now = Now();
   ScopedLock guard(lock);
   const double clock = Tick(now);
-  const bool partner =
-      fg == partner_fg && actor && actor == partner_ref &&
-      actor_handle == partner_handle;
+  const bool partner = fg == partner_fg && actor && actor == partner_ref &&
+                       actor_handle == partner_handle;
   auto pit = playing.find(fg);
   if (pit != playing.end() && pit->second.entry->state == State::kFailed) {
     // The original update has already restored the engine keyframes.
@@ -2027,9 +2367,9 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene,
   }
   const bool in_line = pit != playing.end();
   auto existing = faces.find(fg);
-  const bool player = in_line ? pit->second.player
-                              : existing != faces.end() &&
-                                    existing->second.player;
+  const bool player = in_line
+                          ? pit->second.player
+                          : existing != faces.end() && existing->second.player;
   const bool enabled = EnabledFor(tune, player);
   const bool wanted = enabled && !in_scene && (in_line || (partner && has_ex));
   Face* found = FaceFor(fg, wanted, clock);
@@ -2040,6 +2380,22 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene,
   SweepFaces(fg, clock);
   if (f.parked) f = Face();  // back: its keyframe was restored
   f.seen = clock;
+  if (f.neutral_started >= 0) {
+    if (in_line || (actor && ProviderHolder(FormIdOf(actor)))) {
+      f.neutral_started = -1;  // new speech takes over the current pose
+    } else {
+      const float elapsed = static_cast<float>(now - f.neutral_started);
+      if (elapsed >= f.neutral_duration) {
+        ResetEndedFace(fg);
+      } else {
+        ClearEndedKeyframes(fg);
+        const float weight = 1 - a2f::Smoothstep(elapsed / f.neutral_duration);
+        for (int i = 0; i < direct::kNumExpressions; ++i)
+          f.level[i] = f.neutral_levels[i] * weight;
+      }
+      return kFaceChanged | kKeepUpdating;
+    }
+  }
   // Pass native gradual changes through; bound abrupt overrides without an
   // asymptotic tail that keeps rebuilding an otherwise idle face for seconds.
   const float step = std::max(dt, 0.f) / kSrcFollow;
@@ -2060,11 +2416,6 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene,
     f.female = IsFemale(actor);
     f.actor_handle = actor_handle;
   }
-  if (wanted) {
-    f.until = clock + kFaceLinger;
-  } else if (in_scene) {
-    f.until = 0;  // back to the engine's
-  }
   const bool speaking = in_line && enabled && pit->second.direct_frame >= 0;
   // the utterance holding the face between its segments (ProviderHolder)
   const uint64_t holder =
@@ -2072,10 +2423,18 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene,
   const bool held = !speaking && holder != 0;
   // While inference runs the head is prepared (the Face is kept) but the
   // expressions go back to the engine's, fading like after a line, until a
-  // generated animation is ready -- unless an utterance holds the face.
+  // generated animation is ready -- unless an utterance holds the face, or
+  // the face is still had from the line before (kFaceGrace): the next line
+  // of a speaker then starts without a dip to the engine's expressions.
   const bool pending = in_line && pit->second.entry->state == State::kPending;
-  const bool owns_expressions =
-      enabled && clock < f.until && (!pending || holder);
+  // whose the face is now: the partner's, a line's, a holding utterance's
+  const bool had = (wanted && (partner || !pending)) || holder;
+  if (had) {
+    f.until = clock + kFaceGrace;
+  } else if (in_scene) {
+    f.until = 0;  // back to the engine's
+  }
+  const bool owns_expressions = enabled && clock < f.until;
   f.ownership_blend = std::clamp(
       f.ownership_blend + (owns_expressions ? dt / kOwnIn : -dt / kOwnOut), 0.f,
       1.f);
@@ -2127,6 +2486,9 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene,
   }
   if (f.ownership_blend > 0 && f.ownership_blend < 1)
     updates |= kFaceChanged | kKeepUpdating;  // fading
+  // In the grace after its line or conversation a quiet face is still
+  // updated, so that its hand-back starts on time.
+  if (owns_expressions && !had) updates |= kKeepUpdating;
   if (!owns_expressions && f.ownership_blend <= 0) {
     if (easing) {
       updates |= kKeepUpdating;  // dropped once the pose has eased out
@@ -2141,7 +2503,10 @@ using FaceNodeUpdateFn = void (*)(uint8_t*, NiUpdateData*, uint32_t);
 FaceNodeUpdateFn face_node_update_original = nullptr;
 
 void FaceNodeUpdateHook(uint8_t* node, NiUpdateData* data, uint32_t flags) {
-  auto* fg = Field<uint8_t*>(node, kNodeFg.Get());
+  auto* fg =
+      reinterpret_cast<uint8_t*>(reinterpret_cast<RE::BSFaceGenNiNode*>(node)
+                                     ->GetRuntimeData()
+                                     .animationData.get());
   if (!FaceNeedsUpdate(fg)) {
     face_node_update_original(node, data, flags);
     return;
@@ -2153,25 +2518,17 @@ void FaceNodeUpdateHook(uint8_t* node, NiUpdateData* data, uint32_t flags) {
 bool InstallFaceNodeUpdateHook() {
   const auto address = Addr(kIdFaceNodeVtable);
   if (!address) return false;
-  auto* slot = reinterpret_cast<FaceNodeUpdateFn*>(address) +
-               kVfUpdateDownwardPass.Get();
-  DWORD protection;
-  if (!VirtualProtect(slot, sizeof(*slot), PAGE_READWRITE, &protection))
-    return false;
-  face_node_update_original = *slot;
-  *slot = FaceNodeUpdateHook;
-  DWORD ignored;
-  VirtualProtect(slot, sizeof(*slot), protection, &ignored);
+  face_node_update_original = reinterpret_cast<FaceNodeUpdateFn>(
+      REL::Relocation<uintptr_t>(address).write_vfunc(
+          kVfUpdateDownwardPass.Get(), FaceNodeUpdateHook));
   return true;
 }
 
 // Runs where the head's morphs are applied (ID 26998), around the engine's
 // recompute of the face keyframes (ID 26598) -- writing earlier would be
 // overwritten. Returns "changed" so the morphs are re-applied.
-__attribute__((noinline)) bool AnimUpdateHook(uint8_t* fg, float dt,
-                                              uint64_t flag) {
-  auto orig =
-      SiteOrig<AnimUpdateFn>(__builtin_return_address(0), kIdFaceAnimUpdate);
+__declspec(noinline) bool AnimUpdateHook(uint8_t* fg, float dt, uint64_t flag) {
+  auto orig = SiteOrig<AnimUpdateFn>(_ReturnAddress(), kIdFaceAnimUpdate);
   if (!FaceNeedsUpdate(fg)) return orig(fg, dt, flag);
   // Skyrim uses the global frame delta even for zero-time pose refreshes
   // (for example Fluid Motion's second pass). Still recompute the keyframes.
@@ -2186,14 +2543,15 @@ __attribute__((noinline)) bool AnimUpdateHook(uint8_t* fg, float dt,
     const FaceActor known = FaceActorOf(fg);
     ScopedReference reference(known.handle);
     uint8_t* actor = reference.get() == known.actor ? known.actor : nullptr;
-    const bool in_scene = InScene(actor);
+    const bool in_scene = FaceExternallyOwned(actor);
     uint32_t sound = a2f::kNoSound;
     const int playing_now =
         actor && num_playing ? ActorVoice(actor, sound) : -1;
     const Tune tune = SnapshotTune();
     int updates = kNoUpdate;
     {
-      skse::ScopedFaceLock face_guard(Field<skse::SpinLock>(fg, skse::kFgLock));
+      skse::ScopedFaceLock face_guard(
+          reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->lock);
       if (CurrentWorld(epoch)) {
         if (num_playing)
           updates = Apply(fg, tune, in_scene, actor, known.handle, sound,
@@ -2203,7 +2561,8 @@ __attribute__((noinline)) bool AnimUpdateHook(uint8_t* fg, float dt,
     }
     changed |= updates != 0;
     // "changed" makes the node reset its meshes; keep the update coming
-    if (updates & kKeepUpdating) fg[kFgDirty] = 1;
+    if (updates & kKeepUpdating)
+      reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->unk218 = 1;
   }
   return changed;
 }
@@ -2239,21 +2598,26 @@ bool AddDeltas(uint8_t* node, const direct::Head& head,
            (head.shapes[si].nv != nv || head.shapes[si].name != name))
       ++si;
     if (si == head.shapes.size()) return;
-    added = true;
-    const std::vector<float>& d = deltas[si];
+    const auto& d = deltas[si];
     // pinned pieces count with the head's followers
     const direct::Part mapped_part = head.shapes[si].part;
-    int pi = mapped_part == direct::Part::kPinned
-                 ? 0
-                 : static_cast<int>(mapped_part);
+    const int pi = mapped_part == direct::Part::kPinned
+                       ? 0
+                       : static_cast<int>(mapped_part);
     thread_local std::vector<float> xyz;
     xyz.resize(nv * 3);
     float* data = Engine<LockDynamicFn, kIdLockDynamic>()(shape);
+    if (!data) {
+      Engine<UnlockDynamicFn, kIdUnlockDynamic>()(shape);
+      return;
+    }
+    added = true;
     for (uint32_t v = 0; v < nv; ++v)
       for (int c = 0; c < 3; ++c) {
-        float dv = d[v * 3 + c];
+        const size_t j = v * 3 + c;
+        const float dv = d[j];
         peak[pi] = std::fmax(peak[pi], std::fabs(dv));
-        xyz[v * 3 + c] = data[v * 4 + c] + dv;
+        xyz[j] = data[v * 4 + c] + dv;
       }
     Engine<UpdateDynamicFn, kIdUpdateDynamic>()(shape, xyz.data(), false);
     Engine<UnlockDynamicFn, kIdUnlockDynamic>()(shape);
@@ -2282,7 +2646,10 @@ std::shared_ptr<Entry> PlayingEntry(uint8_t* fg) {
 // expressions to every dynamic face shape of the node. The line's model
 // selects the mapping; the face is left alone if its line changes meanwhile.
 void AddDirect(uint8_t* node, bool reset) {
-  uint8_t* fg = Field<uint8_t*>(node, kNodeFg.Get());
+  uint8_t* fg =
+      reinterpret_cast<uint8_t*>(reinterpret_cast<RE::BSFaceGenNiNode*>(node)
+                                     ->GetRuntimeData()
+                                     .animationData.get());
   if (!fg) return;
   // Morph calls can arrive without an intervening animation update. Query
   // the retained actor outside our locks before reading or applying a pose.
@@ -2295,14 +2662,15 @@ void AddDirect(uint8_t* node, bool reset) {
   const Tune base_tune = SnapshotTune();
   if (!DialogueAllows(base_tune, known.handle, actor && IsPlayer(actor)) ||
       (actor &&
-       (InScene(actor) || !RaceAllowed(actor) || !NpcAllowed(actor)))) {
+       (FaceExternallyOwned(actor) || !RaceAllowed(actor) || !NpcAllowed(actor)))) {
     {
       ScopedLock guard(lock, ScopedLock::kShared);
       if (!faces.count(fg) && !playing.count(fg)) return;
     }
     // Request an engine rebuild on the next update if this call did not
     // reset the mesh; never add even the old pose's fade-out to a scene.
-    skse::ScopedFaceLock face_guard(Field<skse::SpinLock>(fg, skse::kFgLock));
+    skse::ScopedFaceLock face_guard(
+        reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->lock);
     ScopedLock guard(lock);
     RestoreAndDropFace(fg);
     auto line = playing.find(fg);
@@ -2311,18 +2679,19 @@ void AddDirect(uint8_t* node, bool reset) {
       playing.erase(line);
       Count();
     }
-    fg[kFgDirty] = 1;
+    reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->unk218 = 1;
     return;
   }
   const Tune tune = NpcSharedTune(base_tune, actor);
   if (FailedSpeech(fg)) {
-    skse::ScopedFaceLock face_guard(Field<skse::SpinLock>(fg, skse::kFgLock));
+    skse::ScopedFaceLock face_guard(
+        reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->lock);
     ScopedLock guard(lock);
     // unless the line changed while waiting for the face lock
     auto line = playing.find(fg);
-    if (line != playing.end() &&
-        line->second.entry->state == State::kFailed && RestoreAndDropFace(fg))
-      fg[kFgDirty] = 1;
+    if (line != playing.end() && line->second.entry->state == State::kFailed &&
+        RestoreAndDropFace(fg))
+      reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->unk218 = 1;
     return;
   }
   bool enabled = false;
@@ -2462,7 +2831,10 @@ void AddDirect(uint8_t* node, bool reset) {
 // accumulate and nothing has to be restored when the actor goes away.
 uint64_t GazeMorphs(ApplyMorphsFn orig, uint8_t* node, uint8_t force,
                     bool& reset, uint64_t epoch) {
-  auto* fg = Field<uint8_t*>(node, kNodeFg.Get());
+  auto* fg =
+      reinterpret_cast<uint8_t*>(reinterpret_cast<RE::BSFaceGenNiNode*>(node)
+                                     ->GetRuntimeData()
+                                     .animationData.get());
   if (!fg || !PartnerHandle()) return orig(node, force);
   Tune tune = SnapshotTune();
   if (!CurrentWorld(epoch) || !ready || !tune.enabled || skse::IsVr())
@@ -2475,13 +2847,16 @@ uint64_t GazeMorphs(ApplyMorphsFn orig, uint8_t* node, uint8_t force,
     return orig(node, force);
   ScopedReference actor(known.handle);
   if (!actor.get() || actor.get() != known.actor || IsPlayer(actor.get()) ||
-      InScene(actor.get()) || !NpcAllowed(actor.get()))
+      FaceExternallyOwned(actor.get()) || !NpcAllowed(actor.get()))
     return orig(node, force);
   tune = NpcSharedTune(std::move(tune), actor.get());
   if (!tune.conversation_gaze || tune.gaze_strength <= 0)
     return orig(node, force);
   // Use the priority-resolved target: scripts/packages can override dialogue.
-  auto* process = Field<uint8_t*>(actor.get(), kActorProcess.Get());
+  auto* process =
+      reinterpret_cast<uint8_t*>(reinterpret_cast<RE::Actor*>(actor.get())
+                                     ->GetActorRuntimeData()
+                                     .currentProcess);
   auto get_target =
       Engine<uint32_t* (*)(uint8_t*, uint32_t*), kIdHeadtrackTarget>();
   if (!process || !get_target) return orig(node, force);
@@ -2489,7 +2864,8 @@ uint64_t GazeMorphs(ApplyMorphsFn orig, uint8_t* node, uint8_t force,
   get_target(process, &target_handle);
   ScopedReference target(target_handle);
   if (!target.get() || !IsPlayer(target.get())) return orig(node, force);
-  skse::ScopedFaceLock face_guard(Field<skse::SpinLock>(fg, skse::kFgLock));
+  skse::ScopedFaceLock face_guard(
+      reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->lock);
   float offset[2] = {};
   {
     ScopedLock guard(lock, ScopedLock::kShared);
@@ -2512,7 +2888,7 @@ uint64_t GazeMorphs(ApplyMorphsFn orig, uint8_t* node, uint8_t force,
       }
     }
   }
-  auto& mods = Field<skse::KeyframeMultiple>(fg, skse::kFgMod3);
+  auto& mods = (reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->modifier3);
   constexpr uint32_t kNeededMods = a2f::kFirstGazeMorph + a2f::kNumGazeMorphs;
   if ((!offset[0] && !offset[1]) || !mods.values || mods.count < kNeededMods)
     return orig(node, force);
@@ -2522,9 +2898,9 @@ uint64_t GazeMorphs(ApplyMorphsFn orig, uint8_t* node, uint8_t force,
   std::copy_n(saved, a2f::kNumGazeMorphs, adjusted);
   if (!a2f::OffsetGazeMorphs(adjusted, offset)) return orig(node, force);
   float* const values = mods.values;
-  const bool updated = mods.is_updated;
+  const bool updated = mods.isUpdated;
   std::copy_n(adjusted, a2f::kNumGazeMorphs, gaze);
-  mods.is_updated = true;
+  mods.isUpdated = true;
   reset = true;
   const uint64_t result = orig(node, 1);
   // Restore only values no other hook changed meanwhile.
@@ -2536,28 +2912,67 @@ uint64_t GazeMorphs(ApplyMorphsFn orig, uint8_t* node, uint8_t force,
       else
         untouched = false;
     }
-    if (untouched) mods.is_updated = updated;
+    if (untouched) mods.isUpdated = updated;
   }
   // Even if this was the last eligible frame, the next pass must remove its
   // baked eye offset. No animation value or target is left overridden.
-  Field<uint16_t>(node, kNodeFlags.Get()) |= 1;
-  fg[kFgDirty] = 1;
+  reinterpret_cast<RE::BSFaceGenNiNode*>(node)->GetRuntimeData().flags |= 1;
+  reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->unk218 = 1;
   return result;
 }
 
+// The render thread copies each dynamic shape to the GPU under the shape's
+// lock. A copy between the engine's reset (in the original) and AddDeltas
+// draws that frame at base + morphs without the pose: a random one-frame
+// flicker while speaking. Hold every face shape's lock from before the
+// original until the deltas are in. BSSpinLock is re-entrant for its owning
+// thread, so the engine's own locking inside ApplyMorphs and AddDeltas nests.
+class ScopedShapeLocks {
+ public:
+  explicit ScopedShapeLocks(uint8_t* node) {
+    ForFaceShapes(node, [this](uint8_t* shape, const char*, direct::Part, bool,
+                               uint32_t, const float*) {
+      Engine<LockDynamicFn, kIdLockDynamic>()(shape);
+      shapes_.push_back(shape);
+    });
+  }
+  ~ScopedShapeLocks() {
+    for (auto it = shapes_.rbegin(); it != shapes_.rend(); ++it)
+      Engine<UnlockDynamicFn, kIdUnlockDynamic>()(*it);
+  }
+  ScopedShapeLocks(const ScopedShapeLocks&) = delete;
+  ScopedShapeLocks& operator=(const ScopedShapeLocks&) = delete;
+
+ private:
+  std::vector<uint8_t*> shapes_;
+};
+
 // Deltas are only ever added right after a reset to the base vertices (force,
-// or the node's reset flag, which the original clears).
-__attribute__((noinline)) uint64_t ApplyMorphsHook(uint8_t* node,
-                                                   uint8_t force) {
-  auto orig =
-      SiteOrig<ApplyMorphsFn>(__builtin_return_address(0), kIdApplyMorphs);
+// or the node's reset flag, which the original clears). For a face the plugin
+// plays, the face's lock (first, as GazeMorphs and AddDirect take it inside)
+// and the shape locks span the original and the deltas.
+__declspec(noinline) uint64_t ApplyMorphsHook(uint8_t* node, uint8_t force) {
+  auto orig = SiteOrig<ApplyMorphsFn>(_ReturnAddress(), kIdApplyMorphs);
   const uint64_t epoch = world_epoch;
   if (!CurrentWorld(epoch)) return orig(node, force);
-  bool reset = force || (Field<uint16_t>(node, kNodeFlags.Get()) & 1);
+  const bool direct =
+      ready && (num_playing || num_faces || PartnerHandle() != partner_handle);
+  auto* fg = reinterpret_cast<RE::BSFaceGenAnimationData*>(
+      reinterpret_cast<RE::BSFaceGenNiNode*>(node)
+          ->GetRuntimeData()
+          .animationData.get());
+  std::optional<skse::ScopedFaceLock> face_guard;
+  std::optional<ScopedShapeLocks> shape_locks;
+  if (direct && fg && FaceNeedsUpdate(reinterpret_cast<uint8_t*>(fg))) {
+    face_guard.emplace(fg->lock);
+    shape_locks.emplace(node);
+  }
+  bool reset =
+      force ||
+      (reinterpret_cast<RE::BSFaceGenNiNode*>(node)->GetRuntimeData().flags &
+       1);
   uint64_t r = GazeMorphs(orig, node, force, reset, epoch);
-  if (ready && CurrentWorld(epoch) &&
-      (num_playing || num_faces || PartnerHandle() != partner_handle))
-    AddDirect(node, reset);
+  if (direct && CurrentWorld(epoch)) AddDirect(node, reset);
   return r;
 }
 
@@ -2588,8 +3003,8 @@ void StartWorkerAfterStartup(const skse::SKSEMessage& message) {
   ScopedLock guard(lock);
   stats.waiting_for_game = !h;
   stats.startup_error =
-      h ? "" : "cannot start inference worker (error " +
-                   std::to_string(error) + ")";
+      h ? ""
+        : "cannot start inference worker (error " + std::to_string(error) + ")";
 }
 
 void OnMessage(skse::SKSEMessage* m) {
@@ -2602,8 +3017,9 @@ void OnMessage(skse::SKSEMessage* m) {
     const bool loading = m->type == skse::kMessagePreLoadGame;
     ResetPlayback(loading);
     Log("playback reset: %s (epoch %llu)",
-        loading ? "pre-load"
-        : m->type == skse::kMessageNewGame ? "new game" : "post-load",
+        loading                            ? "pre-load"
+        : m->type == skse::kMessageNewGame ? "new game"
+                                           : "post-load",
         static_cast<unsigned long long>(world_epoch.load()));
   }
   MenuMessage(m->type);
@@ -2613,9 +3029,9 @@ void OnMessage(skse::SKSEMessage* m) {
   if (m->type == skse::kMessagePostLoad && DbvoInstalled() &&
       !native_speech_original) {
     if (NativeSpeechRuntimeSupported(skse::Runtime()))
-      native_speech_original = reinterpret_cast<SpeakFn>(HookNativeSpeech(
-          reinterpret_cast<uint8_t*>(Addr(kIdSpeakVoiceLine)),
-          reinterpret_cast<void*>(&NativeSpeakHook)));
+      native_speech_original = reinterpret_cast<SpeakFn>(
+          HookNativeSpeech(reinterpret_cast<uint8_t*>(Addr(kIdSpeakVoiceLine)),
+                           reinterpret_cast<void*>(&NativeSpeakHook)));
     Log("native player speech: %s",
         native_speech_original ? "entry observer installed (experimental)"
                                : "unavailable: unsupported runtime or modified "
@@ -2625,6 +3041,7 @@ void OnMessage(skse::SKSEMessage* m) {
   LoadExpressiveFaces();
   LoadHeadPartTypes();  // before the worker, which turns Direct on
   LoadSceneFactions();
+  LoadMouthGearKeywords();
   LoadRaceSettings();
   LoadNpcSettings();
   RetakeSites();
@@ -2639,13 +3056,14 @@ void OnMessage(skse::SKSEMessage* m) {
 }
 
 bool Load(const skse::SKSEInterface* iface) {
-  skse::SetRuntime(iface->runtimeVersion);
+  SKSE::Init(iface, false);
+  skse::SetRuntime(iface->RuntimeVersion().pack());
   InitMenu(iface);
   InitPlayerSpeech(iface);
   InitProvider(iface);
   LoadIni();  // turns the log on when Logging=1
   skse::Report("Better Facial Animations %s, game runtime %08X", kVersion,
-               iface->runtimeVersion);
+               iface->RuntimeVersion().pack());
   if (!skse::LoadAddressLibrary()) {
     skse::Report("address library not loaded");
     return false;
@@ -2666,13 +3084,12 @@ bool Load(const skse::SKSEInterface* iface) {
   if (!InstallFaceNodeUpdateHook()) return false;
   if (!Addr(kIdMorphData) || !Addr(kIdApplyMorph) || !Addr(kIdLockDynamic) ||
       !Addr(kIdUnlockDynamic) || !Addr(kIdUpdateDynamic) ||
-      !HookCalls("morphs", kIdApplyMorphs, kMorphCallers,
-                 reinterpret_cast<void*>(&ApplyMorphsHook)))
+      !HookAllCalls("morphs", kIdApplyMorphs,
+                    reinterpret_cast<void*>(&ApplyMorphsHook)))
     return false;
   auto* msg = static_cast<skse::SKSEMessagingInterface*>(
       iface->QueryInterface(skse::kInterfaceMessaging));
-  if (!msg ||
-      !msg->RegisterListener(iface->GetPluginHandle(), "SKSE", OnMessage)) {
+  if (!msg || !msg->RegisterListener("SKSE", OnMessage)) {
     Log("no messaging interface");
     return false;
   }
@@ -2704,11 +3121,11 @@ void StartPlayerSpeech(PlayerSpeechPtr speech) {
 extern "C" __declspec(dllexport) bool SKSEPlugin_Query(
     const skse::SKSEInterface* iface, skse::PluginInfo* info) {
   info->infoVersion = 1;
-  info->name = SKSEPlugin_Version.name;
+  info->name = SKSEPlugin_Version.pluginName;
   info->version = SKSEPlugin_Version.pluginVersion;
-  return !iface->isEditor &&
-         (iface->runtimeVersion == skse::Version(1, 5, 97) ||
-          iface->runtimeVersion == skse::kVrRuntime);
+  return !iface->IsEditor() &&
+         (iface->RuntimeVersion().pack() == skse::Version(1, 5, 97) ||
+          iface->RuntimeVersion().pack() == skse::kVrRuntime);
 }
 
 extern "C" __declspec(dllexport) bool SKSEPlugin_Load(
@@ -2728,23 +3145,29 @@ uint32_t ResolveProviderActor(uint32_t form_id, ProviderActor& out) {
   const auto lookup = Engine<uint8_t* (*)(uint32_t), kIdLookupFormById>();
   if (!lookup) return BFA_kResultUnsupportedRuntime;
   uint8_t* actor = lookup(form_id);
-  if (!actor || actor[kFormType] != kFtActor) return BFA_kResultNoFaceGenHead;
+  if (!actor ||
+      reinterpret_cast<const RE::TESForm*>(actor)->formType.underlying() !=
+          kFtActor)
+    return BFA_kResultNoFaceGenHead;
   const bool player = IsPlayer(actor);
   if (player && !tune.player) return BFA_kResultPlayerDisabled;
-  uint8_t* base = Field<uint8_t*>(actor, kRefrBase);
-  uint8_t* race = Field<uint8_t*>(actor, kActorRace.Get());
-  if (!base || base[kFormType] != kFtNpc || !race ||
-      !(Field<uint32_t>(race, kRaceFlags) & 2))
+  uint8_t* base = reinterpret_cast<uint8_t*>(
+      reinterpret_cast<RE::TESObjectREFR*>(actor)->data.objectReference);
+  uint8_t* race = reinterpret_cast<uint8_t*>(
+      reinterpret_cast<RE::Actor*>(actor)->GetActorRuntimeData().race);
+  if (!base ||
+      reinterpret_cast<RE::TESForm*>(base)->formType.underlying() != kFtNpc ||
+      !race ||
+      !(reinterpret_cast<RE::TESRace*>(race)->data.flags.underlying() & 2))
     return BFA_kResultNoFaceGenHead;
   if (!RaceAllowed(actor)) return BFA_kResultRaceDisabled;
   if (!NpcAllowed(actor)) return BFA_kResultDisabled;
-  if (InScene(actor)) return BFA_kResultInScene;
+  if (FaceExternallyOwned(actor)) return BFA_kResultInScene;
   const uint32_t handle = HandleOf(actor);
   if (!handle) return BFA_kResultNoFaceGenHead;
   if (!DialogueAllows(tune, handle, player)) return BFA_kResultNotInDialogue;
-  auto get_fg = reinterpret_cast<uint8_t* (*)(uint8_t*)>(
-      Field<void**>(actor, 0)[kVfGetFaceGenAnimationData]);
-  uint8_t* fg = get_fg(actor);
+  uint8_t* fg = reinterpret_cast<uint8_t*>(
+      reinterpret_cast<RE::Actor*>(actor)->GetFaceGenAnimationData());
   if (!fg) return BFA_kResultNoFaceGenHead;
   out = ProviderActor{actor, handle, fg, IsFemale(actor), player};
   ScopedLock guard(lock, ScopedLock::kShared);
@@ -2769,14 +3192,14 @@ uint32_t ProviderStart(const PlayerSpeechPtr& line) {
   ProviderActor who;
   const uint32_t r = ResolveProviderActor(line->form_id, who);
   if (r != BFA_kResultOK) return r;
-  return BeginSpeech(who.actor, line->stem, a2f::kNoSound, line->duration, 0,
-                     0, SnapshotTune(), epoch, line);
+  return BeginSpeech(who.actor, line->stem, a2f::kNoSound, line->duration, 0, 0,
+                     SnapshotTune(), epoch, line);
 }
 
 void ProviderDiscardUtterance(uint64_t utterance) {
   char prefix[40];
-  snprintf(prefix, sizeof prefix, "provider:%016llx:",
-           static_cast<unsigned long long>(utterance));
+  snprintf(prefix, sizeof prefix,
+           "provider:%016llx:", static_cast<unsigned long long>(utterance));
   const std::string key(prefix);
   const auto of_utterance = [&](const std::string& cache_key) {
     return cache_key.compare(0, key.size(), key) == 0;
@@ -2810,10 +3233,9 @@ void ProviderDiscardUtterance(uint64_t utterance) {
     }
     it = cache.erase(it);
   }
-  queue.erase(std::remove_if(queue.begin(), queue.end(),
-                             [&](const Job& j) {
-                               return of_utterance(j.cache_key);
-                             }),
-              queue.end());
+  queue.erase(
+      std::remove_if(queue.begin(), queue.end(),
+                     [&](const Job& j) { return of_utterance(j.cache_key); }),
+      queue.end());
 }
 }  // namespace bfa

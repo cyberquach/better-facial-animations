@@ -1,3 +1,4 @@
+#include "runtime_fixture.h"
 // Exercise the real SKSE handler, with inference thread creation intercepted.
 #include <windows.h>
 
@@ -28,7 +29,7 @@ void Message(uint32_t type, void* data = nullptr) {
 }
 }  // namespace
 
-extern "C" uint64_t __wrap__ZN4skse4AddrEy(uint64_t id) {
+extern "C" uint64_t TestAddress(uint64_t id) {
   if (id == kIdStreamCtor.Get()) return reinterpret_cast<uint64_t>(&Open);
   if (id == kIdStreamDtor.Get()) return reinterpret_cast<uint64_t>(&Close);
   return 0;
@@ -49,6 +50,7 @@ HANDLE WINAPI CaptureThread(LPSECURITY_ATTRIBUTES, SIZE_T,
 }
 
 int main() {
+  bfa::testing::address = TestAddress;
   using namespace bfa;
   for (bool logger_first : {false, true}) {
     for (uint32_t enter : {skse::kMessagePostLoadGame, skse::kMessageNewGame}) {

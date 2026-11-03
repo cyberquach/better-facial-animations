@@ -4,8 +4,21 @@
 #define INCLUDE_A2F_INFERENCE_GPU_STATE_H_
 
 #include <string>
+#include <vector>
 
 namespace a2f {
+
+// DXGI indices are preserved even when software adapters are omitted.
+struct GpuAdapter {
+  int index = 0;
+  std::string name;
+  double dedicated_mb = 0;
+};
+struct GpuAdapterList {
+  std::vector<GpuAdapter> adapters;
+  std::string error;
+  bool requested = false, complete = false;
+};
 
 struct GpuState {
   bool known = false;   // DXGI answered

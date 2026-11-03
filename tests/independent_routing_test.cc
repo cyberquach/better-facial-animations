@@ -60,6 +60,7 @@ int main() {
   const auto file = PluginDir() + L"\\" + config.model;
   HANDLE f = CreateFileW(file.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, 0, nullptr);
   CHECK(f != INVALID_HANDLE_VALUE); CloseHandle(f);
+  config.gpu_adapter = 2;
   config.gpu = false; // direct CPU selection honors the requested model
   for (bool independent : {false, true}) {
     config.independent_device = independent;
@@ -72,6 +73,7 @@ int main() {
       CHECK(!CreateNet(gpu, err, info));
       CHECK(a2f::creates == before + (gpu && !independent ? 2 : 1) && a2f::version_seen == network);
       CHECK(a2f::seen.gpu == gpu && a2f::seen.independent_device == config.independent_device);
+      CHECK(a2f::seen.gpu_adapter == 2);
       CHECK(a2f::seen.metacommands == (!gpu || independent));
     }
   }
@@ -100,16 +102,22 @@ int main() {
   config.network = 4;
   a2f::allow_cpu = true;
   double now = 0;
-  a2f::NetKeeper keeper(true, CreateNet, [&] { return now; });
+  a2f::NetKeeper keeper(true, CreateNet, [&] { return now; }, nullptr, true);
   CHECK(!keeper.Ensure() && !keeper.loaded());
-  CHECK(keeper.error().find("independent device:") == 0);
+  CHECK(keeper.error() == "injected failure");
+  // Bounded retries (2/4/8 s), then the keeper waits for an explicit retry.
+  for (double wait : {2., 4., 8.}) {
+    const int before_retry = a2f::creates;
+    CHECK(!keeper.Ensure() && a2f::creates == before_retry);
+    now += wait;
+    CHECK(!keeper.Ensure() && a2f::creates == before_retry + 1);
+  }
   const int before_retry = a2f::creates;
-  CHECK(!keeper.Ensure() && a2f::creates == before_retry);
   now = 1e6;
   CHECK(!keeper.Ensure() && !keeper.loaded());
   CHECK(a2f::creates == before_retry); // waits for explicit retry
   const auto why = a2f::DiagnoseNet(true, keeper.error(), {});
-  CHECK(!why.empty() && why[0].find("GPU model unavailable") == 0);
+  CHECK(!why.empty() && why[0].find("GPU FAILED") == 0);
   CHECK(!a2f::DeviceRedirected());
   config.network = 4;
   model.network = 3; // Performance uses the v3 geometry mapping.
@@ -119,6 +127,7 @@ int main() {
   for (const char* mode : {"0", "1", "2", "3", "99"}) {
     const char* ini = ".\\Data\\SKSE\\Plugins\\BetterFacialAnimations.ini";
     CHECK(WritePrivateProfileStringA("General", "GpuDevice", mode, ini));
+    CHECK(WritePrivateProfileStringA("General", "GpuAdapter", "2", ini));
     CHECK(WritePrivateProfileStringA("General", "AutoGpuDevice", mode, ini));
     CHECK(WritePrivateProfileStringA("General", "IndependentGpuDevice", independent ? "1" : "0", ini));
     CHECK(WritePrivateProfileStringA("Debug", "UseDeviceWrapper", "1", ini));
@@ -137,6 +146,7 @@ int main() {
       CHECK(CreateNet(gpu, err, info));
       CHECK(a2f::creates == before + 1 && a2f::version_seen == 4);
       CHECK(a2f::seen.gpu == gpu && a2f::seen.independent_device == config.independent_device);
+      CHECK(a2f::seen.gpu_adapter == 2);
       CHECK(!a2f::DeviceRedirected());
     }
   }

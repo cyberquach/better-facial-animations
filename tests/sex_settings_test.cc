@@ -25,7 +25,39 @@ int main() {
   auto write = [&](const char* section, const char* key, const char* value) {
     CHECK(WritePrivateProfileStringA(section, key, value, ini));
   };
-  // Retired GPU route keys cannot restore shared-device initialization.
+  // CPU uses the legacy flag and remembers a GPU choice across
+  // save/reload/reset.
+  LoadIni();
+  CHECK(SnapshotTune().gpu_adapter == 0);
+  CHECK(SnapshotTune().sentiment_analysis &&
+        SnapshotTune().performance_sentiment);
+  // Explicit saved choices survive the new Performance default.
+  SelectEmotionOption(1);
+  SaveIni();
+  LoadIni();
+  CHECK(SnapshotTune().sentiment_analysis &&
+        !SnapshotTune().performance_sentiment);
+  SelectEmotionOption(0);
+  SaveIni();
+  LoadIni();
+  CHECK(!SnapshotTune().sentiment_analysis &&
+        !SnapshotTune().performance_sentiment);
+  SetProcessingDevice(true, 2);
+  SaveIni();
+  LoadIni();
+  CHECK(SnapshotTune().force_cpu && SnapshotTune().gpu_adapter == 2);
+  CHECK(config.gpu_adapter == 2);
+  ResetTune();
+  CHECK(SnapshotTune().force_cpu && SnapshotTune().gpu_adapter == 2);
+  SetProcessingDevice(false, 2);
+  SaveIni();
+  LoadIni();
+  CHECK(!SnapshotTune().force_cpu && SnapshotTune().gpu_adapter == 2);
+  write("General", "GpuAdapter", "-1");
+  LoadIni();
+  CHECK(SnapshotTune().gpu_adapter == 0);
+  CHECK(DeleteFileA(ini));
+  // Retired GPU route keys cannot override the selected device route.
   for (const char* mode : {"0", "1", "2", "3", "99"}) {
     write("General", "GpuDevice", mode);
     write("General", "AutoGpuDevice", mode);
@@ -36,8 +68,11 @@ int main() {
     LoadIni();
     CHECK(config.gpu == !SnapshotTune().force_cpu);
   }
-  CHECK(DeleteFileA(ini));  // keep the migration fixture independent of SaveIni above
+  CHECK(DeleteFileA(
+      ini));  // keep the migration fixture independent of SaveIni above
   LoadIni();
+  CHECK(
+      !config.independent_device);  // a missing INI starts on the shared route
   CHECK(SnapshotTune().male.upper_lip == 1 &&
         SnapshotTune().female.lower_lip == 1);
   CHECK(SnapshotTune().conversation_gaze && SnapshotTune().gaze_strength == 1);
@@ -53,6 +88,8 @@ int main() {
   CHECK(DeleteFileA(ini));  // isolate the legacy migration fixture below
   LoadIni();
   write("General", "IniVersion", "3");
+  write("General", "SentimentAnalysis", "0");
+  write("General", "UsePerformanceEmotion", "0");
   write("General", "UseOldModel", "1");
   write("Debug", "Logging", "0");
   write("LocalAnimationStrength", "DirectMouth", "0.6");
@@ -66,7 +103,7 @@ int main() {
   CHECK(t.male.time_offset == .12f && t.female.time_offset == .12f);
   CHECK(t.male.voice_emotion == .375f && t.female.voice_emotion == .375f);
   CHECK(t.old_model && !t.logging);
-  CHECK(GetPrivateProfileIntA("General", "IniVersion", 0, ini) == 8);
+  CHECK(GetPrivateProfileIntA("General", "IniVersion", 0, ini) == 9);
   CHECK(t.player_face.upper_lip == 1 && t.player_face.lower_lip == 1);
   CHECK(t.player_face.voice_emotion == 1 && t.player_face.time_offset == 0);
   CHECK(&t.ForActor(false, true) == &t.player_face);
@@ -111,12 +148,14 @@ int main() {
   write("LocalAnimationStrength", "ConversationGaze", "0");
   write("LocalAnimationStrength", "GazeStrength", "1.5");
   LoadIni();
-  CHECK(!SnapshotTune().conversation_gaze && SnapshotTune().gaze_strength == 1.5f);
+  CHECK(!SnapshotTune().conversation_gaze &&
+        SnapshotTune().gaze_strength == 1.5f);
   SaveIni();
   ResetTune();
   CHECK(SnapshotTune().conversation_gaze && SnapshotTune().gaze_strength == 1);
   LoadIni();
-  CHECK(!SnapshotTune().conversation_gaze && SnapshotTune().gaze_strength == 1.5f);
+  CHECK(!SnapshotTune().conversation_gaze &&
+        SnapshotTune().gaze_strength == 1.5f);
   CHECK(SnapshotTune().male.smile_eyes == 1.0f &&
         SnapshotTune().female.smile_eyes == 1.0f &&
         SnapshotTune().player_face.smile_eyes == 1.0f);
@@ -132,7 +171,9 @@ int main() {
   std::vector<float> expected;
   for (const Param& p : kParams) {
     if (!p.value) continue;
-    *p.value = p.lo + (p.hi - p.lo) * (p.profile == 2 ? .5f : p.profile ? .75f : .25f);
+    *p.value = p.lo + (p.hi - p.lo) * (p.profile == 2 ? .5f
+                                       : p.profile    ? .75f
+                                                      : .25f);
     expected.push_back(*p.value);
   }
   SaveIni();
@@ -152,14 +193,17 @@ int main() {
   CHECK(!t.sentiment_analysis);
   // A 4.2 ini with the retired per-profile key is migrated at load.
   write("General", "IniVersion", "7");
-  for (const char* section : {"Emotion", "EmotionMale", "EmotionFemale", "EmotionPlayer"})
+  for (const char* section :
+       {"Emotion", "EmotionMale", "EmotionFemale", "EmotionPlayer"})
     write(section, "Sentiment", "0");
   LoadIni();
   CHECK(SnapshotTune().sentiment_multiplier == t.sentiment_multiplier);
   SaveIni();
-  for (const char* section : {"Emotion", "EmotionMale", "EmotionFemale", "EmotionPlayer"}) {
+  for (const char* section :
+       {"Emotion", "EmotionMale", "EmotionFemale", "EmotionPlayer"}) {
     char legacy[32];
-    GetPrivateProfileStringA(section, "Sentiment", "missing", legacy, sizeof legacy, ini);
+    GetPrivateProfileStringA(section, "Sentiment", "missing", legacy,
+                             sizeof legacy, ini);
     CHECK(!strcmp(legacy, "missing"));
   }
   for (const Param& p : kParams) CHECK(strcmp(p.key, "Sentiment"));
@@ -174,22 +218,25 @@ int main() {
   CHECK(queue[1].emotion.gain == t.female.voice_emotion);
   CHECK(queue[0].emotion.swell == t.male.voice_swell);
   CHECK(queue[1].emotion.swell == t.female.voice_swell);
-  CHECK(Request("profile_test", 1, 50, false, false, t, 0, world_epoch) == male);
-  auto player = Request("profile_test", 1, 50, false, false, t, 0,
-                        world_epoch, true);
+  CHECK(Request("profile_test", 1, 50, false, false, t, 0, world_epoch) ==
+        male);
+  auto player =
+      Request("profile_test", 1, 50, false, false, t, 0, world_epoch, true);
   CHECK(player != male && player != female && queue.size() == 3);
   CHECK(queue[2].emotion.gain == t.player_face.voice_emotion);
   CHECK(queue[2].emotion.swell == t.player_face.voice_swell);
-  CHECK(Request("profile_test", 1, 50, true, false, t, 0, world_epoch, true)
-        == player);  // same old-model geometry and independent player emotion
+  CHECK(Request("profile_test", 1, 50, true, false, t, 0, world_epoch, true) ==
+        player);  // same old-model geometry and independent player emotion
   // A cap alone separates cached and queued work, for all three profiles.
   Tune caps;
   caps.SelectModel(t.SelectedModel());
   caps.male.max_emotion[a2f::kJoy] = .25f;
   caps.female.max_emotion[a2f::kJoy] = .5f;
   caps.player_face.max_emotion[a2f::kJoy] = .75f;
-  auto capped_male = Request("cap_test", 3, 100, false, false, caps, 0, world_epoch);
-  auto capped_female = Request("cap_test", 3, 100, true, false, caps, 0, world_epoch);
+  auto capped_male =
+      Request("cap_test", 3, 100, false, false, caps, 0, world_epoch);
+  auto capped_female =
+      Request("cap_test", 3, 100, true, false, caps, 0, world_epoch);
   auto capped_player =
       Request("cap_test", 3, 100, false, false, caps, 0, world_epoch, true);
   CHECK(capped_male != capped_female && capped_male != capped_player &&
@@ -214,8 +261,8 @@ int main() {
   }
   // Thirty independent controls bind the named INI keys in network order.
   const char* const kKeys[a2f::kNumMod] = {
-      "MaxAmazement", "MaxAnger", "MaxCheekiness", "MaxDisgust", "MaxFear",
-      "MaxGrief", "MaxJoy", "MaxOutOfBreath", "MaxPain", "MaxSadness"};
+      "MaxAmazement", "MaxAnger", "MaxCheekiness",  "MaxDisgust", "MaxFear",
+      "MaxGrief",     "MaxJoy",   "MaxOutOfBreath", "MaxPain",    "MaxSadness"};
   for (int profile = 0; profile < 3; ++profile) {
     for (int c = 0; c < a2f::kNumMod; ++c) {
       int found = 0;
@@ -235,8 +282,8 @@ int main() {
   for (int profile = 0; profile < 3; ++profile) {
     const auto& face = saved_caps.ForActor(profile == 1, profile == 2);
     for (int c = 0; c < a2f::kNumMod; ++c)
-      CHECK(std::fabs(face.max_emotion[c] -
-                      (.1f * (c + 1) + .01f * profile)) < 1e-5f);
+      CHECK(std::fabs(face.max_emotion[c] - (.1f * (c + 1) + .01f * profile)) <
+            1e-5f);
   }
   write("EmotionMale", "MaxJoy", "nan");
   write("EmotionFemale", "MaxJoy", "-1");
@@ -260,21 +307,27 @@ int main() {
         queue.back().emotion.sentiment_multiplier == t.sentiment_multiplier);
   t.sentiment_analysis = false;
   auto off = Request("profile_test", 1, 50, false, false, t, 0, world_epoch);
-  CHECK(off != sentiment_only && queue.back().emotion.sentiment_multiplier == 0);
+  CHECK(off != sentiment_only &&
+        queue.back().emotion.sentiment_multiplier == 0);
   t.sentiment_analysis = true;
   t.sentiment_multiplier = .5f;
   auto scaled = Request("profile_test", 1, 50, false, false, t, 0, world_epoch);
-  CHECK(scaled != sentiment_only && queue.back().emotion.sentiment_multiplier == .5f);
+  CHECK(scaled != sentiment_only &&
+        queue.back().emotion.sentiment_multiplier == .5f);
   t.sentiment_multiplier = .501f;
-  CHECK(Request("profile_test", 1, 50, false, false, t, 0, world_epoch) != scaled);
+  CHECK(Request("profile_test", 1, 50, false, false, t, 0, world_epoch) !=
+        scaled);
   // The shared source toggle suppresses both native and explicit authored
   // inputs while preserving independent sentiment and the configured limits.
   Tune sources;
+  sources.performance_sentiment = false;  // Full-model source fixture
   sources.sentiment_analysis = true;
-  auto authored = Request("source_toggle", 1, 50, false, false, sources, 0, world_epoch);
+  auto authored =
+      Request("source_toggle", 1, 50, false, false, sources, 0, world_epoch);
   CHECK(authored && queue.back().emotion.gain == 1);
   sources.vanilla_emotions = false;
-  auto without_authored = Request("source_toggle", 1, 50, false, false, sources, 0, world_epoch);
+  auto without_authored =
+      Request("source_toggle", 1, 50, false, false, sources, 0, world_epoch);
   CHECK(without_authored != authored && queue.back().emotion.gain == 0 &&
         queue.back().emotion.type == 0 && queue.back().emotion.swell == 0);
   CHECK(queue.back().emotion.sentiment_multiplier == 1 &&
@@ -284,14 +337,18 @@ int main() {
   provider.channels[a2f::kAnger] = .75f;
   CHECK(Request("provider_source_toggle", 0, 0, false, false, sources, 0,
                 world_epoch, false, &provider));
-  CHECK(queue.back().emotion.gain == 0 && queue.back().emotion.channels[a2f::kAnger] == 0);
+  CHECK(queue.back().emotion.gain == 0 &&
+        queue.back().emotion.channels[a2f::kAnger] == 0);
   sources.sentiment_analysis = false;
-  CHECK(Request("both_sources_off", 1, 50, false, false, sources, 0, world_epoch));
-  CHECK(queue.back().emotion.gain == 0 && queue.back().emotion.sentiment_multiplier == 0);
+  CHECK(Request("both_sources_off", 1, 50, false, false, sources, 0,
+                world_epoch));
+  CHECK(queue.back().emotion.gain == 0 &&
+        queue.back().emotion.sentiment_multiplier == 0);
   sources.vanilla_emotions = true;
   CHECK(Request("provider_source_toggle", 0, 0, false, false, sources, 0,
                 world_epoch, false, &provider));
-  CHECK(queue.back().emotion.gain == 1 && queue.back().emotion.channels[a2f::kAnger] == .75f);
+  CHECK(queue.back().emotion.gain == 1 &&
+        queue.back().emotion.channels[a2f::kAnger] == .75f);
   Param const* upper = nullptr;
   for (const Param& p : kParams)
     if (p.value && p.profile == 0 && !strcmp(p.key, "UpperLip")) upper = &p;
@@ -301,61 +358,47 @@ int main() {
       ScopedLock guard(settings_lock);
       *upper->value = 1.f + edit * .05f;
     }
-    ScheduleSaveIni();
+    SaveIni();
   }
-  // The writer thread's save: the key's value in the file, once it is value
-  // (as a number) or 5 s passed.
-  auto written = [&](const char* section, const char* key, float value) {
-    const ULONGLONG deadline = GetTickCount64() + 5000;
+  // The save call must finish writing before it returns.
+  auto written = [&](const char* section, const char* key) {
     char saved[32];
-    do {
-      Sleep(20);
-      GetPrivateProfileStringA(section, key, "", saved, sizeof saved, ini);
-    } while (!(std::fabs(std::strtof(saved, nullptr) - value) < 1e-5f) &&
-             GetTickCount64() < deadline);  // also while it is "nan"
+    GetPrivateProfileStringA(section, key, "", saved, sizeof saved, ini);
     return std::strtof(saved, nullptr);
   };
-  CHECK(std::fabs(written("LocalAnimationStrengthMale", "UpperLip", 1.95f) -
-                  1.95f) < 1e-5f);
+  CHECK(std::fabs(written("LocalAnimationStrengthMale", "UpperLip") - 1.95f) <
+        1e-5f);
   // Every switch, flipped in the menu's way, is on disk before the next
   // launch and comes back from it (a switch's tune field, not its ini key).
   for (const Param& p : kParams) {
-    if (!p.flag || !strcmp(p.key, "UseV3Model") ||
-        !strcmp(p.key, "UsePerformanceModel") || !strcmp(p.key, "UseOldModel"))
+    if (!p.flag || !strcmp(p.key, "UsePerformanceModel") ||
+        !strcmp(p.key, "UseOldModel"))
       continue;
     const bool flipped = !*p.flag;
     {
       ScopedLock guard(settings_lock);
       *p.flag = flipped;
     }
-    ScheduleSaveIni();
+    SaveIni();
     const char* section = p.sec == Sec::kDebug    ? "Debug"
                           : p.sec == Sec::kDirect ? "LocalAnimationStrength"
                                                   : "General";
-    CHECK(written(section, p.key, flipped) == flipped);
+    CHECK(written(section, p.key) == flipped);
     *p.flag = !flipped;
     LoadIni();
     CHECK(*p.flag == flipped);
   }
-  // The menu helper keeps exactly one model selected, even when unchecking
-  // the selected one, and the choice survives save, load and reset.
+  // The model dropdown keeps exactly one model selected, and the choice
+  // survives save, load and reset.
   for (const char* independent : {"0", "1"}) {
     write("General", "IndependentGpuDevice", independent);
     for (int selected : {4, 2, 3, 4}) {
-      const char* key = selected == 4   ? "UsePerformanceModel"
-                        : selected == 2 ? "UseOldModel"
-                                        : "UseV3Model";
-      for (const Param& p : kParams) {
-        if (strcmp(p.key, key)) continue;
-        ScopedLock guard(settings_lock);
-        *p.flag = !*p.flag;
-        SelectModelCheckbox(p);
-      }
+      SelectFaceOption(selected);
       const Tune selected_tune = SnapshotTune();
       CHECK(selected_tune.SelectedModel() == selected);
-      CHECK(int(selected_tune.old_model) + int(selected_tune.v3_model) +
+      CHECK(int(selected_tune.old_model) +
                 int(selected_tune.performance_model) ==
-            1);
+            (selected != a2f::kNetV3));
       SaveIni();
       LoadIni();
       CHECK(config.network == selected);
@@ -374,7 +417,8 @@ int main() {
             ModelFor(a2f::kNetV3).mapping_file &&
         std::wstring(ModelFor(a2f::kNetPerformance).model_file) ==
             L"performance.onnx");
-  // UseV3Model is derived, never stored; Performance wins over Old.
+  // V3 is the absence of both keys; UseV3Model is ignored and never
+  // stored. Performance wins over Old.
   CHECK(GetPrivateProfileIntA("General", "UseV3Model", -1, ini) == -1);
   write("General", "UsePerformanceModel", "1");
   write("General", "UseOldModel", "1");
@@ -383,7 +427,7 @@ int main() {
   CHECK(SnapshotTune().SelectedModel() == 4 &&
         config.gpu == !SnapshotTune().force_cpu);
 
-  SaveIni();  // joins any current write before removing the test directory
+  SaveIni();
   CHECK(DeleteFileA(ini));
   CHECK(RemoveDirectoryA("Data\\SKSE\\Plugins"));
   CHECK(RemoveDirectoryA("Data\\SKSE"));

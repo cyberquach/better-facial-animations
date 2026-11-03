@@ -3,75 +3,28 @@
 #ifndef INCLUDE_A2F_RUNTIME_SKSE_H_
 #define INCLUDE_A2F_RUNTIME_SKSE_H_
 
-#include <windows.h>
-
-#include <cstdint>
+#include "RE/Skyrim.h"
+#include "SKSE/Impl/PCH.h"
+#include "SKSE/SKSE.h"
+#include "a2f/runtime/test_hooks.h"
 
 namespace skse {
-
-// SKSE ABI (skse64 PluginAPI.h); field names are the ABI's.
-struct SKSEPluginVersionData {
-  uint32_t dataVersion;
-  uint32_t pluginVersion;
-  char name[256];
-  char author[256];
-  char supportEmail[252];
-  uint32_t versionIndependenceEx;
-  uint32_t versionIndependence;
-  uint32_t compatibleVersions[16];
-  uint32_t seVersionRequired;
-};
-static_assert(sizeof(SKSEPluginVersionData) == 0x350, "SKSEPluginVersionData");
-
-// SE's (1.5.97) and VR's SKSE ask SKSEPlugin_Query for this instead.
-struct PluginInfo {
-  uint32_t infoVersion;
-  const char* name;
-  uint32_t version;
-};
-
-struct SKSEInterface {
-  uint32_t skseVersion, runtimeVersion, editorVersion, isEditor;
-  void* (*QueryInterface)(uint32_t);
-  uint32_t (*GetPluginHandle)();
-  uint32_t (*GetReleaseIndex)();
-  const void* (*GetPluginInfo)(const char*);
-};
-
-struct SKSEMessage {
-  const char* sender;
-  uint32_t type;
-  uint32_t dataLen;
-  void* data;
-};
-
-struct SKSEMessagingInterface {
-  uint32_t interfaceVersion;
-  bool (*RegisterListener)(uint32_t handle, const char* sender,
-                           void (*cb)(SKSEMessage*));
-  // To every listener of the sender, or to the named receiver alone.
-  bool (*Dispatch)(uint32_t sender, uint32_t type, void* data,
-                   uint32_t dataLen, const char* receiver);
-};
-
-// SKSE GameThreads.h: no virtual destructor; Dispose owns deletion.
-struct TaskDelegate {
-  virtual void Run() = 0;
-  virtual void Dispose() = 0;
-};
-struct SKSETaskInterface {
-  uint32_t interfaceVersion;
-  void (*AddTask)(TaskDelegate*);
-  void (*AddUITask)(void*);
-};
-constexpr uint32_t kInterfaceTask = 4;
-constexpr uint32_t kMessagePostLoad = 0;
-constexpr uint32_t kMessagePostPostLoad = 1;
-constexpr uint32_t kMessagePreLoadGame = 2;
-constexpr uint32_t kMessagePostLoadGame = 3;
-constexpr uint32_t kMessageNewGame = 7;
-constexpr uint32_t kInterfaceMessaging = 5;
-constexpr uint32_t kMessageDataLoaded = 8;
+using SKSEPluginVersionData = SKSE::PluginVersionData;
+using PluginInfo = SKSE::PluginInfo;
+using SKSEInterface = SKSE::LoadInterface;
+using SKSEMessage = SKSE::MessagingInterface::Message;
+using SKSEMessagingInterface = SKSE::MessagingInterface;
+using SKSETaskInterface = SKSE::TaskInterface;
+constexpr uint32_t kInterfaceTask = SKSE::LoadInterface::kTask;
+constexpr uint32_t kInterfaceMessaging = SKSE::LoadInterface::kMessaging;
+constexpr uint32_t kMessagePostLoad = SKSE::MessagingInterface::kPostLoad;
+constexpr uint32_t kMessagePostPostLoad =
+    SKSE::MessagingInterface::kPostPostLoad;
+constexpr uint32_t kMessagePreLoadGame = SKSE::MessagingInterface::kPreLoadGame;
+constexpr uint32_t kMessagePostLoadGame =
+    SKSE::MessagingInterface::kPostLoadGame;
+constexpr uint32_t kMessageNewGame = SKSE::MessagingInterface::kNewGame;
+constexpr uint32_t kMessageDataLoaded = SKSE::MessagingInterface::kDataLoaded;
 
 // SKSE's packed version (skse_version.h); the low nibble is the store.
 enum Store : uint32_t { kSteam, kGog, kEpic };
@@ -114,51 +67,27 @@ uint64_t ImageBase();
 uint64_t Addr(uint64_t id);
 inline uint64_t Addr(Rel id) { return id.Get() ? Addr(id.Get()) : 0; }
 
-// BSFaceGenAnimationData layout.
-constexpr uint32_t kFgExpr3 = 0xC0;
-constexpr uint32_t kFgMod3 = 0x100;
-constexpr uint32_t kFgPhon3 = 0x140;
-constexpr uint32_t kFgPhon1Timer = 0x12C;
-constexpr uint32_t kFgLock = 0x220;
-constexpr uint32_t kFgDialogue = 0x228;
+using KeyframeMultiple = RE::BSFaceGenKeyframeMultiple;
+using ResId = RE::BSResource::ID;
+using SpinLock = RE::BSSpinLock;
+#ifdef ENABLE_COMMONLIBSSE_TESTING
+class ScopedFaceLock : public RE::BSSpinLockGuard {
+  static SpinLock& Schedule(SpinLock& lock) {
+    if (bfa::testing::before_face_lock) bfa::testing::before_face_lock();
+    return lock;
+  }
 
-struct KeyframeMultiple {
-  void* vtbl;
-  uint32_t type;
-  float timer;
-  float* values;
-  uint32_t count;
-  bool is_updated;
+ public:
+  explicit ScopedFaceLock(SpinLock& lock)
+      : RE::BSSpinLockGuard(Schedule(lock)) {}
 };
-
-struct ResId {
-  uint32_t file;
-  uint32_t ext;
-  uint32_t dir;
-};
+#else
+using ScopedFaceLock = RE::BSSpinLockGuard;
+#endif
 
 inline uint64_t KeyOf(const ResId& r) {
   return (static_cast<uint64_t>(r.dir) << 32) | r.file;
 }
-
-// RE::BSSpinLock: recursive spin lock owned by a thread id.
-struct SpinLock {
-  volatile LONG owner;
-  volatile LONG count;
-  void Lock();
-  void Unlock();
-};
-
-class ScopedFaceLock {
- public:
-  explicit ScopedFaceLock(SpinLock& lock) : lock_(lock) { lock_.Lock(); }
-  ~ScopedFaceLock() { lock_.Unlock(); }
-  ScopedFaceLock(const ScopedFaceLock&) = delete;
-  ScopedFaceLock& operator=(const ScopedFaceLock&) = delete;
-
- private:
-  SpinLock& lock_;
-};
 
 // The head's active dialogue line: lip resource id, or nullptr when there is
 // no line or its lip resource is not loaded yet.
@@ -167,6 +96,6 @@ const ResId* ActiveLine(uint8_t* fg);
 }  // namespace skse
 
 // Defined (and exported) by the plugin.
-extern "C" skse::SKSEPluginVersionData SKSEPlugin_Version;
+extern "C" __declspec(dllexport) skse::SKSEPluginVersionData SKSEPlugin_Version;
 
 #endif  // INCLUDE_A2F_RUNTIME_SKSE_H_

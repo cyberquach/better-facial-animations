@@ -34,6 +34,15 @@ class CpuGateTest(unittest.TestCase):
             self.assertEqual(gate.compare(baseline, slower)['status'], 'not_demonstrated')
             with self.assertRaises(ValueError): gate.compare(baseline[:1], faster)
             with self.assertRaises(ValueError): gate.compare([baseline[0]] * 3, faster)
+            # A common main INI does not imply common FOMOD selections.
+            deployment = faster[0] / 'deployment.json'
+            original = deployment.read_text()
+            data = json.loads(original)
+            data['files']['Installer/EmotionModel.ini'] = 'different-choice'
+            deployment.write_text(json.dumps(data))
+            with self.assertRaisesRegex(ValueError, 'installer settings differ'):
+                gate.compare(baseline, faster)
+            deployment.write_text(original)
             (faster[0] / 'stall-probe.json').write_text('{}')
             with self.assertRaises(ValueError): gate.compare(baseline, faster)
             (faster[0] / 'stall-probe.json').unlink()

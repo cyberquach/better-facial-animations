@@ -1,3 +1,4 @@
+#include "runtime_fixture.h"
 // Production discovery, admission and handoff; only engine calls are mocked.
 #include "../src/plugin/better_facial_animations.cc"
 #include <array>
@@ -16,6 +17,14 @@ uint8_t* handler = data.data();
 uint8_t* actor = actor_data.data();
 const uint8_t* membership = nullptr;
 int calls = 0;
+alignas(16) std::array<uint8_t, sizeof(RE::BipedAnim)> biped_data{};
+RE::BipedAnim* equipped_biped = nullptr;
+int biped_calls = 0;
+const RE::BSTSmartPointer<RE::BipedAnim>& Biped(const uint8_t* who, bool first) {
+  CHECK(who == actor && !first);
+  ++biped_calls;
+  return reinterpret_cast<const RE::BSTSmartPointer<RE::BipedAnim>&>(equipped_biped);
+}
 bool Member(const uint8_t* who, const uint8_t* faction) {
   CHECK(who == actor);
   ++calls;
@@ -23,7 +32,7 @@ bool Member(const uint8_t* who, const uint8_t* faction) {
 }
 bool Lookup(const uint32_t& h, uint8_t** out) {
   *out = h == 42 ? actor : nullptr;
-  if (*out) ++bfa::Field<LONG>(*out, bfa::kRefrRefCount);
+  if (*out) ++bfa::Field<LONG>(*out, 0x28);
   return *out != nullptr;
 }
 struct Faction {
@@ -33,14 +42,14 @@ struct Faction {
   struct { uint8_t** items; uint32_t count; } source{files, 1};
   Faction(const char* name, uint32_t id) {
     using namespace bfa;
-    form[kFormType] = kFtFaction;
-    Field<uint32_t>(form.data(), kFormId) = id;
-    Field<void*>(form.data(), kFormFiles) = &source;
-    strcpy(reinterpret_cast<char*>(file.data() + kFileName), name);
+    form[0x1A] = kFtFaction;
+    Field<uint32_t>(form.data(), 0x14) = id;
+    Field<void*>(form.data(), 0x08) = &source;
+    strcpy(reinterpret_cast<char*>(file.data() + 0x58), name);
   }
 };
 }
-extern "C" uint64_t __wrap__ZN4skse4AddrEy(uint64_t id) {
+extern "C" uint64_t TestAddress(uint64_t id) {
   using namespace bfa;
   if (id == kIdDataHandler.Get()) return reinterpret_cast<uint64_t>(&handler);
   if (id == kIdLookupReference.Get())
@@ -53,6 +62,7 @@ bfa::Tune LegacyTune() {
   return t;
 }
 int main() {
+  bfa::testing::address = TestAddress;
   using namespace bfa;
   for (uint32_t runtime : {skse::Version(1, 5, 97), skse::Version(1, 6, 1170),
                            skse::Version(1, 7, 99), skse::Version(1, 7, 104),
@@ -63,7 +73,7 @@ int main() {
     std::array<uint8_t, 0x1000> phon_face{};
     float original[direct::kNumPhonemes], authored[direct::kNumPhonemes];
     for (int i = 0; i < direct::kNumPhonemes; ++i) original[i] = .03f * i;
-    auto& phon = Field<skse::KeyframeMultiple>(phon_face.data(), skse::kFgPhon3);
+    auto& phon = FixtureKeyframe(phon_face.data(), 0x140);
     phon.values = original;
     phon.count = direct::kNumPhonemes;
     PhonemeRestore preserved;
@@ -132,7 +142,7 @@ int main() {
     original[0] = .9f;
     PlayFrame(held_fg, 1, authored, faces[held_fg].phonemes);
     static double sweep_clock = 0;
-    sweep_clock += kFaceLinger + kFaceStale + 1;
+    sweep_clock += kFaceParked + kFaceStale + 1;
     SweepFaces(nullptr, sweep_clock);
     CHECK(faces.at(held_fg).parked);
     RestoreFaceKeyframes(held_fg, world_epoch);
@@ -155,17 +165,18 @@ int main() {
     CHECK(tongue_pose.back() == 0);
 
     void* vtable[0x100]{};
-    vtable[kVfIsInFaction.Get()] = reinterpret_cast<void*>(&Member);
+    vtable[(skse::IsVr() ? 0xFB : 0xF9)] = reinterpret_cast<void*>(&Member);
+    vtable[0x7E] = reinterpret_cast<void*>(&Biped);
     Field<void**>(actor, 0) = vtable;
-    actor[kFormType] = kFtActor;
-    Field<LONG>(actor, kRefrRefCount) = 1;
+    actor[0x1A] = kFtActor;
+    Field<LONG>(actor, 0x28) = 1;
     Faction sl("SexLab.esm", 0x0500E50F), os("oStIm.EsP", 0xFE123ECA),
         excitement("OStim.esp", 0x08000D93), alias("OStim.esp", 0x08001ECA),
         wrong("Unrelated.esp", 0x09000ECA);
     uint8_t* forms[] = {alias.form.data(), wrong.form.data(), sl.form.data(),
                         os.form.data(), excitement.form.data()};
-    BSTArray& factions =
-        Field<BSTArray>(handler, kDhFormArrays + kFtFaction * sizeof(BSTArray));
+    FixtureArray& factions =
+        Field<FixtureArray>(handler, 0x10 + kFtFaction * sizeof(FixtureArray));
     factions = {forms, 5, 0, 5};
     LoadSceneFactions();
     CHECK(num_scene_factions == 3);
@@ -174,28 +185,85 @@ int main() {
     CHECK(scene_factions[2] == excitement.form.data());
     LoadSceneFactions(); // idempotent; not a second set of stale pointers
     CHECK(num_scene_factions == 3 && scene_factions[0] == sl.form.data());
+    // Optional keyword discovery is origin-checked and repeatable.
+    Faction gag("ZaZAnimationPack.esm", 0x09001234),
+        impostor("Other.esp", 0x08001234), collar("ZaZAnimationPack.esm", 0x09001235);
+    for (auto* k : {&gag, &impostor, &collar}) {
+      k->form[0x1A] = static_cast<uint8_t>(RE::FormType::Keyword);
+      Field<const char*>(k->form.data(), 0x20) = FixtureString(
+          k == &collar ? "zbfWornCollar" : "zbfWornGag");
+    }
+    uint8_t* keyword_forms[] = {gag.form.data(), impostor.form.data(), collar.form.data()};
+    auto& keywords = Field<FixtureArray>(handler, 0x10 +
+        static_cast<uint8_t>(RE::FormType::Keyword) * sizeof(FixtureArray));
+    keywords = {keyword_forms, 3, 0, 3};
+    LoadMouthGearKeywords(); LoadMouthGearKeywords();
+    CHECK(mouth_gear_keywords.size() == 1);
+    CHECK(MouthGearKeyword("zbfEffectOpenMouth"));
+    CHECK(MouthGearKeyword("zbfAnimMouthClose"));
+    CHECK(MouthGearKeyword("zbfAnimMouthKhajiitPlug"));
+    CHECK(MouthGearKeyword("zbfAnimMouthShout"));
+    CHECK(MouthGearKeyword("zbfAnimMouthOpen"));
+    CHECK(!MouthGearKeyword("zbfWornPermitOral"));
+    CHECK(!MouthGearKeyword("zbfWornDevice"));
+    alignas(16) std::array<uint8_t, sizeof(RE::TESObjectARMO)> armor_data{};
+    auto* armor = reinterpret_cast<RE::TESObjectARMO*>(armor_data.data());
+    armor->formType = RE::FormType::Armor;
+    RE::BGSKeyword* tags[] = {reinterpret_cast<RE::BGSKeyword*>(gag.form.data())};
+    armor->keywords = tags; armor->numKeywords = 1;
+    auto* biped = reinterpret_cast<RE::BipedAnim*>(biped_data.data());
+    equipped_biped = nullptr;
+    CHECK(!WearingMouthGear(actor)); // Unloaded/rebuilding third-person body.
+    biped_calls = 0;
+    CHECK(!WearingMouthGear(nullptr));
+    actor[0x1A] = kFtNpc;
+    CHECK(!WearingMouthGear(actor));
+    CHECK(biped_calls == 0);
+    actor[0x1A] = kFtActor;
+    equipped_biped = biped;
+    biped->objects[0].item = nullptr;
+    CHECK(MouthGearItem(armor)); // Carried but not equipped must not block.
+    CHECK(!WearingMouthGear(actor));
+    biped->objects[0].item = armor;
+    CHECK(WearingMouthGear(actor));
+    tags[0] = reinterpret_cast<RE::BGSKeyword*>(impostor.form.data());
+    CHECK(!WearingMouthGear(actor));
+    tags[0] = reinterpret_cast<RE::BGSKeyword*>(gag.form.data());
+    // Any equipped slot can own the face; removing one of two devices
+    // must not resume BFA. Test both orders of overlapping scene/gear exit.
+    biped->objects[std::size(biped->objects) - 1].item = armor;
+    biped->objects[0].item = nullptr;
+    membership = sl.form.data();
+    CHECK(FaceExternallyOwned(actor));
     membership = nullptr;
+    CHECK(FaceExternallyOwned(actor));
+    membership = sl.form.data();
+    biped->objects[std::size(biped->objects) - 1].item = nullptr;
+    CHECK(FaceExternallyOwned(actor));
+    membership = nullptr;
+    CHECK(!FaceExternallyOwned(actor));
     CHECK(!InScene(actor));
     CHECK(!InScene(nullptr));
     calls = 0;
-    actor[kFormType] = kFtNpc;
+    actor[0x1A] = kFtNpc;
     CHECK(!InScene(actor) && calls == 0);
-    actor[kFormType] = kFtActor;
+    actor[0x1A] = kFtActor;
     for (auto* faction :
-         {sl.form.data(), os.form.data(), excitement.form.data()}) {
+         {sl.form.data(), os.form.data(), excitement.form.data(), static_cast<uint8_t*>(nullptr)}) {
       membership = faction;
-      CHECK(InScene(actor));
+      biped->objects[0].item = faction ? nullptr : armor;
+      CHECK(FaceExternallyOwned(actor));
       // Common admission gate must stop NPC and external/player starts
       // before attempting face/resource engine calls or queueing inference.
       for (uint32_t id : {0x14u, 0x123u}) {
-        Field<uint32_t>(actor, kFormId) = id;
+        Field<uint32_t>(actor, 0x14) = id;
         BeginSpeech(actor, "scene", 0, 2, 0, 0, LegacyTune(), world_epoch);
         CHECK(playing.empty() && queue.empty());
       }
       alignas(16) std::array<uint8_t, 0x300> storage{}, node{};
       auto* fg = storage.data();
       float values[direct::kNumExpressions];
-      auto& ex = Field<skse::KeyframeMultiple>(fg, skse::kFgExpr3);
+      auto& ex = FixtureKeyframe(fg, 0xC0);
       ex.values = values; ex.count = direct::kNumExpressions;
       auto seed = [&] {
         std::fill_n(values, direct::kNumExpressions, 0.65f);
@@ -216,23 +284,23 @@ int main() {
         Count();
       };
       seed();
-      CHECK(Apply(fg, LegacyTune(), true, actor, 42, a2f::kNoSound, -1) &
+      CHECK(Apply(fg, LegacyTune(), FaceExternallyOwned(actor), actor, 42, a2f::kNoSound, -1) &
             kFaceChanged);
       CHECK(playing.empty());
       // Scene expressions just computed by the original update survive.
-      CHECK(Expressions(fg, 0, LegacyTune(), true, actor, 42) & kFaceChanged);
+      CHECK(Expressions(fg, 0, LegacyTune(), FaceExternallyOwned(actor), actor, 42) & kFaceChanged);
       CHECK(faces.empty());
       for (float v : values) CHECK(v == 0.65f);
-      CHECK(Expressions(fg, 0.016f, LegacyTune(), true, actor, 42) ==
+      CHECK(Expressions(fg, 0.016f, LegacyTune(), FaceExternallyOwned(actor), actor, 42) ==
             kNoUpdate);
       seed();
-      Field<uint8_t*>(node.data(), kNodeFg.Get()) = fg;
+      Field<uint8_t*>(node.data(), (skse::IsVr() ? 0x178 : 0x150)) = fg;
       // No animation update before this morph call: no head mapping or
       // vertex engine function is available, so proceeding would crash.
       AddDirect(node.data(), false);
-      CHECK(faces.empty() && playing.empty() && fg[kFgDirty]);
+      CHECK(faces.empty() && playing.empty() && fg[0x218]);
       for (float v : values) CHECK(v == 0.65f);
-      CHECK(Field<LONG>(actor, kRefrRefCount) == 1);
+      CHECK(Field<LONG>(actor, 0x28) == 1);
       seed();
       // If no scene writer has replaced our keyframe, restore its saved
       // engine values before forgetting ownership, including a reset call.
@@ -242,15 +310,25 @@ int main() {
       CHECK(faces.empty() && playing.empty());
       for (int i = 0; i < direct::kNumExpressions; ++i)
         CHECK(values[i] == (direct::PlaysExpression(i) ? 0.45f : 0.f));
-      CHECK(Field<skse::SpinLock>(fg, skse::kFgLock).count == 0);
+      CHECK(Field<uint32_t>(fg, 0x224) == 0);
       // Leaving the scene permits conversation expression ownership again.
       membership = nullptr;
-      CHECK(!InScene(actor));
+      biped->objects[0].item = nullptr;
+      CHECK(!FaceExternallyOwned(actor));
       partner_fg = fg; partner_ref = actor; partner_handle = 42;
       Expressions(fg, 0.1f, LegacyTune(), false, actor, 42);
       CHECK(faces.count(fg) && faces.at(fg).ownership_blend > 0);
       ResetPlayback(false);
     }
+    keywords = {};
+    LoadMouthGearKeywords();
+    CHECK(mouth_gear_keywords.empty());
+    biped_calls = 0;
+    biped->objects[0].item = armor;
+    CHECK(!WearingMouthGear(actor));
+    CHECK(biped_calls == 0); // No ZaZ means no equipment traversal.
+    biped->objects[0].item = nullptr;
+    equipped_biped = nullptr;
     factions = {};
     LoadSceneFactions();
     CHECK(num_scene_factions == 0 && !InScene(actor));
