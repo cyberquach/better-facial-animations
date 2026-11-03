@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "a2f/runtime/skse.h"
+
 // Call-site hooks: a `call rel32` in the game is redirected through a thunk
 // to a hook, and each site keeps its own original target (looked up by the
 // hook from its return address).
@@ -18,16 +20,19 @@
 namespace call_sites {
 
 struct Site {
-  uint64_t at;     // the call instruction
-  void* orig;      // what the hook calls
+  uint64_t at;  // the call instruction
+  void* orig;   // what the hook calls
   void* hook;
   uint8_t* thunk;  // the site's own thunk
   const char* what;
 };
-constexpr int kMaxSites = 16;
+// Every ApplyMorphs call in the game is hooked, and Retake() may take a
+// second thunk per site; the thunk page holds kThunkPage / kThunkSize = 256.
+constexpr int kMaxSites = 64;
 constexpr size_t kThunkSize = 16, kThunkPage = 0x1000;
 inline Site sites[kMaxSites];
 inline int num_sites;
+inline SKSE::Trampoline trampoline("Better Facial Animations");
 inline uint8_t* thunks;
 inline size_t thunk_used;
 
@@ -35,11 +40,9 @@ inline size_t thunk_used;
 // aligned pointer, so it can be replaced while other threads run the thunk.
 inline uint8_t* Thunk(uint64_t near_addr, void* fn) {
   if (!thunks) {
-    for (uint64_t a = (near_addr - 0x10000) & ~0xFFFFull;
-         a > near_addr - 0x70000000 && !thunks; a -= 0x10000)
-      thunks = static_cast<uint8_t*>(
-          VirtualAlloc(reinterpret_cast<void*>(a), kThunkPage,
-                       MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE));
+    if (trampoline.empty())
+      trampoline.create(64 * 1024, reinterpret_cast<void*>(near_addr + 5));
+    thunks = static_cast<uint8_t*>(trampoline.allocate(kThunkPage));
     if (!thunks) return nullptr;
   }
   if (thunk_used + kThunkSize > kThunkPage) return nullptr;
@@ -61,11 +64,8 @@ inline uint64_t CallTarget(uint64_t at) {
 inline bool PatchCall(uint64_t at, void* to) {
   int64_t rel = static_cast<int64_t>(reinterpret_cast<uint64_t>(to) - (at + 5));
   if (rel != static_cast<int32_t>(rel)) return false;
-  DWORD old;
-  VirtualProtect(reinterpret_cast<void*>(at + 1), 4, PAGE_EXECUTE_READWRITE,
-                 &old);
-  *reinterpret_cast<int32_t*>(at + 1) = static_cast<int32_t>(rel);
-  VirtualProtect(reinterpret_cast<void*>(at + 1), 4, old, &old);
+  const int32_t displacement = static_cast<int32_t>(rel);
+  REL::safe_write(at + 1, &displacement, sizeof(displacement));
   return true;
 }
 

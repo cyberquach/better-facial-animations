@@ -1,13 +1,13 @@
-// The DBReV adapter (src/speech/player_speech.cc): message validation, the owned
-// copy, replacement, cancellation and the reset on a load.
+// The DBReV adapter (src/speech/player_speech.cc): message validation, the
+// owned copy, replacement, cancellation and the reset on a load.
 #include "a2f/speech/player_speech.h"
 
 #include <cstdio>
 #include <cstring>
 #include <vector>
 
-#include "a2f/speech/DBReV_API.h"
 #include "a2f/runtime/skse.h"
+#include "a2f/speech/DBReV_API.h"
 
 namespace {
 int failures = 0;
@@ -18,7 +18,7 @@ void Expect(bool ok, const char* label) {
 
 // SKSE: the listener the adapter registers and the tasks it queues.
 void (*listener)(skse::SKSEMessage*) = nullptr;
-std::vector<skse::TaskDelegate*> queued;
+std::vector<SKSE::Impl::TaskDelegate*> queued;
 // The lines the adapter started (StartPlayerSpeech below).
 std::vector<bfa::PlayerSpeechPtr> started;
 
@@ -27,23 +27,28 @@ const void* PluginInfo(const char* name) {
   return dbvo_present && !strcmp(name, "DBVO") ? &dbvo_present : nullptr;
 }
 
-bool Listen(uint32_t, const char*, void (*cb)(skse::SKSEMessage*)) {
+bool Listen(uint32_t, const char*, void* opaque) {
+  auto cb = reinterpret_cast<void (*)(skse::SKSEMessage*)>(opaque);
   if (!dbrev_present) return false;
   listener = cb;
   return true;
 }
-void Add(skse::TaskDelegate* task) { queued.push_back(task); }
-skse::SKSEMessagingInterface messaging{1, Listen};
-skse::SKSETaskInterface tasks{2, Add, nullptr};
+void Add(void* opaque) {
+  auto* task = static_cast<SKSE::Impl::TaskDelegate*>(opaque);
+  queued.push_back(task);
+}
+SKSE::Impl::SKSEMessagingInterface messaging{
+    1, Listen, nullptr, [](uint32_t) -> void* { return nullptr; }};
+SKSE::Impl::SKSETaskInterface tasks{2, Add, nullptr};
 void* Query(uint32_t id) {
-  return id == skse::kInterfaceTask ? static_cast<void*>(&tasks)
-                                    : static_cast<void*>(&messaging);
+  if (id == skse::kInterfaceTask) return &tasks;
+  return id == skse::kInterfaceMessaging ? &messaging : nullptr;
 }
 uint32_t Handle() { return 1; }
 
 // Runs the queued tasks, as the game thread does.
 void Drain() {
-  for (skse::TaskDelegate* task : queued) {
+  for (SKSE::Impl::TaskDelegate* task : queued) {
     task->Run();
     task->Dispose();
   }
@@ -67,16 +72,18 @@ void StartPlayerSpeech(PlayerSpeechPtr speech) { started.push_back(speech); }
 }  // namespace bfa
 
 int main() {
-  skse::SKSEInterface api{};
+  SKSE::Impl::SKSEInterface api{};
   api.QueryInterface = Query;
   api.GetPluginHandle = Handle;
   api.GetPluginInfo = PluginInfo;
+  api.GetReleaseIndex = Handle;
+  SKSE::Init(reinterpret_cast<const skse::SKSEInterface*>(&api), false);
   for (bool dbvo : {false, true}) {
     for (bool dbrev : {false, true}) {
       dbvo_present = dbvo;
       dbrev_present = dbrev;
       listener = nullptr;
-      bfa::InitPlayerSpeech(&api);
+      bfa::InitPlayerSpeech(reinterpret_cast<const skse::SKSEInterface*>(&api));
       Expect(!bfa::DbvoInstalled(), "provider detection waits for PostLoad");
       bfa::PlayerSpeechMessage(skse::kMessagePostLoad);
       Expect(bfa::DbvoInstalled() == dbvo, "detect only registered DBVO");
@@ -86,7 +93,7 @@ int main() {
   dbvo_present = false;
   dbrev_present = true;
   listener = nullptr;
-  bfa::InitPlayerSpeech(&api);
+  bfa::InitPlayerSpeech(reinterpret_cast<const skse::SKSEInterface*>(&api));
   Expect(!listener, "nothing is registered at load");
   bfa::PlayerSpeechMessage(skse::kMessagePostLoad);
   if (!listener) {

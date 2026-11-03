@@ -83,8 +83,8 @@ bool JewelryName(const std::string& name) {
 
 bool MouthName(const std::string& name) {
   if (JewelryName(name)) return false;
-  for (const char* word : {"mouth", "teeth", "tooth", "tongue", "gums",
-                           "dentition"})
+  for (const char* word :
+       {"mouth", "teeth", "tooth", "tongue", "gums", "dentition"})
     if (name.find(word) != std::string::npos) return true;
   return false;
 }
@@ -99,91 +99,88 @@ void LoadHeadPartTypes() {
   head_part_types.clear();
   mouth_extras.clear();
   hair_parts.clear();
-  const BSTArray* parts = FormArray(kFtHeadPart);
-  if (!parts) {
+  const auto* forms = FormArray(kFtHeadPart);
+  if (!forms) {
     Log("head parts: no form array, using shape names");
     return;
   }
-  auto type_of = [](uint8_t* hp) { return Field<uint32_t>(hp, kHeadPartType); };
-  auto name_of = [](uint8_t* hp) {
-    return Field<const char*>(hp, kHeadPartName);
-  };
   std::unordered_map<std::string, uint32_t> types;
-  for (uint32_t i = 0; i < parts->n; ++i) {
-    uint8_t* hp = parts->items[i];
-    if (!hp || hp[kFormType] != kFtHeadPart) {
+  for (uint32_t i = 0; i < forms->size(); ++i) {
+    auto* form = forms->data()[i];
+    if (!form || form->formType != RE::FormType::HeadPart) {
       Log("head parts: unexpected form %u of %u, using shape names", i,
-          parts->n);
+          forms->size());
       return;
     }
-    uint32_t type = type_of(hp);
-    const char* name = name_of(hp);
-    if (name && *name) types[Lower(name)] = type;
+    auto* part = static_cast<RE::BGSHeadPart*>(form);
+    const char* name = part->formEditorID.c_str();
+    if (name && *name) types[Lower(name)] = part->type.underlying();
   }
   // Exclusion takes precedence over every inherited type and mouth hint.
   // Follow the complete graph, including unnamed intermediates, custom slots,
   // shared extras and cycles. A hair-owned accessory must not move separately
   // from the primary hair, even when another part also references it.
-  std::vector<uint8_t*> hair_pending;
-  std::unordered_set<uint8_t*> hair_visited;
-  for (uint32_t i = 0; i < parts->n; ++i) {
-    uint8_t* hp = parts->items[i];
-    const char* name = name_of(hp);
-    if (type_of(hp) == kHpHair ||
-        (HairFallbackType(type_of(hp)) && name && HairName(Lower(name))))
+  std::vector<RE::BGSHeadPart*> hair_pending;
+  std::unordered_set<RE::BGSHeadPart*> hair_visited;
+  for (auto* form : *forms) {
+    auto* hp = static_cast<RE::BGSHeadPart*>(form);
+    const char* name = hp->formEditorID.c_str();
+    if (hp->type.underlying() == kHpHair ||
+        (HairFallbackType(hp->type.underlying()) && name &&
+         HairName(Lower(name))))
       hair_pending.push_back(hp);
   }
   while (!hair_pending.empty()) {
-    uint8_t* hp = hair_pending.back();
+    auto* hp = hair_pending.back();
     hair_pending.pop_back();
     if (!hair_visited.insert(hp).second) continue;
-    const char* name = name_of(hp);
+    const char* name = hp->formEditorID.c_str();
     if (name && *name) hair_parts.insert(Lower(name));
-    const auto& extras = Field<BSTArray>(hp, kHeadPartExtras);
-    if (!extras.Ok()) continue;
-    for (uint32_t j = 0; j < extras.n; ++j) {
-      uint8_t* extra = extras.items[j];
-      if (extra && extra[kFormType] == kFtHeadPart)
+    const auto& extras = hp->extraParts;
+    if (!ValidArray(extras)) continue;
+    for (auto* extra : extras) {
+      if (extra && extra->formType.underlying() == kFtHeadPart)
         hair_pending.push_back(extra);
     }
   }
   // Mouths have no dedicated engine slot. Propagate a candidate hint along
   // their Misc extras, not a type: geometry must still confirm the hint.
   // A worklist handles nested extras and cycles without depending on order.
-  std::vector<uint8_t*> pending;
-  std::unordered_set<uint8_t*> visited;
-  for (uint32_t i = 0; i < parts->n; ++i) {
-    uint8_t* hp = parts->items[i];
-    const char* name = name_of(hp);
-    if (type_of(hp) == kHpMisc && name && MouthName(Lower(name)))
+  std::vector<RE::BGSHeadPart*> pending;
+  std::unordered_set<RE::BGSHeadPart*> visited;
+  for (auto* form : *forms) {
+    auto* hp = static_cast<RE::BGSHeadPart*>(form);
+    const char* name = hp->formEditorID.c_str();
+    if (hp->type.underlying() == kHpMisc && name && MouthName(Lower(name)))
       pending.push_back(hp);
   }
   while (!pending.empty()) {
-    uint8_t* hp = pending.back();
+    auto* hp = pending.back();
     pending.pop_back();
     if (!visited.insert(hp).second) continue;
-    const auto& extras = Field<BSTArray>(hp, kHeadPartExtras);
-    if (!extras.Ok()) continue;
-    for (uint32_t j = 0; j < extras.n; ++j) {
-      uint8_t* extra = extras.items[j];
-      if (!extra || extra[kFormType] != kFtHeadPart ||
-          type_of(extra) != kHpMisc) continue;
-      const char* name = name_of(extra);
+    const auto& extras = hp->extraParts;
+    if (!ValidArray(extras)) continue;
+    for (auto* extra : extras) {
+      if (!extra || extra->formType.underlying() != kFtHeadPart ||
+          extra->type.underlying() != kHpMisc)
+        continue;
+      const char* name = extra->formEditorID.c_str();
       if (name && JewelryName(Lower(name))) continue;
       if (name && *name) mouth_extras.insert(Lower(name));
       pending.push_back(extra);
     }
   }
   uint32_t inherited = 0;
-  for (uint32_t i = 0; i < parts->n; ++i) {
-    uint32_t type = type_of(parts->items[i]);
-    const auto& extras = Field<BSTArray>(parts->items[i], kHeadPartExtras);
-    if (type == kHpMisc || type == kHpHair || !extras.Ok()) continue;
-    for (uint32_t j = 0; j < extras.n; ++j) {
-      uint8_t* x = extras.items[j];
-      const char* name =
-          x && x[kFormType] == kFtHeadPart ? name_of(x) : nullptr;
-      if (!name || !*name || type_of(x) != kHpMisc) continue;
+  for (auto* form : *forms) {
+    auto* hp = static_cast<RE::BGSHeadPart*>(form);
+    uint32_t type = hp->type.underlying();
+    const auto& extras = hp->extraParts;
+    if (type == kHpMisc || type == kHpHair || !ValidArray(extras)) continue;
+    for (auto* extra : extras) {
+      const char* name = extra && extra->formType == RE::FormType::HeadPart
+                             ? extra->formEditorID.c_str()
+                             : nullptr;
+      if (!name || !*name || extra->type.underlying() != kHpMisc) continue;
       // Oral Misc parts retain their identity even when owned/shared by a
       // face, beard or eye part. Ambiguous names still need geometry approval.
       const std::string n = Lower(name);
@@ -193,8 +190,8 @@ void LoadHeadPartTypes() {
     }
   }
   head_part_types = std::move(types);
-  Log("head parts: %u, %zu named, %u extras typed by their parent", parts->n,
-      head_part_types.size(), inherited);
+  Log("head parts: %u, %zu named, %u extras typed by their parent",
+      forms->size(), head_part_types.size(), inherited);
 }
 
 // The head part type of a shape, or kHpUnknown.
@@ -271,8 +268,13 @@ direct::Part Classify(const char* name, bool& skin) {
 }
 
 bool HairGeometry(uint8_t* shape, const char* name) {
-  uint8_t* property = Field<uint8_t*>(shape, kGeomShaderProperty.Get());
-  if (!property || !(Field<uint64_t>(property, kShaderFlags) & kShaderHairTint))
+  uint8_t* property =
+      reinterpret_cast<uint8_t*>(reinterpret_cast<RE::BSGeometry*>(shape)
+                                     ->GetGeometryRuntimeData()
+                                     .shaderProperty.get());
+  if (!property ||
+      !(reinterpret_cast<RE::BSShaderProperty*>(property)->flags.underlying() &
+        kShaderHairTint))
     return false;
   // NIF shape names can differ from HDPT editor IDs (e.g. KS Scarlet).
   // The shader flag closes that gap without changing materials or rendering.
@@ -290,14 +292,17 @@ bool HairGeometry(uint8_t* shape, const char* name) {
 }
 
 const float* BaseVerts(uint8_t* shape, uint32_t& nv) {
-  uint8_t** extra = Field<uint8_t**>(shape, kObjExtra);
-  uint16_t n = Field<uint16_t>(shape, kObjNumExtra);
+  uint8_t** extra = reinterpret_cast<uint8_t**>(
+      reinterpret_cast<RE::NiObjectNET*>(shape)->extra);
+  uint16_t n = reinterpret_cast<RE::NiObjectNET*>(shape)->extraDataSize;
   for (uint16_t i = 0; extra && i < n; ++i) {
     uint8_t* e = extra[i];
-    const char* name = e ? Field<const char*>(e, kObjName) : nullptr;
+    const char* name =
+        e ? reinterpret_cast<RE::NiExtraData*>(e)->name.c_str() : nullptr;
     if (!name || strcmp(name, "FOD")) continue;
-    nv = Field<uint32_t>(e, kBaseNumVerts);
-    return Field<const float*>(e, kBaseVerts);
+    nv = reinterpret_cast<RE::BSFaceGenBaseMorphExtraData*>(e)->vertexCount;
+    return reinterpret_cast<const float*>(
+        reinterpret_cast<RE::BSFaceGenBaseMorphExtraData*>(e)->vertexData);
   }
   return nullptr;
 }
@@ -340,7 +345,8 @@ size_t HeadBytes(const direct::Head& h) {
   size_t b = n(h.row) + n(h.basis) + n(h.region_w) + n(h.lip_w) + n(h.shapes);
   for (const auto& s : h.shapes) {
     b += n(s.name) + n(s.idx) + n(s.w) + n(s.pos) + n(s.jaw) +
-         n(s.tongue_weight) + n(s.tongue) + n(s.model_jaw) + n(s.model_tongue);
+         n(s.tongue_weight) + n(s.tongue) + n(s.model_jaw) + n(s.model_tongue) +
+         n(s.walls);
     for (const auto& e : s.expr) b += n(e);
   }
   return b;
@@ -412,6 +418,9 @@ DWORD WINAPI Mapper(void*) {
 // sex selects the model face. Empty: the node has no face shapes.
 std::string HeadKey(uint8_t* node, bool female,
                     std::shared_ptr<const direct::Model> mapping) {
+#ifdef ENABLE_COMMONLIBSSE_TESTING
+  if (testing::head_key) return testing::head_key(node, female, mapping);
+#endif
   if (!mapping) mapping = SnapshotModel()->mapping;
   uint64_t h = 14695981039346656037ull;
   auto mix = [&h](const void* p, size_t n) {
@@ -451,6 +460,10 @@ std::string HeadKey(uint8_t* node, bool female,
 State FindHead(uint8_t* node, const std::string& key, bool female,
                std::shared_ptr<const direct::Head>& out,
                std::shared_ptr<const direct::Model> mapping) {
+#ifdef ENABLE_COMMONLIBSSE_TESTING
+  if (testing::find_head)
+    return testing::find_head(node, key, female, out, mapping);
+#endif
   if (!mapping) mapping = SnapshotModel()->mapping;
   if (key.empty()) return State::kFailed;
   ScopedLock guard(map_lock);

@@ -17,3 +17,15 @@ The attribution above is required by section 3.1 of the License Agreement for NV
 Audio2Face Project. That specific agreement governs this model, including its use restrictions.
 See licenses/NVIDIA-Audio2Emotion-License.txt and https://huggingface.co/nvidia/Audio2Emotion-v2.2
 The model may only be used with the NVIDIA Audio2Face project, and not for the purpose of emotion recognition.
+
+SimpleIni 4.27 (Brodie Thiesfield), used for settings persistence:
+MIT license; see licenses/SimpleIni-MIT.txt.
+Source: https://github.com/brofield/simpleini/tree/fd6db69efc40a687bf4ef81486b54066e34992dd
+
+emotion_performance.onnx (modified model distilled from NVIDIA Audio2Emotion v2.2
+outputs for Skyrim dialogue; experimental width-512 temporal student):
+Licensed by NVIDIA Corporation under the NVIDIA Open Model License
+The specific License Agreement for NVIDIA Audio2Emotion Model for Use with
+Audio2Face Project governs this derivative, including its use restrictions.
+Only for use with the NVIDIA Audio2Face project, not for emotion recognition.
+See licenses/NVIDIA-Audio2Emotion-License.txt and emotion_performance.json.

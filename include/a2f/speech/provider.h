@@ -11,11 +11,8 @@
 
 #include "a2f/inference/live_core.h"
 #include "a2f/plugin/plugin.h"
+#include "a2f/runtime/skse.h"  // namespace skse
 #include "a2f/speech/player_speech.h"
-
-namespace skse {
-struct SKSEInterface;
-}  // namespace skse
 
 namespace bfa {
 
@@ -32,8 +29,7 @@ struct ProviderActor {
 uint32_t ResolveProviderActor(uint32_t form_id, ProviderActor& out);
 // Queues the line's inference: BFA_kResultOK, and ProviderLineFailed follows
 // if it fails (at once when the failure is cached); else the BFA_ResultCode.
-uint32_t ProviderPrepare(const PlayerSpeechPtr& line,
-                         const ProviderActor& who);
+uint32_t ProviderPrepare(const PlayerSpeechPtr& line, const ProviderActor& who);
 // The line takes its actor's face now (BFA_kResultOK), or why it cannot.
 uint32_t ProviderStart(const PlayerSpeechPtr& line);
 // Discard queued/cached inference owned by the reply; running work cancels.

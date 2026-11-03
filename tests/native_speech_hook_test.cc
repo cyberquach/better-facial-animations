@@ -1,5 +1,6 @@
 // Execute the real entry detour and trampoline with the speech call ABI.
 #include "a2f/speech/native_speech_hook.h"
+#include "a2f/runtime/call_sites.h"
 
 #include <windows.h>
 
@@ -85,6 +86,7 @@ int main() {
   CHECK(Invoke(fn) == 2.5f && target_calls == 1);
   original = reinterpret_cast<Fn>(
       bfa::HookNativeSpeech(code, reinterpret_cast<void*>(&Hook)));
+  if (!original) std::fprintf(stderr, "entry=%p relay=%p delta=%lld\n", code, call_sites::thunks, static_cast<long long>(reinterpret_cast<intptr_t>(call_sites::thunks) - reinterpret_cast<intptr_t>(code + 5)));
   CHECK(original);
   CHECK(Invoke(fn) == 102.5f && calls == 1 && target_calls == 2);
   CHECK(Invoke(original) == 2.5f && calls == 1 && target_calls == 3);

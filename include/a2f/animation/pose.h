@@ -19,6 +19,13 @@ class PoseTransition {
   bool Blend(const std::shared_ptr<const Line>& line, double now, float fade,
              bool enabled, bool snap, std::vector<float>& coefficients);
   bool moving() const { return moving_; }
+  void FadeToNeutral(double now, float duration) {
+    line_.reset();
+    offset_ = pose_;
+    started_at_ = updated_at_ = now;
+    fade_ = duration;
+    moving_ = !offset_.empty();
+  }
   bool stale(double now) const { return now - updated_at_ > kStaleSeconds; }
 
  private:

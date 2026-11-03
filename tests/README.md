@@ -2,7 +2,8 @@
 
 Offline contracts against the production code; nothing here launches Skyrim,
 installs anything or downloads anything. Needs the normal build environment
-(MinGW-w64, Wine, Python 3.10+; `CXX`, `WINE` and `FFMPEG` overrides apply).
+(MSVC/CommonLib dependencies described in the main README, Wine, Python 3.10+;
+`COMMONLIB_DEPS`, `BFA_MSVC_ROOT`, `WINE` and `FFMPEG` overrides apply).
 
 ```sh
 ./build.sh compat                                  # build, then every contract case
@@ -21,28 +22,38 @@ executables and fixtures. Exit codes: 0 passed, 1 failed, 2 blocked (a missing
 fixture is blocked, never a pass).
 
 [compatibility.json](compatibility.json) lists the cases. `contracts` compile a
-test from `sources` (plus the plugin objects when `plugin_objects` is set, and
-any `link` flags), or run a `python` test; `build.sh test` uses the same entries.
-`source-basenames` keeps `src/**/*.cc` names unique, as `tools/build.mk` finds
-sources by `vpath`.
+test from `sources` (plus plugin test objects when `plugin_objects` is set), or run a `python` test; `build.sh test` uses the same entries.
+`source-basenames` prevents object-name collisions. Production and test objects
+use the same MSVC/CommonLib ABI; test-only hooks substitute engine calls and
+scheduling. Runtime matrix tests use CommonLib's actual Address Library decoder.
 `runtime-layout` checks supported AE declarations, AE ID selection, and actor
 race/voice reads before and after the 1.6.629 layout change. `build.sh test`
 also checks the built DLL and every required ID against local Address Libraries,
 including Steam 1.6.353 and GOG 1.6.659.
 
+`morph-lock-span` checks the morph hook keeps a played face's lock and every dynamic face shape's lock from before the engine's vertex reset until the deltas pass (a release in between is the one-frame speech flicker), with the engine's own locking nested, and takes no locks for faces it does not play.
 `conversation-gaze` checks v2/v3 eye-track alignment, additive look controls,
 late-start sync, player-target/scene/runtime gating, restoration and hook coexistence.
+`independent-device` also verifies complete session setup: two intra-op threads, one inter-op thread, idle spinning disabled, sequential DirectML, fixed shapes and the retained arena.
 `independent-device` and `independent-routing` check strict factory isolation, retained GPU context ownership across model/CPU transitions, explicit retries after device failure and all model routes without GPU hardware. They do not establish driver or graphics-hook compatibility.
-`gpu-fallback` checks explicit CPU selection, manual GPU recovery and shared GPU backoff without CPU fallback. `gpu-retry` checks shader/wrapper alternatives and remembered success; `wrapper-lifetime` checks shared failure cleanup without filesystem guards. `passive-report` checks diagnostics without DXGI/device probes. `ort-output` checks tensor validation and the shared facial/sentiment GPU failure gate. `installer` checks the FOMOD presets and GPU-first default.
-`sentiment-lifecycle` checks optional-model gating, GPU-only failure and explicit CPU selection, CPU failure backoff and unloading.
-`npc-menu` checks disabled sentiment controls; `build.sh test` checks additive caps and the local sentiment model when present.
+`gpu-fallback` checks explicit CPU selection, manual GPU recovery and shared GPU backoff without CPU fallback. `gpu-retry` checks shader/wrapper alternatives and remembered success; `wrapper-lifetime` checks shared failure cleanup without filesystem guards; `ort-delay-import` reads the bundled onnxruntime.dll and checks it still delay-loads D3D12CreateDevice from d3d12.dll, which the shared route patches to unwrap ReShade. `passive-report` checks diagnostics without DXGI/device probes or loading D3D12. `startup-diagnostics` covers Windows update thresholds, unknown releases/revisions, Proton and reporting state; these version checks do not certify driver support. `ort-output` checks tensor validation and the shared facial/sentiment GPU failure gate. `installer` resolves all FOMOD combinations, package-specific model choices and additive defaults. `settings-restart` and `race-settings` verify explicit INI/menu overrides of installer choices.
+`performance-emotion` runs the packaged student with the actual native frontend against synthetic Python/checkpoint reference fixtures. `sentiment-lifecycle` checks emotion model cache isolation and switching, optional-model gating, GPU-only failure, per-model CPU/GPU and adapter selection, CPU failure backoff and unloading.
+
+`training-portability` checks public training tools for private host configuration. The optional training-environment CPU integration suite is `python -m unittest discover -s tests -p test_portable_training.py`; it covers audio/BSA/FUZ preparation, both students, exact interrupted/resumed weights, label/checkpoint tampering, held-out normalization isolation and ONNX export. See [training commands](../tools/training/README.md).
+`npc-menu` checks the independent Audio2Face/Audio2Emotion dropdowns, missing models, separate device dropdowns, responsive sentiment layout, heading scaling, discovery requests, missing adapters,
+legacy CPU selection, save/wake behavior and disabled sentiment controls; `build.sh test` checks additive caps and the local sentiment model when present.
 `worker-start` checks that CPU/GPU workers wait for successful game entry, with either startup listener order, failed loads, repeated events and thread creation failure.
-Settings persistence is covered by `sex-settings`; eye-mesh calibration still needs
-in-game review. `provider-api` runs the provider interface (`include/a2f/speech/BFA_API.h`)
+Settings migration and round trips are covered by `sex-settings`;
+`settings-restart` checks immediate saves across fresh processes, comment/UTF-8
+preservation, and read/write failures with logging disabled. Eye-mesh calibration still
+needs in-game review. `provider-api` runs the provider interface (`include/a2f/speech/BFA_API.h`)
 over the production plugin with mocked engine lookups and a synthetic generation;
 covers deferred admission, animation-start events, playback clocks, per-line emotion,
 reply-scoped queue/cache cleanup, late callback cancellation, capacity, reset and expiry.
-The simplified event ABI needs in-game validation.
+The simplified event ABI needs in-game validation. `provider-sentiment` runs a provider line
+through the production worker with a stub emotion model and facial network: the selected
+Audio2Emotion model's reading, the caller's channels and the multiplier reach the line's
+animation; Disabled or a missing model feeds nothing.
 
 `assets` check local plugin record identities and pinned geometry/filter corpora.
 `coverage_gaps` names what is not tested.
@@ -156,14 +167,18 @@ budgets, not measured game CPU performance. For repeated game captures:
 python3 tools/game_cpu_regression.py --baseline <4.0-run1> <4.0-run2> <4.0-run3> --candidate <run1> <run2> <run3>
 ```
 
-Capture format is described in the tool. The gate requires matching initial INI,
+Capture format is described in the tool. Record hashes of every installed
+`Installer/*.ini` fragment in the deployment files map, alongside the main INI;
+otherwise different installer choices could make the comparison misleading. The gate requires matching initial INI,
 modlist and measurement windows; it resamples whole launches and requires the
 one-sided CPU-delta bound to be nonpositive for every window. Missing evidence
 returns 2; CPU parity not demonstrated returns 1. Review raw stalls, effective
 GPU routing, scene/system-load comparability and visual/API behavior separately.
 
-`face-update` checks zero-time pose refreshes, native hook chaining, nested and
-concurrent update contexts, and unchanged timing for normal facial updates.
+`reference-lookup` requires a single address resolution across repeated actor
+acquisitions and checks retained-reference release. `face-update` bounds owner
+traversal to 32 nodes, including cycles, and checks zero-time pose refreshes,
+native hook chaining, nested/concurrent contexts and normal update timing.
 
 `npc-blacklist` checks override migration, sparse profile inheritance, persistence,
 emotion cache isolation, full/light identities across load-order changes and missing
@@ -177,3 +192,36 @@ speech and conversation admission, and normal Khajiit controls across SE/AE/VR l
 `alfiq-23` checks the three owned RACE records in a local Alfiq 2.3 plugin;
 supply `"alfiq-23": {"path": "/path/DWAlfiqKhajiit.esp"}` in the fixture map.
 Neither contract establishes in-game mouth animation.
+
+The `mouth-lining-surface` contract runs an independent triangle-depth test on a
+sliding, sloped face, including a deliberately disabled correction. For changes
+to mouth-wall classification or playback, also run the `mouth-lining` asset gate:
+
+```bash
+python3 tools/compatibility.py --tier assets --case mouth-lining --fixtures fixtures.json
+```
+
+Map `"mouth-lining": {"path": "/path/to/captures"}` to the local files pinned in
+[mouth_lining.json](mouth_lining.json). The runner requires a native C++17 compiler
+(`HOST_CXX`, default `g++`), validates captures, topology, speech and packaged model
+hashes, and never downloads assets. Missing files block; modified hashes fail.
+Keep these third-party derived captures outside Git.
+
+The gate replays every captured v2/v3 frame for Ingarte and Ange in both tongue
+modes, with and without native Happy. It independently rasterizes the face and
+mouth lining on a 400x300 front-view grid, counting lining more than 0.01 units
+in front of facial skin. Ingarte allows at most 32 samples and 0.09 units depth
+for her existing small seam; Ange allows none. Disabling the correction must
+produce over 1,000 exposed samples on each v3 capture. Exact comparisons also
+protect the outer face, teeth, tongue, lining X/Z and expression-only playback.
+This guards the reported protrusion; it is not a universal 3D collision test or
+an in-game rendering/performance benchmark.
+
+Capture format (little endian): two shapes, each with a uint32 vertex count,
+float32 XYZ positions and all 36 morph arrays in `direct.h` order, preceded by
+uint32 shape count. Topology starts with uint32 first protected vertex (45 for
+these mouths), then head and lining triangle arrays, each preceded by uint32
+triangle count; indices are uint32. Speech uses uint32 frame count, uint32
+coefficient count, float32 fps, then frame-major float32 coefficients. Preserve
+NIF partition vertex order when extracting topology; the lining component must
+be identified from anatomy independently of production wall selection.

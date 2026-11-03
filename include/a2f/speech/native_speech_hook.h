@@ -22,8 +22,8 @@ inline constexpr bool NativeSpeechRuntimeSupported(uint32_t runtime) {
 // Skyrim 1.5.97, 1.6.1170 and 1.7.104 SpeakVoiceLine begin with
 // mov rax,rsp; mov [rax+20h],r9d. Neither instruction is RIP relative or
 // changes RSP. Do not extend to other prologues without relocation review.
-inline constexpr uint8_t kNativeSpeechPrefix[] =
-    {0x48, 0x8B, 0xC4, 0x44, 0x89, 0x48, 0x20};
+inline constexpr uint8_t kNativeSpeechPrefix[] = {0x48, 0x8B, 0xC4, 0x44,
+                                                  0x89, 0x48, 0x20};
 
 // Called at SKSE PostLoad, before gameplay. Refuse existing entry detours;
 // existing call-site chains remain intact. The trampoline lives until exit.

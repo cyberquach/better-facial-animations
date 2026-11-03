@@ -2,13 +2,14 @@
 import json
 import os
 from pathlib import Path
-import shlex
 import subprocess
 import sys
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'tools'))
+import commonlib_build
 
 
 class PreflightTest(unittest.TestCase):
@@ -26,9 +27,14 @@ extern "C" __declspec(dllexport) skse::SKSEPluginVersionData SKSEPlugin_Version 
   1, 1, "fixture", "test", "", 0, FIXTURE_FLAGS, {skse::Version(1,6,1170),0}, 0};
 ''')
         cls.dll = cls.directory / 'fixture.dll'
-        subprocess.run(shlex.split(os.environ.get('CXX', 'x86_64-w64-mingw32-g++')) +
-                       ['-shared', '-I', str(ROOT / 'include'), str(source), '-o', str(cls.dll)],
-                       check=True, capture_output=True, timeout=60)
+        cls.compile_fixture(cls.dll)
+
+    @classmethod
+    def compile_fixture(cls, output, *defines):
+        commonlib_build.compiler('cl', commonlib_build.flags() + list(defines) + [
+            '/LD', '/Fo' + str(output.with_suffix('.obj')), '/Fe' + str(output),
+            str(cls.directory / 'fixture.cc')])
+
 
     def check(self, path, runtime='1.6.1170'):
         result = subprocess.run([sys.executable, str(ROOT/'tools/skse_preflight.py'),
@@ -44,10 +50,7 @@ extern "C" __declspec(dllexport) skse::SKSEPluginVersionData SKSEPlugin_Version 
 
     def test_runtime_independence_is_not_a_false_mismatch(self):
         path = self.directory/'independent.dll'
-        subprocess.run(shlex.split(os.environ.get('CXX', 'x86_64-w64-mingw32-g++')) +
-                       ['-shared', '-DFIXTURE_FLAGS=5', '-I', str(ROOT / 'include'),
-                        str(self.directory/'fixture.cc'), '-o', str(path)],
-                       check=True, capture_output=True, timeout=60)
+        self.compile_fixture(path, '/DFIXTURE_FLAGS=5')
         self.assertEqual(self.check(path, '1.6.640')[0], 2)
 
     def test_no_export_is_unknown(self):

@@ -1,3 +1,4 @@
+#include "runtime_fixture.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -40,21 +41,21 @@ bool Lookup(const uint32_t& h, uint8_t** out) {
          : h == 7 ? player.data()
          : h == 8 ? other.data()
                   : nullptr;
-  if (*out) InterlockedIncrement(&Field<LONG>(*out, kRefrRefCount));
+  if (*out) InterlockedIncrement(&Field<LONG>(*out, 0x28));
   return *out != nullptr;
 }
 uint64_t Morph(uint8_t* n, uint8_t force) {
   CHECK(n == node.data());
   forced = force;
   std::copy_n(modifiers, 17, consumed);
-  auto& flags = Field<uint16_t>(node.data(), kNodeFlags.Get());
+  auto& flags = Field<uint16_t>(node.data(), (skse::IsVr() ? 0x188 : 0x160));
   if (force || (flags & 1)) std::copy_n(consumed, 17, baked);
   flags &= ~1;
-  fg[kFgDirty] = 0;
-  auto& mods = Field<skse::KeyframeMultiple>(fg.data(), skse::kFgMod3);
+  fg[0x218] = 0;
+  auto& mods = FixtureKeyframe(fg.data(), 0x100);
   if (other_writer) {
     modifiers[9] = 0.8f;
-    mods.is_updated = true;
+    mods.isUpdated = true;
   }
   if (replace_keyframe) mods.values = replacement;
   return 123;
@@ -90,8 +91,8 @@ void Draw(bool expected, float strength = 1) {
     const float y = std::min(6 * strength, 8.f) / 30;
     CHECK(std::abs(consumed[8] - x) < 1e-5f);
     CHECK(std::abs(consumed[9] - (0.4f - y)) < 1e-5f);
-    CHECK(Field<uint16_t>(node.data(), kNodeFlags.Get()) & 1);
-    CHECK(fg[kFgDirty] == 1);
+    CHECK(Field<uint16_t>(node.data(), (skse::IsVr() ? 0x188 : 0x160)) & 1);
+    CHECK(fg[0x218] == 1);
   } else {
     CHECK(consumed[9] == 0.4f && consumed[8] == 0);
     // The rebuild requested by the previous active call removes baked gaze.
@@ -100,7 +101,7 @@ void Draw(bool expected, float strength = 1) {
   for (int c = 0; c < 17; ++c) {
     if (c < 8 || c > 11) CHECK(consumed[c] == modifiers[c]);
   }
-  CHECK(Field<skse::SpinLock>(fg.data(), skse::kFgLock).count == 0);
+  CHECK(Field<uint32_t>(fg.data(), 0x224) == 0);
 }
 struct Net : a2f::Net {
   int frames = 0, windows = 0;
@@ -155,7 +156,7 @@ void Generation() {
   CHECK(line.eyes.empty());
 }
 }  // namespace
-extern "C" uint64_t __wrap__ZN4skse4AddrEy(uint64_t id) {
+extern "C" uint64_t TestAddress(uint64_t id) {
   if (id == kIdMenuTopicManager.Get()) return reinterpret_cast<uint64_t>(&mtm);
   if (id == kIdHeadtrackTarget.Get())
     return reinterpret_cast<uint64_t>(&Target);
@@ -171,19 +172,19 @@ void AdmissionAndRestoration() {
   Toggle("ConversationGaze", true);
   ready = true;
   Field<uint32_t>(manager.data(), 0x68) = 42;
-  Field<void*>(npc.data(), kActorProcess.Get()) = process.data();
+  Field<void*>(npc.data(), (skse::Runtime() >= skse::Version(1, 6, 629) ? 0xf8 : 0xf0)) = process.data();
   Field<uint32_t>(npc.data(), 0x14) = 0x123;
-  npc[kFormType] = kFtActor;
+  npc[0x1A] = kFtActor;
   Field<void*>(npc.data(), 0) = actor_vtable;
-  actor_vtable[kVfIsInFaction.Get()] = reinterpret_cast<void*>(&Member);
+  actor_vtable[(skse::IsVr() ? 0xFB : 0xF9)] = reinterpret_cast<void*>(&Member);
   scene_factions[0] = other.data();
   num_scene_factions = 1;
   Field<uint32_t>(player.data(), 0x14) = 0x14;
   Field<uint32_t>(other.data(), 0x14) = 0x456;
   for (auto* a : {npc.data(), player.data(), other.data()})
-    Field<LONG>(a, kRefrRefCount) = 1;
+    Field<LONG>(a, 0x28) = 1;
   Field<void*>(node.data(), 0x150) = fg.data();
-  auto& mods = Field<skse::KeyframeMultiple>(fg.data(), 0x100);
+  auto& mods = FixtureKeyframe(fg.data(), 0x100);
   mods.values = modifiers;
   mods.count = 17;
   modifiers[0] = 0.7f;
@@ -202,12 +203,12 @@ void AdmissionAndRestoration() {
   p.entry->line = line;
   playing[fg.data()] = p;
   Draw(true);
-  CHECK(!mods.is_updated);
+  CHECK(!mods.isUpdated);
   Draw(true);  // same baseline, no accumulation
   std::array<uint8_t, 0x100> base{};
-  base[kFormType] = kFtNpc;
-  Field<uint32_t>(base.data(), kFormId) = 0x05001234;
-  Field<void*>(npc.data(), kRefrBase) = base.data();
+  base[0x1A] = kFtNpc;
+  Field<uint32_t>(base.data(), 0x14) = 0x05001234;
+  Field<void*>(npc.data(), 0x40) = base.data();
   const NpcSetting excluded{0x05001234, "follower.esp|001234", "Follower",
                             true};
   SetNpcBlocked(excluded, true);
@@ -239,8 +240,8 @@ void AdmissionAndRestoration() {
   CHECK(modifiers[9] == 0.8f && modifiers[8] == 0 && modifiers[10] == 0);
   other_writer = false;
   modifiers[9] = 0.4f;
-  CHECK(mods.is_updated);
-  mods.is_updated = false;
+  CHECK(mods.isUpdated);
+  mods.isUpdated = false;
   replace_keyframe = true;
   GazeMorphs(Morph, node.data(), 0, reset, world_epoch);
   CHECK(mods.values == replacement);
@@ -249,7 +250,7 @@ void AdmissionAndRestoration() {
   mods.values = modifiers;
   std::fill_n(modifiers + 8, 4, 0.f);
   modifiers[9] = 0.4f;
-  mods.is_updated = false;
+  mods.isUpdated = false;
   Draw(true);
   in_scene = true;
   Draw(false);
@@ -261,9 +262,9 @@ void AdmissionAndRestoration() {
   Draw(false);
   target_handle = 7;
   Draw(true);
-  Field<void*>(npc.data(), kActorProcess.Get()) = nullptr;
+  Field<void*>(npc.data(), (skse::Runtime() >= skse::Version(1, 6, 629) ? 0xf8 : 0xf0)) = nullptr;
   Draw(false);
-  Field<void*>(npc.data(), kActorProcess.Get()) = process.data();
+  Field<void*>(npc.data(), (skse::Runtime() >= skse::Version(1, 6, 629) ? 0xf8 : 0xf0)) = process.data();
   Field<uint32_t>(manager.data(), 0x68) = 43;
   Draw(false);
   Field<uint32_t>(manager.data(), 0x68) = 0;
@@ -330,7 +331,7 @@ void AdmissionAndRestoration() {
   for (uint32_t runtime : {skse::Version(1, 5, 97), skse::Version(1, 6, 353),
                            skse::Version(1, 6, 1170)}) {
     skse::SetRuntime(runtime);
-    Field<void*>(npc.data(), kActorProcess.Get()) = process.data();
+    Field<void*>(npc.data(), (skse::Runtime() >= skse::Version(1, 6, 629) ? 0xf8 : 0xf0)) = process.data();
     Draw(true);
   }
   reset = false;
@@ -346,7 +347,7 @@ void AdmissionAndRestoration() {
   ResetPlayback(false);
   Draw(false);
   for (auto* actor : {npc.data(), player.data(), other.data()})
-    CHECK(Field<LONG>(actor, kRefrRefCount) == 1);
+    CHECK(Field<LONG>(actor, 0x28) == 1);
 }
 
 void SamplingAndMorphs() {
@@ -420,6 +421,7 @@ void SamplingAndMorphs() {
 }  // namespace
 
 int main() {
+  bfa::testing::address = TestAddress;
   Generation();
   AdmissionAndRestoration();
   SamplingAndMorphs();
