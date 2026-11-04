@@ -154,7 +154,9 @@ bool EnsureThread() {
   return event_thread != nullptr;
 }
 // The engine-bound half of Prepare (admission and inference) or Start (the
-// face), on the game thread.
+// face), on the game thread. Takes calls: SKSE VR runs tasks under its queue
+// lock, so enqueuing callers release calls before AddTask. A line stopped in
+// that window is dropped here.
 void RunLineTask(const PlayerSpeechPtr& line, bool prepare) {
   std::lock_guard<std::recursive_mutex> serial(calls);
   if (line->stopped) return;
@@ -258,8 +260,6 @@ uint64_t Prepare(const BFA_Line* in, BFA_Result* result) {
     Touch(line);
     lines[line->handle] = line;
   }
-  // SKSE VR dispatch holds its queue lock while RunLineTask takes calls.
-  // Release calls before entering that queue; stopped tasks remain harmless.
   serial.unlock();
   tasks->AddTask([line] { RunLineTask(line, true); });
   *result = BFA_kResultPending;
@@ -269,6 +269,7 @@ BFA_Result Start(uint64_t handle, double offset) {
   if (!std::isfinite(offset) || offset < 0) return BFA_kResultInvalidArgument;
   std::unique_lock<std::recursive_mutex> serial(calls);
   auto line = Find(handle);
+  // Only Prepare, which requires tasks, makes a handle.
   if (!line) return BFA_kResultInvalidHandle;
   {
     ScopedLock guard(provider_lock);
@@ -281,8 +282,6 @@ BFA_Result Start(uint64_t handle, double offset) {
     auto it = utterances.find(line->utterance_id);
     if (it != utterances.end()) it->second.started = true;
   }
-  // SKSE VR dispatch holds its queue lock while RunLineTask takes calls.
-  // Release calls before entering that queue; stopped tasks remain harmless.
   serial.unlock();
   tasks->AddTask([line] { RunLineTask(line, false); });
   return BFA_kResultPending;

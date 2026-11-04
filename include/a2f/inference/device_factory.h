@@ -40,6 +40,28 @@ struct Factory : IUnknown {
                                                  D3D_FEATURE_LEVEL level,
                                                  REFIID iid, void** out) = 0;
 };
+// CLSID_D3D12SDKConfiguration / ID3D12SDKConfiguration1: a factory over the
+// bundled Microsoft.Direct3D.D3D12 1.619.5 runtime (BetterFacialAnimations/
+// Agility) when the default runtime has none.
+inline constexpr UINT kAgilityVersion = 619;
+inline constexpr GUID kConfigurationClass = {
+    0x7cda6aca,
+    0xa03e,
+    0x49c8,
+    {0x94, 0x58, 0x03, 0x34, 0xd2, 0x0e, 0x07, 0xce}};
+inline constexpr GUID kConfigurationInterface = {
+    0x8aaf9303,
+    0xad25,
+    0x48b9,
+    {0x9a, 0x57, 0xd9, 0xc3, 0x7e, 0x00, 0x9d, 0x9f}};
+struct Configuration : IUnknown {
+  virtual HRESULT STDMETHODCALLTYPE SetSDKVersion(UINT version,
+                                                  LPCSTR path) = 0;
+  virtual HRESULT STDMETHODCALLTYPE CreateDeviceFactory(UINT version,
+                                                        LPCSTR path, REFIID iid,
+                                                        void** out) = 0;
+  virtual void STDMETHODCALLTYPE FreeUnusedSDKs() = 0;
+};
 using GetInterface = HRESULT(WINAPI*)(REFCLSID, REFIID, void**);
 using CreateDml = HRESULT(WINAPI*)(ID3D12Device*, UINT, REFIID, void**);
 }  // namespace a2f::independent

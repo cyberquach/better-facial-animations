@@ -39,6 +39,7 @@ fi
 FFMPEG=${FFMPEG:-deps/ffmpeg/win64}
 ORT=${ORT:-deps/dml/microsoft.ml.onnxruntime.directml}
 DML=${DML:-deps/dml/microsoft.ai.directml}
+AGILITY=${AGILITY:-deps/dml/microsoft.direct3d.d3d12}  # pinned by dist/Agility/SOURCE.txt, SHA256SUMS
 MODEL=${MODEL:-models/mark/network_fp16.onnx}  # Audio2Face-3D v2.3 Mark
 MODEL_FP32=${MODEL_FP32:-$(dirname "$MODEL")/network.onnx}  # test only: reference for the FP16 network
 MODEL3=${MODEL3:-models/v3/network_fp16.onnx}  # v3.0, folded (tools/a2f3_fold.py)
@@ -77,6 +78,10 @@ cp $FFMPEG/COPYING.LGPLv2.1 $L/FFmpeg-LGPL-2.1.txt
 cp $ORT/LICENSE $L/onnxruntime-LICENSE.txt
 cp $ORT/ThirdPartyNotices.txt $L/onnxruntime-ThirdPartyNotices.txt
 cp $DML/LICENSE.txt $L/DirectML-LICENSE.txt
+AGILITY_DLL=$AGILITY/build/native/bin/x64/D3D12Core.dll
+echo "$(cut -d' ' -f1 dist/Agility/SHA256SUMS)  $AGILITY_DLL" | sha256sum -c - || exit 1
+mkdir -p "$P/BetterFacialAnimations/Agility"
+cp "$AGILITY_DLL" "$P/BetterFacialAnimations/Agility/" || exit 1
 cp dist/licenses/* $L/
 python3 tools/package_installer.py build/installer "$V" || exit 1
 du -sh $PKG
