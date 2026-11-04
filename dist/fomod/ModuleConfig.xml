@@ -9,13 +9,27 @@
         <group name="Independent GPU mode (opt-in; read the requirements first)" type="SelectAny">
           <plugins order="Explicit">
             <plugin name="I use Community Shaders or ReShade (Warning — read description)">
-              <description>REQUIRES Windows 10 22H2 or Windows 11 with the August 2023 or later updates (Proton: a recent build whose vkd3d-proton supports Independent Devices) AND a driver that supports it. Basic DirectX 12 alone is not enough.
+              <description>Use this option if Community Shaders (including Bottled/Open Shaders), ReShade or another graphics mod causes problems with the default shared GPU mode.
 
-Enable Independent GPU mode if you use Community Shaders (including Bottled/Open Shaders), ReShade or another graphics mod and the default shared GPU mode has problems.
+What does this do?
+BFA creates a separate software connection to your graphics card for facial-animation processing. This DirectX feature is called "Independent Devices". Skyrim and BFA still use the same physical graphics card; you do not need a second card.
 
-Inference then uses the DirectX 12 Independent Devices API: BFA gets the device factory from D3D12GetInterface and creates its own device and compute queue on the same GPU, apart from the game's graphics device.
+Requirements — follow the section for your operating system:
 
-If a requirement is missing the model does not load, vanilla lip-sync plays and the settings page names it. A lost device is recreated. Restart Skyrim after changing this. See GPU-SETUP.txt.</description>
+WINDOWS
+Install the August 22, 2023 cumulative Windows update or a later cumulative update:
+• Windows 10 22H2: KB5029331 (OS build 19045.3393).
+• Windows 11 21H2: KB5029332 (OS build 22000.2360).
+• Windows 11 22H2: KB5029351 (OS build 22621.2215).
+Newer Windows 11 versions already include this Windows feature. You do not need to install these old updates if you have a newer cumulative update or Windows version. Run winver from the Start menu to check your version and build.
+
+LINUX / PROTON
+Use a Proton build whose included vkd3d-proton supports Independent Devices. The Windows updates listed above are only for people running Windows.
+
+ON EITHER SYSTEM
+Your graphics driver must also support this feature. Install the latest driver available for your graphics card. Having DirectX 12 alone does not guarantee support.
+
+If a requirement is missing, the model does not load, vanilla lip-sync plays and the settings page identifies the problem. Restart Skyrim after changing this option. See GPU-SETUP.txt.</description>
               <conditionFlags>
                 <flag name="GraphicsRoute">independent</flag>
               </conditionFlags>
