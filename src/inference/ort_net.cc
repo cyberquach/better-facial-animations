@@ -647,20 +647,78 @@ bool LoadApi(const std::wstring& dll_dir, std::string& err) {
   return true;
 }
 
-bool GraphicsCheck(HRESULT hr, const char* stage, std::string& err) {
-  if (SUCCEEDED(hr)) return true;
+std::string StageError(HRESULT hr, const char* stage) {
   char code[16];
   snprintf(code, sizeof code, "%08lX", static_cast<unsigned long>(hr));
-  err = std::string("independent device: ") + stage + " failed (" + code +
-        "); shared-device fallback disabled";
+  return std::string("independent device: ") + stage + " failed (" + code + ")";
+}
+
+bool GraphicsCheck(HRESULT hr, const char* stage, std::string& err) {
+  if (SUCCEEDED(hr)) return true;
+  err = StageError(hr, stage) + "; shared-device fallback disabled";
   return false;
+}
+
+// Owns raw. A successful call that produced nothing is reported as
+// E_NOINTERFACE at the same stage.
+template <class T>
+ComPtr<T> Obtained(HRESULT hr, T* raw, const char* stage, std::string& err) {
+  ComPtr<T> out(raw);
+  if (!GraphicsCheck(hr, stage, err)) return nullptr;
+  if (!out) GraphicsCheck(E_NOINTERFACE, stage, err);
+  return out;
+}
+
+// Resolve the mod-manager-visible runtime directory, preserving Unicode paths.
+// CreateDeviceFactory accepts an absolute UTF-8 SDK path with a trailing slash.
+std::string AgilityPath(const std::wstring& dll_dir) {
+  const auto relative = dll_dir + L"\\Agility\\";
+  const DWORD size = GetFullPathNameW(relative.c_str(), 0, nullptr, nullptr);
+  if (!size) return {};
+  std::vector<wchar_t> full(size);
+  const DWORD written =
+      GetFullPathNameW(relative.c_str(), size, full.data(), nullptr);
+  if (!written || written >= size) return {};
+  const int bytes =
+      WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, full.data(), written,
+                          nullptr, 0, nullptr, nullptr);
+  if (!bytes) return {};
+  std::string path(bytes, '\0');
+  if (!WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, full.data(), written,
+                           path.data(), bytes, nullptr, nullptr))
+    return {};
+  return path;
+}
+
+// This changes only our factory, never the process SDK selection. The SDK
+// configuration is released normally; FreeUnusedSDKs is deliberately never
+// called, preserving the existing process-lifetime runtime/resource policy.
+ComPtr<independent::Factory> AgilityFactory(independent::GetInterface get,
+                                            const std::string& path,
+                                            std::string& err) {
+  independent::Configuration* raw = nullptr;
+  const HRESULT queried =
+      get(independent::kConfigurationClass,
+          independent::kConfigurationInterface, reinterpret_cast<void**>(&raw));
+  const auto config =
+      Obtained(queried, raw, "Agility SDK configuration query", err);
+  if (!config) return nullptr;
+  independent::Factory* made = nullptr;
+  const HRESULT created = config->CreateDeviceFactory(
+      independent::kAgilityVersion, path.c_str(),
+      independent::kFactoryInterface, reinterpret_cast<void**>(&made));
+  return Obtained(created, made, "Agility CreateDeviceFactory (SDK 619)", err);
 }
 
 // get is injectable for the offline factory contract. No global state is
 // imported/applied, and no ordinary D3D12CreateDevice call is made here.
+// A non-empty dll_dir enables the bundled Agility runtime when the default
+// factory is unavailable.
 ComPtr<ID3D12Device> MakeIndependentDevice(independent::GetInterface get,
                                            std::string& err,
-                                           IUnknown* adapter = nullptr) {
+                                           IUnknown* adapter = nullptr,
+                                           const std::wstring& dll_dir = {},
+                                           bool force_bundled_agility = false) {
   diagnostics::Progress(diagnostics::Stage::kFactory);
   auto api_status = [](const std::string& result) {
     diagnostics::State().IndependentApi(result);
@@ -678,29 +736,50 @@ ComPtr<ID3D12Device> MakeIndependentDevice(independent::GetInterface get,
     return nullptr;
   }
   independent::Factory* raw = nullptr;
-  const HRESULT found =
-      get(independent::kFactoryClass, independent::kFactoryInterface,
-          reinterpret_cast<void**>(&raw));
-  const ComPtr<independent::Factory> factory(raw);
+  const HRESULT found = force_bundled_agility
+      ? E_NOINTERFACE
+      : get(independent::kFactoryClass, independent::kFactoryInterface,
+            reinterpret_cast<void**>(&raw));
+  ComPtr<independent::Factory> factory(raw);
+  if (FAILED(found)) factory.reset();
+  const HRESULT direct = FAILED(found) ? found : factory ? S_OK : E_NOINTERFACE;
+  const char* const stage = found == E_NOINTERFACE
+                                ? "runtime API unavailable: device factory"
+                                : "runtime API query: device factory";
+  std::string status =
+      direct == E_NOINTERFACE ? "unavailable: " : "query failed: ";
+  if (force_bundled_agility && dll_dir.empty()) {
+    GraphicsCheck(E_INVALIDARG, "forced Agility runtime directory missing", err);
+    api_status("query failed: " + err);
+    return nullptr;
+  }
+  if (FAILED(direct) && !dll_dir.empty()) {
+    const std::string path = AgilityPath(dll_dir);
+    if (ort_log)
+      ort_log((force_bundled_agility
+                   ? std::string("ForceBundledAgility=1: default factory skipped")
+                   : StageError(direct, stage)) +
+              "; trying bundled Agility SDK 619 at " + path);
+    std::string recovery;
+    factory = AgilityFactory(get, path, recovery);
+    if (factory) {
+      if (ort_log)
+        ort_log("GPU startup: bundled Agility factory obtained (SDK 619)");
+    } else {
+      // Both failures, one trailing policy suffix (carried by recovery).
+      err = force_bundled_agility ? "forced Agility: " + recovery
+                                  : StageError(direct, stage) + "; " + recovery;
+      status = "query failed: ";
+    }
+  } else if (FAILED(direct)) {
+    GraphicsCheck(direct, stage, err);
+  }
   // Capture the runtime actually selected by the factory query, including on
   // failure. Passive reporting does not create a device or load a graphics
   // runtime.
   diagnostics::State().System(GpuReport(false));
-  if (!GraphicsCheck(found,
-                     found == E_NOINTERFACE
-                         ? "runtime API unavailable: device factory"
-                         : "runtime API query: device factory",
-                     err)) {
-    api_status(std::string(found == E_NOINTERFACE ? "unavailable: "
-                                                  : "query failed: ") +
-               err + "; driver support not tested");
-    return nullptr;
-  }
   if (!factory) {
-    GraphicsCheck(E_NOINTERFACE, "null device factory", err);
-    api_status(
-        "query failed: runtime returned a null factory; driver support not "
-        "tested");
+    api_status(status + err + "; driver support not tested");
     return nullptr;
   }
   api_status("available (factory obtained; does not establish driver support)");
@@ -716,12 +795,8 @@ ComPtr<ID3D12Device> MakeIndependentDevice(independent::GetInterface get,
   const HRESULT made = factory->CreateDevice(
       adapter, D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device),
       reinterpret_cast<void**>(&raw_device));
-  ComPtr<ID3D12Device> device(raw_device);
-  if (!GraphicsCheck(
-          made, "device creation: CreateDevice (runtime API available)", err))
-    return nullptr;
-  if (!device) GraphicsCheck(E_NOINTERFACE, "null independent device", err);
-  return device;
+  return Obtained(made, raw_device,
+                  "device creation: CreateDevice (runtime API available)", err);
 }
 
 // Only the inference worker accesses this context. Model sessions borrow COM
@@ -751,11 +826,14 @@ struct IndependentContext {
   }
 
   ComPtr<ID3D12Device> Acquire(independent::GetInterface get, std::string& err,
-                               IUnknown* adapter = nullptr) {
+                               IUnknown* adapter = nullptr,
+                               const std::wstring& dll_dir = {},
+                                           bool force_bundled_agility = false) {
     if (!Healthy(err)) return nullptr;
     if (!attempted) {
       attempted = true;
-      device = MakeIndependentDevice(get, err, adapter);
+      device = MakeIndependentDevice(get, err, adapter, dll_dir,
+                                     force_bundled_agility);
       if (!device) {
         Reject(err);
         return nullptr;
@@ -815,7 +893,9 @@ class GpuAttempt {
   std::string& err_;
 };
 
-ComPtr<ID3D12Device> OpenIndependentDevice(std::string& err, int index = 0) {
+ComPtr<ID3D12Device> OpenIndependentDevice(const std::wstring& dll_dir,
+                                           std::string& err, int index = 0,
+                                           bool force_bundled_agility = false) {
   independent_adapter = index;
   auto& context = IndependentGpu(index);
   ComPtr<IDXGIAdapter1> adapter;
@@ -829,7 +909,7 @@ ComPtr<ID3D12Device> OpenIndependentDevice(std::string& err, int index = 0) {
   return context.Acquire(
       reinterpret_cast<independent::GetInterface>(
           reinterpret_cast<void*>(D3d12Export("D3D12GetInterface"))),
-      err, adapter.get());
+      err, adapter.get(), dll_dir, force_bundled_agility);
 }
 
 // Initialize the shared DML device and queue once. Keep partial initialization
@@ -949,7 +1029,7 @@ using Dims = std::initializer_list<std::pair<const char*, int>>;
 bool CreateSession(const std::wstring& model, bool gpu, bool metacommands,
                    bool independent_device, const std::wstring& dll_dir,
                    Dims dims, Session& out, std::string& err,
-                   int gpu_adapter = 0) {
+                   int gpu_adapter = 0, bool force_bundled_agility = false) {
   Session s;
   s.independent = independent_device;
   const ScopedWrappers keep(s.wrappers);
@@ -958,7 +1038,8 @@ bool CreateSession(const std::wstring& model, bool gpu, bool metacommands,
       err = "independent device: DML1 does not support disabling metacommands";
       return false;
     }
-    s.device = OpenIndependentDevice(err, gpu_adapter);
+    s.device = OpenIndependentDevice(dll_dir, err, gpu_adapter,
+                                     force_bundled_agility);
     if (!s.device) return false;
   } else if (gpu) {
     diagnostics::Progress(diagnostics::Stage::kDevice);
@@ -1147,7 +1228,7 @@ std::unique_ptr<EmotionNet> CreateOrtEmotionNet(const std::wstring& dll_dir,
   if (!CreateSession(
           model, o.gpu, o.metacommands, o.independent_device, dll_dir,
           {{"batch_size", 1}, {"seq_len", kVoiceWindow}, {"batch", 1}}, session,
-          err, o.gpu_adapter))
+          err, o.gpu_adapter, o.force_bundled_agility))
     return nullptr;
   auto net = std::make_unique<OrtEmotionNet>(std::move(session), performance);
   std::vector<float> silence(kVoiceWindow);
@@ -1169,7 +1250,7 @@ std::unique_ptr<Net> CreateOrtNet(const std::wstring& dll_dir,
   if (!CreateSession(
           model, o.gpu, o.metacommands, o.independent_device, dll_dir,
           {{"input_dynamic_axes_1", batch}, {"emotion_dynamic_axes_1", batch}},
-          s, err, o.gpu_adapter))
+          s, err, o.gpu_adapter, o.force_bundled_agility))
     return nullptr;
   info = std::string("Audio2Face-3D v2.3, onnxruntime ") + version +
          DescribeProvider(o) + ", batch " + std::to_string(batch);
@@ -1193,7 +1274,7 @@ std::unique_ptr<Net> CreatePerformanceNet(const std::wstring& dll_dir,
   if (!attempt.allowed()) return nullptr;
   Session s;
   if (!CreateSession(model, o.gpu, o.metacommands, o.independent_device,
-                     dll_dir, {{"batch", 1}}, s, err, o.gpu_adapter))
+                     dll_dir, {{"batch", 1}}, s, err, o.gpu_adapter, o.force_bundled_agility))
     return nullptr;
   auto net = std::make_unique<PerformanceNet>(std::move(s));
   // One run now, as CreateOrtNet's.
@@ -1222,7 +1303,7 @@ std::unique_ptr<Net> CreateOrtNet3(const std::wstring& dll_dir,
                       {"identity_dynamic_axes_1", 1},
                       {"emotion_dynamic_axes_1", 1},
                       {"input_latents_dynamic_axes_1", 1}},
-                     s, err, o.gpu_adapter))
+                     s, err, o.gpu_adapter, o.force_bundled_agility))
     return nullptr;
   info = std::string("Audio2Face-3D v3.0, onnxruntime ") + version +
          DescribeProvider(o);

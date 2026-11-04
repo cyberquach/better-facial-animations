@@ -29,3 +29,7 @@ The specific License Agreement for NVIDIA Audio2Emotion Model for Use with
 Audio2Face Project governs this derivative, including its use restrictions.
 Only for use with the NVIDIA Audio2Face project, not for emotion recognition.
 See licenses/NVIDIA-Audio2Emotion-License.txt and emotion_performance.json.
+
+Agility/D3D12Core.dll: unmodified Microsoft DirectX Agility SDK 1.619.5, x64.
+Microsoft software license terms apply; see licenses/DirectX-Agility-LICENSE.txt
+and licenses/DirectX-Agility-distributable-files.txt.
