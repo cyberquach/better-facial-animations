@@ -25,6 +25,7 @@ struct OrtOptions {
   // True: independent device/private queue. False: 4.0-style shared device.
   // The caller selects one route; failures never select a different provider.
   bool independent_device = false;
+  bool force_bundled_agility = false;  // INI-only, independent mode, restart required
 };
 
 // dll_dir: folder holding onnxruntime.dll / DirectML.dll. info receives a

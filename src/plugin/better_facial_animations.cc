@@ -947,6 +947,7 @@ std::unique_ptr<a2f::Net> CreateNet(bool gpu, std::string& err,
   o.gpu_adapter = selection->gpu_adapter;
   o.batch = config.batch;
   o.independent_device = config.independent_device;
+  o.force_bundled_agility = config.force_bundled_agility;
   if (selection->mapping->network !=
       ModelFor(selection->network).mapping_network) {
     err = "the A2FDirect bin is of the other network";
@@ -1115,6 +1116,7 @@ Sentiment PrepareSentiment(const Job& job, const std::vector<float>& pcm,
     options.gpu = tune.EmotionUsesGpu();
     options.gpu_adapter = std::max(0, tune.emotion_device);
     options.independent_device = config.independent_device;
+    options.force_bundled_agility = config.force_bundled_agility;
     a2f::diagnostics::Attempt diagnostic(
         a2f::diagnostics::Component::kSentiment, options.gpu,
         options.independent_device, err);

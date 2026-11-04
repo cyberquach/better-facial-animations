@@ -1,0 +1,6 @@
+Microsoft.Direct3D.D3D12 1.619.5 (retail), SDK version 619, x64.
+Source: https://api.nuget.org/v3-flatcontainer/microsoft.direct3d.d3d12/1.619.5/microsoft.direct3d.d3d12.1.619.5.nupkg
+Package SHA512: f7c0a819610066d7cf03d18a4349f51b4f1e9b4f1b3f8ff5f7fbd9490e683471696e6fe50a11f8639efe3247c16ae18799f30bd36096160797dd880a0fceb47f
+build.sh copies build/native/bin/x64/D3D12Core.dll unchanged from the extracted
+package at $AGILITY after checking it against SHA256SUMS.
+See ../licenses/DirectX-Agility-LICENSE.txt and DirectX-Agility-distributable-files.txt.

@@ -47,7 +47,18 @@ std::vector<std::string> DiagnoseNet(bool gpu, const std::string& err,
     out.push_back(
         "GPU model unavailable in Independent GPU mode. Vanilla lip-sync "
         "remains active.");
-    if (has("runtime API unavailable:"))
+    if (has("forced Agility"))
+      out.push_back("Forced bundled Agility failed. Set ForceBundledAgility=0 "
+                    "and restart to restore normal factory selection. "
+                    "See the detailed error in the log.");
+    else if (has("Agility"))
+      out.push_back(
+          "Both the default factory and bundled Agility recovery failed. "
+          "Keep BetterFacialAnimations/Agility/D3D12Core.dll with the mod. "
+          "See the log for each factory error and runtime path. "
+          "The Windows version check alone does not verify runtime API "
+          "availability. Driver support was not tested.");
+    else if (has("runtime API unavailable:"))
       out.push_back(
           "The loaded DirectX runtime does not expose the Independent "
           "Devices API. Independent GPU mode needs Windows 10 22H2 or Windows "

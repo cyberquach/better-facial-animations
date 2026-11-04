@@ -796,6 +796,8 @@ void LoadIni() {
   // key takes precedence over retired GpuDevice/AutoGpuDevice settings.
   config.independent_device =
       ini.GetLongValue("General", "IndependentGpuDevice", 0) != 0;
+  config.force_bundled_agility =
+      ini.GetLongValue("General", "ForceBundledAgility", 0) != 0;
   if (version < 9 && config.independent_device) {
     CSimpleIniA user;
     user.SetUnicode();
@@ -959,6 +961,8 @@ void SaveIni() {
   write("General", "IniVersion", b);
   write("General", "IndependentGpuDevice",
         config.independent_device ? "1" : "0");
+  write("General", "ForceBundledAgility",
+        config.force_bundled_agility ? "1" : "0");
   snprintf(b, sizeof b, "%d", saved_hotkey);
   write("General", "OverridesHotkey", b);
   snprintf(b, sizeof b, "%d", saved_gpu_adapter);
