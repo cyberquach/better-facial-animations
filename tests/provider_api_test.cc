@@ -111,6 +111,7 @@ std::vector<uint8_t> Wave() {
   return wav;
 }
 std::vector<SKSE::Impl::TaskDelegate*> pending_tasks;
+constexpr int kDispatchBudgetMs = 3000;  // bounded: a hang is a failure
 bool dispatch_probe = false;
 uint64_t cancel_on_dispatch = 0;
 std::atomic<bool> dispatch_done{false};
@@ -133,7 +134,9 @@ void AddTask(void* opaque) {
       queued->Dispose();
       dispatch_done = true;
     });
-    for (int i = 0; i < 600 && !dispatch_done; ++i) Sleep(5);
+    for (int waited = 0; waited < kDispatchBudgetMs && !dispatch_done;
+         waited += 5)
+      Sleep(5);
     CHECK(dispatch_done && "provider calls/dispatch queue lock inversion");
     dispatcher.join();
   }

@@ -64,6 +64,7 @@ int main() {
   config.gpu = false; // direct CPU selection honors the requested model
   for (bool independent : {false, true}) {
     config.independent_device = independent;
+    config.force_bundled_agility = true;
     for (int network : {2, 3, 4}) {
     config.network = network;
     model.network = network == 4 ? 3 : network;
@@ -73,6 +74,7 @@ int main() {
       CHECK(!CreateNet(gpu, err, info));
       CHECK(a2f::creates == before + (gpu && !independent ? 2 : 1) && a2f::version_seen == network);
       CHECK(a2f::seen.gpu == gpu && a2f::seen.independent_device == config.independent_device);
+      CHECK(a2f::seen.force_bundled_agility == config.force_bundled_agility);
       CHECK(a2f::seen.gpu_adapter == 2);
       CHECK(a2f::seen.metacommands == (!gpu || independent));
     }
@@ -83,6 +85,7 @@ int main() {
   a2f::allow_cpu = true;
   for (bool independent : {false, true}) {
     config.independent_device = independent;
+    config.force_bundled_agility = true;
     for (int network : {2, 3, 4}) {
       config.network = network;
       config.gpu = true;
@@ -126,6 +129,7 @@ int main() {
   for (bool independent : {false, true}) {
   for (const char* mode : {"0", "1", "2", "3", "99"}) {
     const char* ini = ".\\Data\\SKSE\\Plugins\\BetterFacialAnimations.ini";
+    CHECK(WritePrivateProfileStringA("General", "ForceBundledAgility", mode, ini));
     CHECK(WritePrivateProfileStringA("General", "GpuDevice", mode, ini));
     CHECK(WritePrivateProfileStringA("General", "GpuAdapter", "2", ini));
     CHECK(WritePrivateProfileStringA("General", "AutoGpuDevice", mode, ini));
@@ -133,9 +137,11 @@ int main() {
     CHECK(WritePrivateProfileStringA("Debug", "UseDeviceWrapper", "1", ini));
     LoadIni();
     CHECK(config.independent_device == independent);
+    CHECK(config.force_bundled_agility == (std::string(mode) != "0"));
     SaveIni();
     LoadIni();
     CHECK(config.independent_device == independent);
+    CHECK(config.force_bundled_agility == (std::string(mode) != "0"));
     config.model = L"test.onnx";
     config.network = 4;
     model.network = 3;
@@ -146,6 +152,7 @@ int main() {
       CHECK(CreateNet(gpu, err, info));
       CHECK(a2f::creates == before + 1 && a2f::version_seen == 4);
       CHECK(a2f::seen.gpu == gpu && a2f::seen.independent_device == config.independent_device);
+      CHECK(a2f::seen.force_bundled_agility == config.force_bundled_agility);
       CHECK(a2f::seen.gpu_adapter == 2);
       CHECK(!a2f::DeviceRedirected());
     }

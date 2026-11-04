@@ -40,6 +40,7 @@ struct Config {  // fixed after load
   bool gpu = true;
   int gpu_adapter = 0;              // startup selection
   bool independent_device = false;  // fixed GPU route; change INI and restart
+  bool force_bundled_agility = false;  // INI-only, independent mode, restart required
   int network = a2f::kNetV3;        // the model at startup, see ModelFor
   int batch = 2;
   int log_lines = 400;

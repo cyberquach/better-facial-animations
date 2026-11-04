@@ -99,6 +99,12 @@ your installed version with Start -> type "winver" -> Enter.
 The diagnostic report includes the Windows update revision, loaded DirectX
 runtime paths/versions, and an OS prerequisite result (met/too old/unknown).
 This is an advisory version check, not a driver test or GPU startup gate.
+If the default factory request fails, BFA tries the bundled Agility SDK
+1.619.5 (SDK 619) through ID3D12SDKConfiguration1::CreateDeviceFactory.
+Keep BetterFacialAnimations/Agility/D3D12Core.dll installed. This fallback
+stays in independent mode and does not change Skyrim's global runtime.
+Both factory errors are logged if recovery fails. A successful factory does
+not trigger this fallback if subsequent device creation or inference fails.
 Unmapped Windows releases and Wine/Proton report unknown. The independent
 startup separately reports runtime API availability before device creation;
 API availability does not establish driver support. A not-loaded DLL in the
@@ -234,7 +240,8 @@ itself distinguish a BFA bug from a driver or graphics-mod interaction.
 
 Common clues:
 - 80004002 at independent factory creation: the required interface is absent
-  from the runtime/translation layer. Check Windows/Proton support.
+  from the queried runtime/translation layer. Check whether bundled Agility
+  recovery succeeded next; a default-factory failure alone is recoverable.
 - DXGI_ERROR_UNSUPPORTED at independent device creation: the requested path
   is unsupported. Check the complete runtime + driver combination.
 - 887A0005: device removed/suspended. This alone does not prove lack of VRAM.
@@ -262,3 +269,9 @@ Documents/My Games/Skyrim Special Edition/SKSE/BetterFacialAnimations.log
 Support and reports:
 https://www.nexusmods.com/skyrimspecialedition/mods/193598?tab=posts
 https://www.nexusmods.com/skyrimspecialedition/mods/193598?tab=bugs
+
+Emergency INI-only override: [General] ForceBundledAgility=1 skips the default
+factory and requests the bundled SDK directly when IndependentGpuDevice=1.
+Default 0. Restart required. Ignored for shared GPU and CPU processing.
+Failure does not retry the default runtime. Set back to 0 and restart to undo.
+This requests SDK 619; Windows may use a newer system core instead.

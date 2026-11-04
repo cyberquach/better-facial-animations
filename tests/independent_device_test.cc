@@ -176,9 +176,46 @@ OrtStatus* ORT_API_CALL AttachDml1(OrtSessionOptions*, IUnknown* dml,
   ++attachments;
   return nullptr;
 }
+constexpr wchar_t kDllDir[] = L"C:\\BFA";
+constexpr char kAgilityPath[] = "C:\\BFA\\Agility\\";
+class Configuration : public a2f::independent::Configuration {
+ public:
+  ULONG refs = 0;
+  int creates = 0;
+  HRESULT result = S_OK;
+  bool null_success = false;
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void**) override { CHECK(false); return E_FAIL; }
+  ULONG STDMETHODCALLTYPE AddRef() override { return ++refs; }
+  ULONG STDMETHODCALLTYPE Release() override { CHECK(refs); return --refs; }
+  HRESULT STDMETHODCALLTYPE SetSDKVersion(UINT, LPCSTR) override { CHECK(false); return E_FAIL; }
+  void STDMETHODCALLTYPE FreeUnusedSDKs() override { CHECK(false); }
+  HRESULT STDMETHODCALLTYPE CreateDeviceFactory(UINT version, LPCSTR path,
+                                                REFIID iid, void** out) override {
+    ++creates;
+    CHECK(version == 619 && std::string(path) == kAgilityPath);
+    CHECK(iid == a2f::independent::kFactoryInterface);
+    *out = nullptr;
+    if (SUCCEEDED(result) && !null_success) { factory.AddRef(); *out = &factory; }
+    return result;
+  }
+} configuration;
+HRESULT configuration_result = S_OK;
+bool null_configuration = false;
+int configuration_queries = 0;
+int direct_queries = 0;
 HRESULT get_result = S_OK;
 bool null_factory = false;
 HRESULT WINAPI Get(REFCLSID clsid, REFIID iid, void** out) {
+  if (clsid == a2f::independent::kConfigurationClass) {
+    ++configuration_queries;
+    CHECK(iid == a2f::independent::kConfigurationInterface);
+    *out = nullptr;
+    if (SUCCEEDED(configuration_result) && !null_configuration) {
+      configuration.AddRef(); *out = &configuration;
+    }
+    return configuration_result;
+  }
+  ++direct_queries;
   CHECK(clsid == a2f::independent::kFactoryClass);
   CHECK(iid == a2f::independent::kFactoryInterface);
   *out = nullptr;
@@ -311,6 +348,81 @@ int main() {
   std::string err;
   diagnostics::Attempt diagnostic(diagnostics::Component::kFace, true, true,
                                   err);
+  CHECK(AgilityPath(kDllDir) == kAgilityPath);
+  CHECK(AgilityPath(L"C:\\BFA-\u00e9").find("BFA-\xc3\xa9") != std::string::npos);
+  factory.create_result = S_OK;
+  { auto n = MakeIndependentDevice(Get, err, nullptr, kDllDir); CHECK(n); }
+  CHECK(configuration_queries == 0);
+  const int direct_before = direct_queries;
+  { auto n = MakeIndependentDevice(Get, err, nullptr, kDllDir, true); CHECK(n); }
+  CHECK(direct_queries == direct_before && configuration_queries == 1);
+  configuration_result = E_NOINTERFACE;
+  CHECK(!MakeIndependentDevice(Get, err, nullptr, kDllDir, true));
+  CHECK(direct_queries == direct_before);
+  CHECK(err.find("forced Agility:") == 0);
+  CHECK(err.find("device factory failed") == std::string::npos);
+  configuration_result = S_OK;
+  CHECK(!MakeIndependentDevice(Get, err, nullptr, L"", true));
+  CHECK(direct_queries == direct_before);
+  err.clear();
+  for (HRESULT failure : {E_NOINTERFACE, E_FAIL, E_OUTOFMEMORY}) {
+    get_result = failure;
+    auto n = MakeIndependentDevice(Get, err, nullptr, kDllDir);
+    CHECK(n && err.empty() && !configuration.refs && !factory.refs);
+  }
+  get_result = S_OK;
+  null_factory = true;
+  { auto n = MakeIndependentDevice(Get, err, nullptr, kDllDir); CHECK(n); }
+  null_factory = false;
+  get_result = E_NOINTERFACE;
+  configuration_result = E_NOINTERFACE;
+  CHECK(!MakeIndependentDevice(Get, err, nullptr, kDllDir));
+  CHECK(err.find("runtime API unavailable: device factory failed (80004002)") == 0 ||
+        err.find("independent device: runtime API unavailable: device factory failed (80004002)") == 0);
+  CHECK(err.find("Agility SDK configuration query failed (80004002)") != std::string::npos);
+  const char kPolicy[] = "shared-device fallback disabled";
+  CHECK(err.find(kPolicy) == err.rfind(kPolicy));  // one policy suffix
+  CHECK(diagnostics::State().Read().independent_api.find("query failed:") == 0);
+  configuration_result = S_OK;
+  null_configuration = true;
+  CHECK(!MakeIndependentDevice(Get, err, nullptr, kDllDir));
+  CHECK(err.find("Agility SDK configuration query failed (80004002)") != std::string::npos);
+  null_configuration = false;
+  for (HRESULT failure : {HRESULT(0x887e0003), E_FAIL}) {
+    configuration.result = failure;
+    CHECK(!MakeIndependentDevice(Get, err, nullptr, kDllDir));
+    CHECK(err.find("Agility CreateDeviceFactory") != std::string::npos);
+    CHECK(!configuration.refs && !factory.refs && !device.refs);
+  }
+  configuration.result = S_OK;
+  configuration.null_success = true;
+  CHECK(!MakeIndependentDevice(Get, err, nullptr, kDllDir));
+  CHECK(err.find("Agility CreateDeviceFactory (SDK 619) failed (80004002)") != std::string::npos);
+  configuration.null_success = false;
+  expected_adapter = &fake_dml;
+  { auto n = MakeIndependentDevice(Get, err, expected_adapter, kDllDir); CHECK(n); }
+  expected_adapter = nullptr;
+  get_result = S_OK;
+  factory.create_result = DXGI_ERROR_UNSUPPORTED;
+  const int queries = configuration_queries;
+  CHECK(!MakeIndependentDevice(Get, err, nullptr, kDllDir));
+  CHECK(configuration_queries == queries);
+  get_result = E_NOINTERFACE;
+  factory.create_result = S_OK;
+  {
+    IndependentContext retained;
+    auto first = retained.Acquire(Get, err, nullptr, kDllDir);
+    const int created = configuration.creates;
+    auto second = retained.Acquire(Get, err, nullptr, kDllDir);
+    CHECK(first && second && first.get() == second.get());
+    CHECK(configuration.creates == created && device.refs == 3);
+  }
+  CHECK(!device.refs && !factory.refs && !configuration.refs);
+  get_result = S_OK;
+  factory.create_result = DXGI_ERROR_UNSUPPORTED;
+  factory.creates = 0;
+  device.final_releases = 0;
+  puts("Agility factory recovery, failure provenance, isolation and UTF-8 paths passed");
   CHECK(!MakeIndependentDevice(nullptr, err));
   CHECK(err.find("unavailable") != std::string::npos);
   get_result = E_NOINTERFACE;
@@ -418,7 +530,7 @@ int main() {
   for (int model = 0; model < 12; ++model) {
     {
       Session next;
-      next.device = OpenIndependentDevice(err);
+      next.device = OpenIndependentDevice(kDllDir, err);
       CHECK(next.device.get() == &device);
       CHECK(AppendIndependentProvider(L"", &dml, nullptr, next.device.get(),
                                       next.dml_device, err));
@@ -428,17 +540,17 @@ int main() {
     CHECK(device.refs == 1 && fake_dml.refs == 1 && queue.refs == 1);
     CHECK(!device.final_releases && !fake_dml.final_releases && !queue.final_releases);
     { Session cpu; }  // no model/device reference exists during CPU operation
-    CHECK(OpenIndependentDevice(err));  // reopening reuses the same device
+    CHECK(OpenIndependentDevice(kDllDir, err));  // reopening reuses the same device
   }
   CHECK(attachments == 12 && factory.creates == creates_before + 1);
   CHECK(dml_creates == creates_dml_before && device.queues == creates_queue_before);
   TestSessionOptions(dml);
   // DML-only loss disables the retained context even if D3D12 is healthy.
   fake_dml.removed = DXGI_ERROR_DEVICE_REMOVED;
-  CHECK(!OpenIndependentDevice(err));
+  CHECK(!OpenIndependentDevice(kDllDir, err));
   CHECK(err.find("DirectML removed reason") != std::string::npos);
   fake_dml.removed = S_OK;
-  CHECK(!OpenIndependentDevice(err));  // latch persists, never silently revived
+  CHECK(!OpenIndependentDevice(kDllDir, err));  // latch persists, never silently revived
   CHECK(err.find("GPU attempt failed") != std::string::npos);
   CHECK(!AppendIndependentProvider(L"", &dml, nullptr, &device, dml_device, err));
   CHECK(attachments == 13 && factory.creates == creates_before + 1);
