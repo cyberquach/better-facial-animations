@@ -4,11 +4,13 @@
 // cleanup. Engine tasks/lookups and generated animation are controlled
 // fixtures.
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "../src/plugin/better_facial_animations.cc"
@@ -109,7 +111,32 @@ std::vector<uint8_t> Wave() {
   return wav;
 }
 std::vector<SKSE::Impl::TaskDelegate*> pending_tasks;
+bool dispatch_probe = false;
+uint64_t cancel_on_dispatch = 0;
+std::atomic<bool> dispatch_done{false};
 void AddTask(void* opaque) {
+  if (dispatch_probe) {
+    // Model a dispatcher holding the SKSE queue lock: enqueue cannot proceed
+    // until the already queued production task returns.
+    dispatch_probe = false;
+    CHECK(!pending_tasks.empty());
+    auto* queued = pending_tasks.back();
+    pending_tasks.pop_back();
+    dispatch_done = false;
+    std::thread dispatcher([queued] {
+      if (cancel_on_dispatch) {
+        const auto* api = BFA_QueryInterface(BFA_API_VERSION);
+        CHECK(api->EndUtterance(cancel_on_dispatch, BFA_kAborted) ==
+              BFA_kResultOK);
+      }
+      queued->Run();
+      queued->Dispose();
+      dispatch_done = true;
+    });
+    for (int i = 0; i < 600 && !dispatch_done; ++i) Sleep(5);
+    CHECK(dispatch_done && "provider calls/dispatch queue lock inversion");
+    dispatcher.join();
+  }
   auto* task = static_cast<SKSE::Impl::TaskDelegate*>(opaque);
   pending_tasks.push_back(task);
 }
@@ -606,6 +633,31 @@ int main() {
   CHECK(queue.empty() && cache.empty());
   CHECK(api->UnregisterListener(listener) == BFA_kResultOK);
   CHECK(api->UnregisterListener(listener) == BFA_kResultNotFound);
+  // Exercise both enqueue paths against an already queued, cancelled task.
+  // Even a cancelled task must acquire calls before checking its stop flag.
+  // Also end the reply while enqueue is blocked: late tasks must not revive it.
+  for (int scenario = 0; scenario < 4; ++scenario) {
+    const bool start = scenario % 2 != 0;
+    const bool cancel = scenario >= 2;
+    line.utterance_id = api->NewUtteranceId();
+    auto target = api->Prepare(&line, &result);
+    CHECK(target && result == BFA_kResultPending);
+    auto cancelled = api->Prepare(&line, &result);
+    CHECK(cancelled && api->Stop(cancelled, BFA_kAborted) == BFA_kResultOK);
+    cancel_on_dispatch = cancel ? line.utterance_id : 0;
+    dispatch_probe = true;
+    if (start) {
+      CHECK(api->Start(target, 0) == BFA_kResultPending);
+    } else {
+      CHECK(api->Prepare(&line, &result) && result == BFA_kResultPending);
+    }
+    CHECK(!dispatch_probe && dispatch_done);
+    CHECK(api->EndUtterance(line.utterance_id, BFA_kAborted) ==
+          (cancel ? BFA_kResultNotFound : BFA_kResultOK));
+    RunTasks();
+    CHECK(queue.empty() && cache.empty());
+    CHECK(api->Start(target, 0) == BFA_kResultInvalidHandle);
+  }
   puts(
       "provider: event lifecycle, playback clock, reply purge, cancellation, "
       "emotion, reset and expiry passed");
