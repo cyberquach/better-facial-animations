@@ -50,6 +50,9 @@ needs in-game review. `provider-api` runs the provider interface (`include/a2f/s
 over the production plugin with mocked engine lookups and a synthetic generation;
 covers deferred admission, animation-start events, playback clocks, per-line emotion,
 reply-scoped queue/cache cleanup, late callback cancellation, capacity, reset and expiry.
+It also bounds concurrent dispatch against both Prepare and Start enqueue paths,
+modelling SKSE VR holding its queue lock until a production task returns,
+and checks cancellation while enqueue is blocked cannot revive retired lines.
 The simplified event ABI needs in-game validation. `provider-sentiment` runs a provider line
 through the production worker with a stub emotion model and facial network: the selected
 Audio2Emotion model's reading, the caller's channels and the multiplier reach the line's
