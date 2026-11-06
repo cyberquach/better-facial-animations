@@ -339,14 +339,15 @@ void ReadMorphs(uint8_t* shape, direct::ShapeIn& s) {
   }
 }
 
-// The memory a head mapping holds.
+// Retained storage, including spare capacity; excludes allocator metadata.
 size_t HeadBytes(const direct::Head& h) {
-  auto n = [](const auto& v) { return v.size() * sizeof(v[0]); };
-  size_t b = n(h.row) + n(h.basis) + n(h.region_w) + n(h.lip_w) + n(h.shapes);
+  auto n = [](const auto& v) { return v.capacity() * sizeof(v[0]); };
+  size_t b = sizeof(h) + n(h.lip_jaw) + n(h.row) + n(h.basis) +
+             n(h.region_w) + n(h.lip_w) + n(h.shapes) + n(h.calibrated_lips);
   for (const auto& s : h.shapes) {
     b += n(s.name) + n(s.idx) + n(s.w) + n(s.pos) + n(s.jaw) +
          n(s.tongue_weight) + n(s.tongue) + n(s.model_jaw) + n(s.model_tongue) +
-         n(s.walls);
+         n(s.walls) + n(s.seam);
     for (const auto& e : s.expr) b += n(e);
   }
   return b;
@@ -358,12 +359,12 @@ void LogHead(const std::string& key, const direct::Head& h, double ms) {
       "blink %.2f %.2f brow %.2f %.2f jaw %.2f lips %.2f smile %.2f %.2f, "
       "lips %u upper %u lower (to Mark's %.2f), mouth part %u vertices "
       "on the jaw, %u tongue, strength brows %.2f cheeks %.2f mouth "
-      "%.2f, calibration ignored %u, %.1f ms",
+      "%.2f, calibration ignored %u, lip calibration %zu, %.1f ms",
       key.c_str(), h.nv, h.shapes.size(), h.scale, r[0], r[1], r[2], r[3], r[4],
       r[5], r[6], r[7], h.lips[0], h.lips[1], h.lip_dist, h.jaw_verts,
       h.tongue_verts, h.auto_scale[direct::kBrows],
       h.auto_scale[direct::kCheeks], h.auto_scale[direct::kMouth],
-      h.calibration_ignored, ms);
+      h.calibration_ignored, h.calibrated_lips.size(), ms);
 }
 
 // map_lock held: drops the least recently used heads past the budget, but
