@@ -97,11 +97,15 @@ Missing supplied files return 2. Do not commit the TRI files.
 For changes to head-part classification, hair exclusion or face-shape traversal,
 run `./build.sh compat` and the `hair-assets` regression gate before merging or
 releasing those changes.
+`follower-mapping` checks reused attachment searches against independently built
+searches and playback against the original scalar summation.
 `head-parts` runs synthetic oral-extra inheritance, hair-extra graph, shader, alias and facial-hair controls
 on SE/AE/VR layouts in the normal suite and CI. `hair-assets` replays the reviewed
-installed-source corpus through the current production traversal: all 18,582
-scalp-hair occurrences must remain excluded and all 12,314 beard/brow/lash
-controls admitted. It includes the KS Scarlet alias and Erin SMP support cases.
+installed-source corpus through the current production traversal: all 18,581
+scalp-hair occurrences must remain excluded and all 12,315 beard/brow/lash
+controls admitted. The secondary Lucien beard is a facial control, even though
+its HDPT parent is Hair. The corpus includes the KS Scarlet alias and Erin SMP
+support cases.
 
 Add `"hair-assets": {"path": "/path/to/hair-corpus"}` to the fixture map and run:
 
@@ -109,8 +113,9 @@ Add `"hair-assets": {"path": "/path/to/hair-corpus"}` to the fixture map and run
 python3 tools/compatibility.py --tier assets --case hair-assets --fixtures fixtures.json
 ```
 
-The local corpus contains `queries.bin` (HDPT graphs and mesh names/shader flags)
-and independently reviewed `expectations.json`; hashes and counts are pinned in
+The local corpus contains version-2 `queries.bin` (HDPT graphs, default
+expression TRI paths, and mesh names/shader flags) and independently reviewed
+`expectations.json`; hashes and counts are pinned in
 [hair_assets.json](hair_assets.json). Missing files are blocked; changed hashes
 or admission results fail. Keep third-party derived fixtures outside Git. To
 refresh the corpus after asset changes, repeat the installed-source audit, review

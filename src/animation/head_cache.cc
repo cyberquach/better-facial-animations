@@ -89,11 +89,20 @@ bool MouthName(const std::string& name) {
   return false;
 }
 
+std::string ExpressionPath(const RE::BGSHeadPart& part) {
+  const char* path =
+      part.morphs[RE::BGSHeadPart::MorphIndex::kDefaultMorph].model.c_str();
+  if (!path) return {};
+  std::string normalized = Lower(path);
+  std::replace(normalized.begin(), normalized.end(), '/', '\\');
+  return normalized;
+}
+
 }  // namespace
 
 // Extra parts (long beards' _1bit meshes, Khajiit mustache alphas, lashes,
 // hairlines, blind eyes) are mostly Misc: they take their parent's type.
-// Hair and all linked extras are excluded, including nested/shared extras.
+// Hair extras stay excluded unless an authored beard resource identifies them.
 // Custom slots (e.g. piercings) keep their full 32-bit type.
 void LoadHeadPartTypes() {
   head_part_types.clear();
@@ -105,6 +114,7 @@ void LoadHeadPartTypes() {
     return;
   }
   std::unordered_map<std::string, uint32_t> types;
+  std::unordered_set<std::string> duplicate_names;
   for (uint32_t i = 0; i < forms->size(); ++i) {
     auto* form = forms->data()[i];
     if (!form || form->formType != RE::FormType::HeadPart) {
@@ -114,9 +124,13 @@ void LoadHeadPartTypes() {
     }
     auto* part = static_cast<RE::BGSHeadPart*>(form);
     const char* name = part->formEditorID.c_str();
-    if (name && *name) types[Lower(name)] = part->type.underlying();
+    if (name && *name) {
+      auto [it, inserted] =
+          types.insert_or_assign(Lower(name), part->type.underlying());
+      if (!inserted) duplicate_names.insert(it->first);
+    }
   }
-  // Exclusion takes precedence over every inherited type and mouth hint.
+  // Exclusion takes precedence over inherited types and mouth hints.
   // Follow the complete graph, including unnamed intermediates, custom slots,
   // shared extras and cycles. A hair-owned accessory must not move separately
   // from the primary hair, even when another part also references it.
@@ -188,6 +202,32 @@ void LoadHeadPartTypes() {
       types[n] = type;
       ++inherited;
     }
+  }
+  // Some replacers package a second beard layer under Hair. A facial name
+  // alone is insufficient: require the expression TRI of an independent,
+  // explicitly typed beard. This changes registry entries once, not playback.
+  std::unordered_set<std::string> beard_morphs;
+  for (auto* form : *forms) {
+    auto* part = static_cast<RE::BGSHeadPart*>(form);
+    const char* name = part->formEditorID.c_str();
+    if (part->type.underlying() != kHpFacialHair || !name ||
+        hair_visited.count(part) || hair_parts.count(Lower(name)))
+      continue;
+    std::string path = ExpressionPath(*part);
+    if (!path.empty()) beard_morphs.insert(std::move(path));
+  }
+  for (auto* form : *forms) {
+    const auto* part = static_cast<RE::BGSHeadPart*>(form);
+    const char* name = part->formEditorID.c_str();
+    if (part->type.underlying() != kHpMisc || !name) continue;
+    const std::string n = Lower(name);
+    // A name-wide exception must not admit another form with the same name.
+    if (!hair_parts.count(n) || duplicate_names.count(n) ||
+        !FacialHairName(n) || HairName(n) || JewelryName(n) ||
+        !beard_morphs.count(ExpressionPath(*part)))
+      continue;
+    hair_parts.erase(n);
+    types[n] = kHpFacialHair;
   }
   head_part_types = std::move(types);
   Log("head parts: %u, %zu named, %u extras typed by their parent",
@@ -342,8 +382,8 @@ void ReadMorphs(uint8_t* shape, direct::ShapeIn& s) {
 // Retained storage, including spare capacity; excludes allocator metadata.
 size_t HeadBytes(const direct::Head& h) {
   auto n = [](const auto& v) { return v.capacity() * sizeof(v[0]); };
-  size_t b = sizeof(h) + n(h.lip_jaw) + n(h.row) + n(h.basis) +
-             n(h.region_w) + n(h.lip_w) + n(h.shapes) + n(h.calibrated_lips);
+  size_t b = sizeof(h) + n(h.lip_jaw) + n(h.row) + n(h.basis) + n(h.region_w) +
+             n(h.lip_w) + n(h.shapes) + n(h.calibrated_lips);
   for (const auto& s : h.shapes) {
     b += n(s.name) + n(s.idx) + n(s.w) + n(s.pos) + n(s.jaw) +
          n(s.tongue_weight) + n(s.tongue) + n(s.model_jaw) + n(s.model_tongue) +

@@ -568,7 +568,8 @@ float MovedZ(const std::vector<float>& v, const std::vector<float>& a,
 // the same lid (upper lids close down, lower lids up).
 void Follow(const ShapeIn& s, const std::vector<float>& skin, uint32_t snv,
             const std::vector<uint8_t>& lips, float lips_z,
-            const std::vector<float>& skin_blink, float mid, Head::Shape& out) {
+            const std::vector<float>& skin_blink, float mid,
+            std::vector<KdTree>& trees, Head::Shape& out) {
   float off[3];
   FrameOffset(s.verts.data(), s.nv, off);
   std::vector<float> v = Shifted(s.verts, off);
@@ -602,33 +603,35 @@ void Follow(const ShapeIn& s, const std::vector<float>& skin, uint32_t snv,
     for (uint32_t i = 0; i < s.nv; ++i)
       follow[i] = p90 > 0 ? std::clamp(mag[i] / p90, 0.f, 1.f) : 0.f;
   }
-  // candidate skin vertices: all but the lower lip (above the lips) / all
-  // but the upper lip (below), or for the eyes those the blinks move, by
-  // side and lid
-  std::vector<uint32_t> ids[4];  // eyes: side (x < mid, x > mid) x lid
-  for (uint32_t i = 0; i < snv; ++i) {
-    if (!eyes) {
-      if (lips[i] != kLowerLip) ids[0].push_back(i);
-      if (lips[i] != kUpperLip) ids[1].push_back(i);
-      continue;
+  // The candidate skin is shared by every attachment of this kind.
+  if (trees.empty()) {
+    // candidate skin vertices: all but the lower lip (above the lips) / all
+    // but the upper lip (below), or for the eyes those the blinks move, by
+    // side and lid
+    std::vector<uint32_t> ids[4];  // eyes: side (x < mid, x > mid) x lid
+    for (uint32_t i = 0; i < snv; ++i) {
+      if (!eyes) {
+        if (lips[i] != kLowerLip) ids[0].push_back(i);
+        if (lips[i] != kUpperLip) ids[1].push_back(i);
+        continue;
+      }
+      V3 b = At(&skin_blink[i * 3]);
+      if (Len(b) <= 0.1f) continue;
+      ids[(skin[i * 3] > mid ? 1 : 0) * 2 + (b.z > 0 ? 1 : 0)].push_back(i);
     }
-    V3 b = At(&skin_blink[i * 3]);
-    if (Len(b) <= 0.1f) continue;
-    ids[(skin[i * 3] > mid ? 1 : 0) * 2 + (b.z > 0 ? 1 : 0)].push_back(i);
+    for (int side = 0; eyes && side < 2; ++side)  // a lid's fallback: the eye
+      for (int lid = 0; lid < 2; ++lid)
+        if (ids[side * 2 + lid].empty())
+          ids[side * 2 + lid] = ids[side * 2 + 1 - lid];
+    for (int c = 0; c < 4; ++c) trees.emplace_back(skin.data(), ids[c]);
   }
-  for (int side = 0; eyes && side < 2; ++side)  // a lid's fallback: the eye
-    for (int lid = 0; lid < 2; ++lid)
-      if (ids[side * 2 + lid].empty())
-        ids[side * 2 + lid] = ids[side * 2 + 1 - lid];
-  std::vector<KdTree> trees;
-  for (int c = 0; c < 4; ++c) trees.emplace_back(skin.data(), ids[c]);
   for (uint32_t i = 0; i < s.nv; ++i) {
     if (follow[i] <= 0.02f) continue;
     V3 p = At(&v[i * 3]);
     int c = eyes           ? (p.x > mid ? 1 : 0) * 2 + (bz[i] > 0 ? 1 : 0)
             : p.z < lips_z ? 1
                            : 0;
-    if (ids[c].empty()) continue;
+    if (trees[c].order.empty()) continue;
     uint32_t idx[kFollow];
     float dist[kFollow];
     double w[kFollow];
@@ -1701,7 +1704,6 @@ bool BuildHead(const Mark& mk, const std::vector<ShapeIn>& shapes, Head& out,
                   &out.region_w[v * kNumSkinRegions]);
   MapLipControls(g, *skin, head_f, upper_extension, out);
 
-
   MapJaw(mk, g, out);
   // Every shape: skin, followers, model jaw and authored tongue motion.
   float off[3];
@@ -1710,6 +1712,7 @@ bool BuildHead(const Mark& mk, const std::vector<ShapeIn>& shapes, Head& out,
   std::vector<float> blink(n3);
   for (size_t i = 0; i < n3; ++i)
     blink[i] = morph(kBlinkLeft)[i] + morph(kBlinkRight)[i];
+  std::vector<KdTree> face_trees, eye_trees;
   for (const ShapeIn& sh : shapes) {
     if (!sh.nv || sh.verts.size() != static_cast<size_t>(sh.nv) * 3) continue;
     Part part = sh.part;
@@ -1736,7 +1739,8 @@ bool BuildHead(const Mark& mk, const std::vector<ShapeIn>& shapes, Head& out,
       MouthSeam(*skin, sh, g, hs);
       MouthWalls(*skin, sh, g, hs);
     } else {
-      Follow(sh, local, nv, lab, lips.z + off[2], blink, g.mid, hs);
+      auto& trees = part == Part::kEyes ? eye_trees : face_trees;
+      Follow(sh, local, nv, lab, lips.z + off[2], blink, g.mid, trees, hs);
       if (part == Part::kPinned) Pin(sh, local, nv, lab, lips.z + off[2], hs);
     }
     out.shapes.push_back(std::move(hs));
@@ -1945,13 +1949,16 @@ bool Evaluate(const Head& h, const float* coefficients, const float* scales,
         o[i * 3 + 2] += d.z;
       }
     } else {
-      for (uint32_t i = 0; i < s.nv; ++i)
+      for (uint32_t i = 0; i < s.nv; ++i) {
+        V3 delta = At(&o[i * 3]);
         for (int k = 0; k < kFollow; ++k) {
           float wk = s.w[i * kFollow + k];
           if (wk == 0) continue;
           uint32_t r = s.idx[i * kFollow + k];
-          for (int j = 0; j < 3; ++j) o[i * 3 + j] += wk * skin[r * 3 + j];
+          delta = delta + At(&skin[r * 3]) * wk;
         }
+        Put(&o[i * 3], delta);
+      }
     }
   }
   return true;

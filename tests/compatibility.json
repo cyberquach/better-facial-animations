@@ -703,6 +703,17 @@
       "covers": [
         "Cached basis, strength masks and jaw state change the audit fingerprint; calibration diagnostics do not hide playback changes"
       ]
+    },
+    {
+      "id": "follower-mapping",
+      "test": "follower_mapping_test",
+      "sources": [
+        "tests/follower_mapping_test.cc"
+      ],
+      "covers": [
+        "cached skin searches equal independently rebuilt searches for eyes, brows, beards and pinned parts",
+        "follower accumulation matches the scalar reference, including zero weights and neutral restoration"
+      ]
     }
   ],
   "assets": [
@@ -826,7 +837,7 @@
       "fixture_directory": true,
       "covers": [
         "pinned installed HDPT registries and dynamic mesh names/shader flags",
-        "18,582 excluded scalp-hair occurrences and 12,314 preserved facial-hair controls",
+        "18,581 excluded scalp-hair occurrences and 12,315 preserved facial-hair controls",
         "production capture/playback traversal, including inactive source variants"
       ]
     },

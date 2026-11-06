@@ -1,15 +1,15 @@
 {
-  "schema": 1,
-  "corpus": "Installed source-variant hair audit, 2026-10-12",
+  "schema": 2,
+  "corpus": "Installed source-variant hair audit, 2026-10-12; expression metadata and reviewed beard correction, 2026-11-06",
   "scope": "Offline HDPT/name/shader traversal with valid synthetic dynamic/FOD data; source occurrences include inactive variants. No game-rendering or physics guarantee.",
   "queries": 1364251,
   "scenarios": 130,
   "assertions": {
-    "excluded": 18582,
-    "preserved": 12314
+    "excluded": 18581,
+    "preserved": 12315
   },
   "files": {
-    "queries.bin": "bed4914b9649111dab7fa73c9f71f5b0e7ff43946d8677f716a5a7d7956ee906",
-    "expectations.json": "2f02999686c7149360be6350519d2914bcab9e7256c77edcaf54c13775faf7c2"
+    "queries.bin": "5c2fce91481e0de5264d69ce03a72cc65bcb164e716331d8c0916f5205eca39b",
+    "expectations.json": "dde86c2ea455c93f79a51e53f37ae0de8670c6df9e5babddb2385b0dd187daec"
   }
 }
