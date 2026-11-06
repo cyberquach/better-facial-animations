@@ -674,6 +674,35 @@
         "Independent sloped-face surface oracle catches exposed mouth lining during sideways skin motion",
         "Both tongue modes, native Happy, expression-only and unchanged face/teeth/tongue/jaw opening; removed-correction negative control"
       ]
+    },
+    {
+      "id": "lip-correspondence",
+      "test": "lip_correspondence_test",
+      "sources": [
+        "tests/lip_correspondence_test.cc"
+      ],
+      "covers": [
+        "native source lip identity independent of target cropping",
+        "partial correction, preserved nonlip rows, fitting-scale invariance and extended controls/followers"
+      ]
+    },
+    {
+      "id": "face-audit-gates",
+      "python": "tests/test_face_audit.py",
+      "covers": [
+        "Contact-only mapping changes cannot skip speech",
+        "Independent upper-surface strain/count and missing-measurement controls"
+      ]
+    },
+    {
+      "id": "face-audit-state",
+      "test": "face_audit_test",
+      "sources": [
+        "tests/face_audit_test.cc"
+      ],
+      "covers": [
+        "Cached basis, strength masks and jaw state change the audit fingerprint; calibration diagnostics do not hide playback changes"
+      ]
     }
   ],
   "assets": [

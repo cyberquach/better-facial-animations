@@ -53,6 +53,10 @@ void Check(bool ok, const char* label) {
   if (!ok) ++failures;
 }
 
+void SetSyntheticBasis(Head& h, std::initializer_list<float> basis) {
+  h.basis = basis;
+}
+
 void CheckLipJawMotion(const Head& h, const ShapeIn& skin,
                        uint32_t first_skin) {
   std::vector<float> c(h.k + kNumMouthCoef, 0.f);
@@ -60,7 +64,7 @@ void CheckLipJawMotion(const Head& h, const ShapeIn& skin,
   c[0] = 1;
   for (float direction : {-1.f, 1.f}) {
     Head vertical = h;
-    vertical.basis = {0.f, 0.f, direction};
+    SetSyntheticBasis(vertical, {0.f, 0.f, direction});
     std::vector<std::vector<float>> result;
     Evaluate(vertical, c.data(), kScales, kNoExpressions, nullptr,
              TongueMode::kAuthored, result, 1, 1, 0, 0, true);
@@ -73,7 +77,7 @@ void CheckLipJawMotion(const Head& h, const ShapeIn& skin,
   }
   // A rotating jaw has different vertical travel at each lip point.
   Head rotated = h;
-  rotated.basis = {0.f, 0.f, -10.f};
+  SetSyntheticBasis(rotated, {0.f, 0.f, -10.f});
   std::fill_n(rotated.jaw_motion, 9, 0.f);
   rotated.jaw_motion[0] = rotated.jaw_motion[4] = rotated.jaw_motion[8] = 1.f;
   const float angle = -0.15f, cs = std::cos(angle), sn = std::sin(angle);
@@ -99,7 +103,7 @@ void CheckLipJawMotion(const Head& h, const ShapeIn& skin,
 // race choice must not change the shared mapping or other mouth behavior.
 void CheckLipJawFade(const Head& head, uint32_t partial, uint32_t outside) {
   Head h = head;
-  h.basis = {0.3f, 0.2f, -1.f};
+  SetSyntheticBasis(h, {0.3f, 0.2f, -1.f});
   std::vector<float> c(h.k + kNumMouthCoef, 0.f);
   c[0] = 1;
   const float weight = h.lip_w[partial * 2 + 1];
@@ -179,7 +183,7 @@ void SharedMouthBorder(const Mark& mk, ShapeIn skin, ShapeIn mouth) {
       if (!ok || h.shapes[1].seam.size() != 8) continue;
       // Independent speech channels intentionally pull skin and teeth apart.
       h.row.assign(h.nv, 0);
-      h.basis = {0.3f, 0.2f, -0.8f};
+      SetSyntheticBasis(h, {0.3f, 0.2f, -0.8f});
       h.shapes[1].expr[10].assign(m.nv * 3, 0.1f);
       Head detached = h;
       detached.shapes[1].seam.clear();
@@ -306,7 +310,7 @@ void CheckMouthWalls(const Mark& mk, ShapeIn skin, ShapeIn mouth) {
             return w.count > 0 && w.count <= kFollow;
           }), "wall support is bounded across head scales");
     h.row.assign(h.nv, 0);
-    h.basis = {0.3f, -0.4f, 0.2f};
+    SetSyntheticBasis(h, {0.3f, -0.4f, 0.2f});
     Head legacy = h;
     legacy.shapes[1].walls.clear();
     std::vector<float> c(h.k + kNumMouthCoef, 0.f);
@@ -542,9 +546,9 @@ bool BuildFixture(TongueMotion mode, MouthFixture& fixture) {
       Head reference = h;
       reference.shapes.resize(1);
       reference.row.assign(reference.nv, 0);
-      reference.basis = {1, 1, 1};
+      SetSyntheticBasis(reference, {1, 1, 1});
       mapped.row.assign(mapped.nv, 0);
-      mapped.basis = {factor, factor, factor};
+      SetSyntheticBasis(mapped, {factor, factor, factor});
       std::vector<float> speech(1 + kNumMouthCoef, 0);
       speech[0] = 1;
       for (float upper : {0.f, 2.f}) {

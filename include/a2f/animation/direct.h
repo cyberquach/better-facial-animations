@@ -211,6 +211,9 @@ struct Head {
   // vertices on the upper and lower lip, mean distance of the lips to Mark's,
   // mouth part vertices that follow the jaw and that are tongue
   float scale = 0, residual[kNumLandmarks] = {}, lip_dist = 0;
+  // Construction diagnostics only; playback reads the single calibrated basis.
+  std::vector<uint32_t> calibrated_lips;
+  bool extended_lip_controls = false;
   uint32_t lips[2] = {}, jaw_verts = 0, tongue_verts = 0;
   uint32_t calibration_ignored =
       0;  // collapsed vertices omitted from landmarks

@@ -423,6 +423,21 @@ void MalformedArrays() {
 }
 
 int main() {
+  {
+    direct::Head head;
+    const size_t empty = bfa::HeadBytes(head);
+    head.calibrated_lips.reserve(101);
+    head.calibrated_lips.push_back(0);
+    head.lip_jaw.reserve(7);
+    const size_t expected =
+        head.calibrated_lips.capacity() * sizeof(uint32_t) +
+        head.lip_jaw.capacity() * sizeof(direct::Head::LipJaw);
+    assert(bfa::HeadBytes(head) - empty == expected);
+    // Logical removal must still account for retained allocation capacity.
+    head.calibrated_lips.clear();
+    assert(bfa::HeadBytes(head) - empty == expected);
+  }
+
   using namespace bfa;
   struct Part {
     const char* name;
