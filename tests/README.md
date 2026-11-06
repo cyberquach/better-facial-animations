@@ -228,3 +228,8 @@ triangle count; indices are uint32. Speech uses uint32 frame count, uint32
 coefficient count, float32 fps, then frame-major float32 coefficients. Preserve
 NIF partition vertex order when extracting topology; the lining component must
 be identified from anatomy independently of production wall selection.
+
+`lip-correspondence` checks source lip identity independently of target cropping,
+partial corrections, preserved nonlip rows, scale invariance and continuous
+strength controls without altering authored expression-only playback. For a local before/after NPC inventory and
+recorded-speech comparison, see [face audit](../tools/face_audit/README.md).

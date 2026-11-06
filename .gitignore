@@ -14,6 +14,7 @@
 /tools/*
 !/tools/*.py
 !/tools/training/
+!/tools/face_audit/
 **/__pycache__/
 
 !/.gitlab-ci.yml
