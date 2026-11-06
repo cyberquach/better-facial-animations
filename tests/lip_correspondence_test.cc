@@ -30,6 +30,7 @@ void CheckExtendedControls(const Registration& g, const ShapeIn& shape,
   for (uint32_t v = 0; v < h.nv; ++v)
     h.region_w[v * kNumSkinRegions + kMouth] = 1;
   const std::vector<float> blink(shape.verts.size(), 0);
+  std::vector<KdTree> trees;
   for (uint32_t vertex : {0u, 1u}) {
     ShapeIn attachment;
     attachment.part = Part::kPinned;
@@ -41,7 +42,7 @@ void CheckExtendedControls(const Registration& g, const ShapeIn& shape,
       part.part = Part::kPinned;
       part.nv = 1;
       Follow(attachment, shape.verts, shape.nv, labels, g.lm[kLandmarkLips].z,
-             blink, g.mid, part);
+             blink, g.mid, trees, part);
       if (pinned)
         Pin(attachment, shape.verts, shape.nv, labels, g.lm[kLandmarkLips].z,
             part);
@@ -167,6 +168,7 @@ void CheckSmallConfidenceFollowers(const Mark& mk, const Registration& g,
       small_support = extension[0];
     }
     const std::vector<float> blink(shape.verts.size(), 0);
+    std::vector<KdTree> trees;
     for (bool pinned : {false, true}) {
       ShapeIn attached;
       attached.part = Part::kPinned;
@@ -174,7 +176,7 @@ void CheckSmallConfidenceFollowers(const Mark& mk, const Registration& g,
       attached.verts.assign(shape.verts.begin(), shape.verts.begin() + 3);
       Head::Shape upper;
       Follow(attached, shape.verts, shape.nv, labels, g.lm[kLandmarkLips].z,
-             blink, g.mid, upper);
+             blink, g.mid, trees, upper);
       if (pinned)
         Pin(attached, shape.verts, shape.nv, labels, g.lm[kLandmarkLips].z,
             upper);
@@ -183,7 +185,7 @@ void CheckSmallConfidenceFollowers(const Mark& mk, const Registration& g,
       attached.verts = {0, 9, g.lm[kLandmarkLips].z - 0.1f};
       Head::Shape lower;
       Follow(attached, shape.verts, shape.nv, labels, g.lm[kLandmarkLips].z,
-             blink, g.mid, lower);
+             blink, g.mid, trees, lower);
       if (pinned)
         Pin(attached, shape.verts, shape.nv, labels, g.lm[kLandmarkLips].z,
             lower);

@@ -29,6 +29,10 @@ int main(int argc, char** argv) {
     std::ifstream in(argv[1], std::ios::binary);
     std::ofstream out(argv[2], std::ios::binary);
     using namespace bfa;
+    char magic[8];
+    if (!in.read(magic, sizeof(magic)) ||
+        std::memcmp(magic, "BFAHAIR2", sizeof(magic)) != 0)
+      throw std::runtime_error("invalid hair fixture version");
     const uint32_t scenarios = ReadU32(in);
     for (uint32_t sc = 0; sc < scenarios; ++sc) {
       const uint32_t n = ReadU32(in);
@@ -39,7 +43,9 @@ int main(int argc, char** argv) {
       for (uint32_t i = 0; i < n; ++i) ptrs[i] = forms[i].data();
       for (uint32_t i = 0; i < n; ++i) {
         names[i] = ReadString(in);
-        const uint32_t type = ReadU32(in), count = ReadU32(in);
+        const uint32_t type = ReadU32(in);
+        const std::string morph = ReadString(in);
+        const uint32_t count = ReadU32(in);
         for (uint32_t j = 0; j < count; ++j) {
           const uint32_t index = ReadU32(in);
           if (index >= n) throw std::runtime_error("invalid extra-part index");
@@ -49,13 +55,14 @@ int main(int argc, char** argv) {
         p[0x1A] = kFtHeadPart;
         Field<uint32_t>(p, 0x6C) = type;
         Field<const char*>(p, 0x118) = FixtureString(names[i].c_str());
+        Field<const char*>(p, 0xC0) = FixtureString(morph.c_str());
         Field<FixtureArray>(p, 0x70) = {extras[i].data(),
-                                               uint32_t(extras[i].size()), 0,
-                                               uint32_t(extras[i].size())};
+                                        uint32_t(extras[i].size()), 0,
+                                        uint32_t(extras[i].size())};
       }
-      Field<FixtureArray>(handler,
-                      0x10 + kFtHeadPart * sizeof(FixtureArray)) = {
-          ptrs.data(), n, 0, n};
+      Field<FixtureArray>(
+          handler, 0x10 + kFtHeadPart * sizeof(FixtureArray)) = {ptrs.data(), n,
+                                                                 0, n};
       LoadHeadPartTypes();
       std::array<uint8_t, 0x1000> node{}, shape{}, fod{}, shader{};
       uint8_t* children[] = {shape.data()};
