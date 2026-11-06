@@ -422,6 +422,111 @@ void MalformedArrays() {
   MockRuntime();
 }
 
+// A hair-owned beard needs a matching expression resource, not just a name.
+void FacialHairExtras() {
+  using namespace bfa;
+  struct Spec {
+    const char* name;
+    uint32_t type;
+    const char* morph;
+    bool admitted;
+  };
+  const Spec specs[] = {
+      {"Style", kHpHair, "face/beard.tri", false},
+      {"RegisteredBeard", kHpFacialHair, "face/beard.tri", true},
+      {"LayerBeard", kHpMisc, "FACE\\BEARD.TRI", true},
+      {"NestedMustache", kHpMisc, "face/beard.tri", true},
+      {"UnrelatedBeard", kHpMisc, "other/beard.tri", false},
+      {"MissingBeard", kHpMisc, nullptr, false},
+      {"Hairline", kHpMisc, "face/beard.tri", false},
+      {"VirtualHeadBeard", kHpMisc, "face/beard.tri", false},
+      {"ScalpBeard", kHpMisc, "face/beard.tri", false},
+      {"BeardRing", kHpMisc, "face/beard.tri", false},
+      {"CustomBeard", 434, "face/beard.tri", false},
+      {"OwnedBeard", kHpFacialHair, "owned.tri", false},
+      {"OwnedBeardLayer", kHpMisc, "owned.tri", false},
+      {"BeardChild", kHpMisc, nullptr, false},
+      {"WrongSlotBeard", kHpMisc, nullptr, false},
+      // Editor IDs are case-insensitive and need not be unique across forms.
+      {"PrimaryBeard", kHpHair, nullptr, false},
+      {"primaryBEARD", kHpMisc, "face/beard.tri", false},
+      {"DuplicateBeard", kHpMisc, nullptr, false},
+      {"duplicateBEARD", kHpMisc, "face/beard.tri", false},
+      // Unnamed hair descendants cannot provide independent beard evidence.
+      {"", kHpFacialHair, "unnamed.tri", false},
+      {"UnnamedDonorBeard", kHpMisc, "unnamed.tri", false},
+      {nullptr, kHpFacialHair, "null.tri", false},
+      {"NullDonorBeard", kHpMisc, "null.tri", false},
+  };
+  std::vector<std::array<uint8_t, 0x120>> forms(std::size(specs));
+  std::vector<uint8_t*> parts;
+  for (size_t i = 0; i < forms.size(); ++i) {
+    auto* part = forms[i].data();
+    part[0x1A] = kFtHeadPart;
+    Field<uint32_t>(part, 0x6C) = specs[i].type;
+    Field<const char*>(part, 0x118) = FixtureString(specs[i].name);
+    // Independent engine layout: morphs[1].model, not Race/Chargen morphs.
+    Field<const char*>(part, 0xC0) = FixtureString(specs[i].morph);
+    parts.push_back(part);
+  }
+  std::vector<uint8_t*> extras(parts.begin() + 2, parts.end());
+  Field<FixtureArray>(parts[0], 0x70) = {extras.data(), uint32_t(extras.size()),
+                                         0, uint32_t(extras.size())};
+  uint8_t* nested[] = {parts[3], parts[13]};
+  uint8_t* cycle[] = {parts[2]};
+  Field<FixtureArray>(parts[2], 0x70) = {nested, 2, 0, 2};
+  Field<FixtureArray>(parts[3], 0x70) = {cycle, 1, 0, 1};
+  Field<const char*>(parts[14], 0x98) = FixtureString("face/beard.tri");
+  Field<const char*>(parts[14], 0xE8) = FixtureString("face/beard.tri");
+  Field<FixtureArray>(handler, 0x10 + kFtHeadPart * sizeof(FixtureArray)) = {
+      parts.data(), uint32_t(parts.size()), 0, uint32_t(parts.size())};
+  for (int runtime = 0; runtime < 3; ++runtime) {
+    test_se = runtime == 0;
+    test_vr = runtime == 2;
+    MockRuntime();
+    std::array<uint8_t, 0x1000> node{}, shape{}, fod{}, shader{};
+    uint8_t* children[] = {shape.data()};
+    uint8_t* extra_data[] = {fod.data()};
+    float vertices[] = {1, 2, 3, 4, 5, 6};
+    Field<uint8_t**>(node.data(), test_vr ? 0x140 : 0x118) = children;
+    Field<uint16_t>(node.data(), test_vr ? 0x14A : 0x122) = 1;
+    shape[test_vr ? 0x190 : 0x150] = 4;
+    Field<uint16_t>(shape.data(), test_vr ? 0x19A : 0x15A) = 2;
+    Field<uint32_t>(shape.data(), test_vr ? 0x1B0 : 0x170) = 32;
+    Field<uint8_t**>(shape.data(), 0x20) = extra_data;
+    Field<uint16_t>(shape.data(), 0x28) = 1;
+    Field<uint8_t*>(shape.data(), test_vr ? 0x168 : 0x128) = shader.data();
+    Field<uint64_t>(shader.data(), 0x38) = uint64_t{1} << 18;
+    Field<const char*>(fod.data(), 0x10) = FixtureString("FOD");
+    Field<uint32_t>(fod.data(), 0x24) = 2;
+    Field<const float*>(fod.data(), 0x18) = vertices;
+    for (int order = 0; order < 2; ++order) {
+      LoadHeadPartTypes();
+      for (const auto& spec : specs) {
+        if (!spec.name || !*spec.name) continue;
+        Field<const char*>(shape.data(), 0x10) = FixtureString(spec.name);
+        int seen = 0;
+        ForFaceShapes(node.data(), [&](uint8_t*, const char*, direct::Part part,
+                                       bool skin, uint32_t, const float*) {
+          assert(part == direct::Part::kHead && !skin);
+          ++seen;
+        });
+        assert(seen == (spec.admitted ? 1 : 0));
+      }
+      std::reverse(parts.begin(), parts.end());
+    }
+    // Registry rebuild must revoke the exception when its evidence disappears.
+    Field<const char*>(forms[1].data(), 0xC0) = nullptr;
+    LoadHeadPartTypes();
+    bool skin = true;
+    assert(Classify("LayerBeard", skin) == direct::Part::kNone && !skin);
+    assert(Classify("NestedMustache", skin) == direct::Part::kNone);
+    Field<const char*>(forms[1].data(), 0xC0) = FixtureString(specs[1].morph);
+  }
+  test_se = test_vr = false;
+  MockRuntime();
+}
+
 int main() {
   {
     direct::Head head;
@@ -614,6 +719,7 @@ int main() {
   HairExclusion();
   OralInheritance();
   MalformedArrays();
+  FacialHairExtras();
   puts(
       "head-part classification passed: custom 32-bit slots, Misc, hair "
       "extras, vanilla and unknown controls");
