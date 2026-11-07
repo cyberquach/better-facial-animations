@@ -156,7 +156,10 @@ contract, not an in-game or SMP-physics test.
 retained playback mappings, cancellation, manual GPU retries, explicit CPU and failed mapping loads.
 It does not establish in-game switching quality.
 
-`performance_model_test` covers native performance-model chunking and cancellation.
+`performance_model_test` checks native chunking, memory rollover/reset, cancellation
+and the packaged Block AttnRes ONNX against `tests/performance.fixtures` for both
+identities. The fixture is generated from full-sequence PyTorch predictions by
+`tools/export_performance.py`; missing fixtures fail the contract.
 With arguments `<plugin-dir> <performance.onnx> <pcm-f32> <Claire-reference-f32>
 <Mark-reference-f32>` it also checks the actual shipped CPU model against Python
 for both identities and reports frontend-inclusive timing; missing fixtures do not

@@ -529,7 +529,7 @@
         "window content: normalized frontend frames, silence padding, held emotion ends, context slot placement, emotion peak/mean",
         "pre-frontend and between-batch cancellation with no partial published output",
         "inference failure and nonfinite output propagation",
-        "optional actual packaged ONNX parity and frontend-inclusive CPU timing"
+        "actual packaged ONNX parity, KV history roll, per-line reset, both identities and cancellation recovery"
       ]
     },
     {

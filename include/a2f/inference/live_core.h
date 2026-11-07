@@ -41,17 +41,26 @@ constexpr int kNumOut3 = 2 * kLatent3 + kJawEyes3;
 constexpr int kState3 = 2 * 2 * 256;
 constexpr int kNumIdentity3 = 3;  // 0 Claire, 1 James, 2 Mark
 
-// The performance network (Thin120, distilled from v3.0): log-mel frames at
-// 30 fps, run in windows of kPerformanceWindowFrames that advance by
+// The performance network (Block AttnRes, distilled from v3.0): log-mel frames
+// at 30 fps, run in windows of kPerformanceWindowFrames that advance by
 // kPerformanceHopFrames, with kPerformanceContextFrames of context on each
 // side; each frame yields kPerformanceChannels of the v3 direct mapping.
 constexpr int kPerformanceFps = 30;
 constexpr int kMelBins = 80;
 constexpr int kPerformanceHopFrames = 90;
-constexpr int kPerformanceContextFrames = 17;
+constexpr int kPerformanceContextFrames = 15;
 constexpr int kPerformanceWindowFrames =
     kPerformanceHopFrames + 2 * kPerformanceContextFrames;
 constexpr int kPerformanceChannels = 73;
+constexpr int kPerformanceMemoryFrames = 256;
+constexpr int kPerformanceStateSize = 6 * 4 * kPerformanceMemoryFrames * 64;
+// Owned by one GeneratePerformance call. Never shared between utterances,
+// actors or identities; unused leading cache slots are masked by frames.
+struct PerformanceState {
+  std::vector<float> keys = std::vector<float>(kPerformanceStateSize);
+  std::vector<float> values = std::vector<float>(kPerformanceStateSize);
+  int64_t frames = 0;
+};
 constexpr int kNumEyeAngles = 4;  // right X/Y, left X/Y
 
 // Net::Version values.
@@ -68,15 +77,17 @@ constexpr int kNetPerformance = 4;
 // next state. Performance (RunPerformance): one window of normalized log-mel
 // frames (kPerformanceWindowFrames x kMelBins), the identity (0 Claire, 1
 // Mark) and the emotion (kPerformanceWindowFrames x kNumMod) -> normalized
-// motion (kPerformanceWindowFrames x kPerformanceChannels).
-// Implemented by OrtNet, OrtNet3 and PerformanceNet (ort_net.cc).
+// motion (kPerformanceHopFrames x kPerformanceChannels), plus next KV state.
+// Input includes context; output already excludes it. State starts empty per
+// line. Implemented by OrtNet, OrtNet3 and PerformanceNet (ort_net.cc).
 class Net {
  public:
   virtual ~Net() = default;
   virtual int Version() const { return kNetV2; }
   virtual bool RunPerformance(const float* mel, int64_t identity,
-                              const float* emotion, float* motion,
-                              std::string& err) {
+                              const float* emotion,
+                              const PerformanceState& state, float* motion,
+                              PerformanceState& next, std::string& err) {
     err = "not a performance network";
     return false;
   }

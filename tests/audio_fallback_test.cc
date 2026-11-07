@@ -103,13 +103,16 @@ struct PerformanceNet : a2f::Net {
   bool Run(const float*, const float*, int, float*, std::string&) override {
     return false;
   }
-  bool RunPerformance(const float*, int64_t id, const float*, float* motion,
-                      std::string&) override {
+  bool RunPerformance(const float*, int64_t id, const float*,
+                      const a2f::PerformanceState& state, float* motion,
+                      a2f::PerformanceState& next, std::string&) override {
+    next.frames =
+        std::min<int64_t>(256, state.frames + a2f::kPerformanceHopFrames);
     ++perf_runs;
     perf_identity = id;
     if (perf_switch) SelectPerformance(false);
     std::fill_n(motion,
-                a2f::kPerformanceWindowFrames * a2f::kPerformanceChannels, 0.f);
+                a2f::kPerformanceHopFrames * a2f::kPerformanceChannels, 0.f);
     return true;
   }
 };
