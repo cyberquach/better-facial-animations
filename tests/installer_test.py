@@ -27,6 +27,7 @@ def expected(flags):
         ('General', 'IndependentGpuDevice'): flags.get('GraphicsRoute') == 'independent',
         ('General', 'Enabled'): flags['FaceModel'] != 'disabled',
         ('General', 'UsePerformanceModel'): flags['FaceModel'] == 'performance',
+        ('General', 'UseUltraPerformanceModel'): flags['FaceModel'] == 'ultra',
         ('General', 'UseOldModel'): flags['FaceModel'] == 'old',
         ('General', 'SentimentAnalysis'): flags['EmotionModel'] != 'disabled',
         ('General', 'UsePerformanceEmotion'): flags['EmotionModel'] != 'full',
@@ -66,7 +67,7 @@ with tempfile.TemporaryDirectory() as directory:
         assert base.attrib['destination'] == 'SKSE\\Plugins\\BetterFacialAnimations.ini'
         assert int(base.attrib['priority']) > int(core.attrib['priority'])
         main = read_ini(out / base.attrib['source'].replace('\\', '/'))
-        assert main['General', 'IniVersion'] == '9'
+        assert main['General', 'IniVersion'] == '10'
         defaults, choices = {}, []
         for group in config.findall('installSteps/installStep/optionalFileGroups/group'):
             plugins = group.findall('plugins/plugin')
@@ -107,7 +108,7 @@ with tempfile.TemporaryDirectory() as directory:
         assert route_plugin.find('typeDescriptor/type').attrib['name'] == 'Optional'
         assert route_plugin.findtext("conditionFlags/flag[@name='GraphicsRoute']") == 'independent'
         patterns = config.findall('conditionalFileInstalls/patterns/pattern')
-        assert len(patterns) == (37 if full_emotion else 36)
+        assert len(patterns) == (38 if full_emotion else 37)
         lookup, ownership = {}, {}
         for pattern in patterns:
             dependencies = pattern.find('dependencies')
@@ -163,5 +164,5 @@ with tempfile.TemporaryDirectory() as directory:
         assert any('without SKSE Menu Framework' in text for text in descriptions)
         assert all('uncheck Force CPU' not in text for text in descriptions)
         assert 'Full — broader dialogue coverage' in (out / 'fomod/ModuleConfig.xml').read_text() if full_emotion else 'Full — broader dialogue coverage' not in (out / 'fomod/ModuleConfig.xml').read_text()
-assert total == 512000
+assert total == 640000
 print(f'{total} installer combinations, disjoint defaults, both package variants and concise help: pass')

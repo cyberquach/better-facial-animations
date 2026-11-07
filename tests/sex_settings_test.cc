@@ -103,7 +103,7 @@ int main() {
   CHECK(t.male.time_offset == .12f && t.female.time_offset == .12f);
   CHECK(t.male.voice_emotion == .375f && t.female.voice_emotion == .375f);
   CHECK(t.old_model && !t.logging);
-  CHECK(GetPrivateProfileIntA("General", "IniVersion", 0, ini) == 9);
+  CHECK(GetPrivateProfileIntA("General", "IniVersion", 0, ini) == 10);
   CHECK(t.player_face.upper_lip == 1 && t.player_face.lower_lip == 1);
   CHECK(t.player_face.voice_emotion == 1 && t.player_face.time_offset == 0);
   CHECK(&t.ForActor(false, true) == &t.player_face);
@@ -372,6 +372,7 @@ int main() {
   // launch and comes back from it (a switch's tune field, not its ini key).
   for (const Param& p : kParams) {
     if (!p.flag || !strcmp(p.key, "UsePerformanceModel") ||
+        !strcmp(p.key, "UseUltraPerformanceModel") ||
         !strcmp(p.key, "UseOldModel"))
       continue;
     const bool flipped = !*p.flag;
@@ -392,12 +393,13 @@ int main() {
   // survives save, load and reset.
   for (const char* independent : {"0", "1"}) {
     write("General", "IndependentGpuDevice", independent);
-    for (int selected : {4, 2, 3, 4}) {
+    for (int selected : {4, 5, 2, 3, 5, 4}) {
       SelectFaceOption(selected);
       const Tune selected_tune = SnapshotTune();
       CHECK(selected_tune.SelectedModel() == selected);
       CHECK(int(selected_tune.old_model) +
-                int(selected_tune.performance_model) ==
+                int(selected_tune.performance_model) +
+                int(selected_tune.ultra_performance_model) ==
             (selected != a2f::kNetV3));
       SaveIni();
       LoadIni();
@@ -417,7 +419,27 @@ int main() {
             ModelFor(a2f::kNetV3).mapping_file &&
         std::wstring(ModelFor(a2f::kNetPerformance).model_file) ==
             L"performance.onnx");
-  // V3 is the absence of both keys; UseV3Model is ignored and never
+  CHECK(ModelFor(a2f::kNetUltraPerformance).mapping_network == a2f::kNetV3);
+  CHECK(std::wstring(ModelFor(a2f::kNetUltraPerformance).model_file) ==
+        L"ultra-performance.onnx");
+  // Old explicit Performance choices keep the old model on upgrade.
+  write("General", "IniVersion", "9");
+  write("General", "UsePerformanceModel", "1");
+  write("General", "UseUltraPerformanceModel", nullptr);
+  LoadIni();
+  CHECK(SnapshotTune().SelectedModel() == a2f::kNetUltraPerformance);
+  SaveIni();
+  CHECK(written("General", "IniVersion") == 10);
+  LoadIni();
+  CHECK(SnapshotTune().SelectedModel() == a2f::kNetUltraPerformance);
+  // An explicit new choice is not migrated even with an older INI version.
+  write("General", "IniVersion", "9");
+  write("General", "UsePerformanceModel", "1");
+  write("General", "UseUltraPerformanceModel", "0");
+  LoadIni();
+  CHECK(SnapshotTune().SelectedModel() == a2f::kNetPerformance);
+  SaveIni();
+  // V3 is the absence of all three keys; UseV3Model is ignored and never
   // stored. Performance wins over Old.
   CHECK(GetPrivateProfileIntA("General", "UseV3Model", -1, ini) == -1);
   write("General", "UsePerformanceModel", "1");

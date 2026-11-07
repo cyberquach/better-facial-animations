@@ -57,14 +57,22 @@ std::unique_ptr<Net> Switch4(const std::wstring&, const std::wstring&,
   adapter_seen = o.gpu_adapter;
   return SwitchCreate(4, o.gpu, e, i);
 }
+std::unique_ptr<Net> Switch5(const std::wstring&, const std::wstring&,
+                             const OrtOptions& o, std::string& e,
+                             std::string& i) {
+  adapter_seen = o.gpu_adapter;
+  return SwitchCreate(5, o.gpu, e, i);
+}
 }  // namespace a2f
 #define CreateOrtNet Switch2
 #define CreateOrtNet3 Switch3
 #define CreatePerformanceNet Switch4
+#define CreateUltraPerformanceNet Switch5
 #include "../src/plugin/better_facial_animations.cc"
 #undef CreateOrtNet
 #undef CreateOrtNet3
 #undef CreatePerformanceNet
+#undef CreateUltraPerformanceNet
 
 void Select(int network, bool cpu = false) {
   using namespace bfa;
@@ -72,6 +80,7 @@ void Select(int network, bool cpu = false) {
     ScopedLock guard(settings_lock);
     for (const Param& p : kParams) {
       if (!strcmp(p.key, "UsePerformanceModel")) *p.flag = network == 4;
+      if (!strcmp(p.key, "UseUltraPerformanceModel")) *p.flag = network == 5;
       if (!strcmp(p.key, "UseOldModel")) *p.flag = network == 2;
       if (!strcmp(p.key, "ForceCPU")) *p.flag = cpu;
     }
@@ -93,8 +102,8 @@ int main() {
     CHECK(CopyFileW((std::wstring(cwd) + L"\\dist\\" + name).c_str(),
                     (PluginDir() + L"\\" + name).c_str(), TRUE));
   }
-  for (const wchar_t* name :
-       {L"performance.onnx", L"a2f3_fp16.onnx", L"network_fp16.onnx"}) {
+  for (const wchar_t* name : {L"ultra-performance.onnx", L"performance.onnx",
+                              L"a2f3_fp16.onnx", L"network_fp16.onnx"}) {
     HANDLE f = CreateFileW((PluginDir() + L"\\" + name).c_str(), GENERIC_WRITE,
                            0, nullptr, CREATE_NEW, 0, nullptr);
     CHECK(f != INVALID_HANDLE_VALUE);
@@ -174,6 +183,24 @@ int main() {
   Select(4);
   WorkerStep(keeper, false);
   CHECK(SnapshotModel()->network == 4 && a2f::created == before + 1);
+  // Every model switches to/from the old student with distinct cache entries.
+  for (int source : {2, 3, 4}) {
+    Select(source);
+    WorkerStep(keeper, false);
+    const auto source_mapping = SnapshotModel()->mapping;
+    Select(5);
+    WorkerStep(keeper, false);
+    CHECK(SnapshotModel()->network == 5 && keeper.loaded() && keeper.on_gpu());
+    CHECK(SnapshotModel()->mapping->network == 3);
+    if (source != 2) CHECK(SnapshotModel()->mapping == source_mapping);
+    auto ultra =
+        Request("same", 0, 0, false, false, SnapshotTune(), 0, world_epoch);
+    CHECK(ultra != performance && ultra->model_state->network == 5);
+    queue.clear();
+  }
+  Select(5, true);
+  WorkerStep(keeper, false);
+  CHECK(!keeper.on_gpu() && SnapshotModel()->network == 5);
   // GPU failure leaves no model; explicit retry and CPU selection remain
   // usable.
   a2f::fail_gpu = true;
@@ -241,8 +268,8 @@ int main() {
   CHECK(a2f::alive == 0);
   CHECK(DeleteFileA(ini));
   for (const wchar_t* name :
-       {L"A2FDirect.bin", L"A2FDirect3.bin", L"performance.onnx",
-        L"a2f3_fp16.onnx", L"network_fp16.onnx"})
+       {L"A2FDirect.bin", L"A2FDirect3.bin", L"ultra-performance.onnx",
+        L"performance.onnx", L"a2f3_fp16.onnx", L"network_fp16.onnx"})
     CHECK(DeleteFileW((PluginDir() + L"\\" + name).c_str()));
   for (const wchar_t* dir :
        {kPluginDir, L"Data\\SKSE\\Plugins", L"Data\\SKSE", L"Data"})

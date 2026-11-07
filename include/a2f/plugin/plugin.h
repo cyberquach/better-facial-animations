@@ -24,7 +24,8 @@ extern const char kVersion[];  // from the VERSION file
 enum class State { kPending, kReady, kFailed };
 
 // ---------------- settings ----------------
-// A network's files and footprint (a2f::kNetV2, kNetV3, kNetPerformance).
+// A network's files and footprint (see a2f::kNetV2 and the other network
+// identifiers).
 struct ModelInfo {
   int network;
   const wchar_t* model_file;
@@ -85,13 +86,16 @@ struct Tune {  // menu; defaults as dist/BetterFacialAnimations.ini
   // worker applies the selection and force_cpu live (SwitchModel).
   bool old_model = false;
   bool performance_model = false;
+  bool ultra_performance_model = false;
   int SelectedModel() const {
-    return performance_model ? a2f::kNetPerformance
-           : old_model       ? a2f::kNetV2
-                             : a2f::kNetV3;
+    return performance_model         ? a2f::kNetPerformance
+           : ultra_performance_model ? a2f::kNetUltraPerformance
+           : old_model               ? a2f::kNetV2
+                                     : a2f::kNetV3;
   }
   void SelectModel(int network) {
     performance_model = network == a2f::kNetPerformance;
+    ultra_performance_model = network == a2f::kNetUltraPerformance;
     old_model = network == a2f::kNetV2;
   }
   bool force_cpu = false;

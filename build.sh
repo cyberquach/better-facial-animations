@@ -69,7 +69,7 @@ if [ -f "$EMOTION_MODEL" ]; then
     cp "$EMOTION_MODEL" "$P/BetterFacialAnimations/emotion_fp16.onnx" || exit 1
 fi
 cp include/a2f/speech/BFA_API.h $P/BetterFacialAnimations/ || exit 1
-cp dist/performance.onnx dist/performance-model.json $P/BetterFacialAnimations/ || exit 1
+cp dist/performance.onnx dist/performance-model.json dist/ultra-performance.onnx dist/ultra-performance-model.json $P/BetterFacialAnimations/ || exit 1
 cp dist/emotion_performance.onnx dist/emotion_performance.json $P/BetterFacialAnimations/ || exit 1
 cp dist/GPU-SETUP.txt $P/BetterFacialAnimations/ || exit 1
 sed "s/@VERSION@/$V/" dist/README.txt > $P/BetterFacialAnimations/README.txt
