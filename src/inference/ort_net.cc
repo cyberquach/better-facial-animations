@@ -519,6 +519,70 @@ class OrtNet3 : public Net {
   Session s_;
 };
 
+class UltraPerformanceNet : public Net {
+ public:
+  explicit UltraPerformanceNet(Session s) : s_(std::move(s)) {}
+  ~UltraPerformanceNet() override { RetainFailedSession(s_); }
+  int Version() const override { return kNetUltraPerformance; }
+  int Batch() const override { return 1; }
+  bool Run(const float*, const float*, int, float*, std::string& err) override {
+    err = "not a v2.3 network";
+    return false;
+  }
+  bool RunUltraPerformance(const float* mel, int64_t identity,
+                           const float* emotion, float* motion,
+                           std::string& err) override {
+    if (!CanRun(s_.device.get(), err)) return FailRun(s_, failed, err);
+    if (identity < 0 || identity > 1) {
+      err = "invalid ultra performance identity";
+      return false;
+    }
+    constexpr int kNumInputs = 3;
+    const int64_t mel_shape[] = {1, kUltraPerformanceWindowFrames, kMelBins};
+    const int64_t identity_shape[] = {1};
+    const int64_t emotion_shape[] = {1, kUltraPerformanceWindowFrames, kNumMod};
+    const void* data[kNumInputs] = {mel, &identity, emotion};
+    const size_t bytes[kNumInputs] = {
+        sizeof(float) * kUltraPerformanceWindowFrames * kMelBins,
+        sizeof identity,
+        sizeof(float) * kUltraPerformanceWindowFrames * kNumMod};
+    const int64_t* shapes[kNumInputs] = {mel_shape, identity_shape,
+                                         emotion_shape};
+    const size_t ranks[kNumInputs] = {3, 1, 3};
+    const ONNXTensorElementDataType types[kNumInputs] = {
+        ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
+        ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64,
+        ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT};
+    const char* input_names[kNumInputs] = {"mel", "identity", "emotion"};
+    const char* output_names[] = {"normalized_motion"};
+    OrtPtr<OrtValue> inputs[kNumInputs];
+    const OrtValue* input_values[kNumInputs];
+    for (int i = 0; i < kNumInputs; ++i) {
+      OrtValue* value = nullptr;
+      if (!Check(api->CreateTensorWithDataAsOrtValue(
+                     s_.mem.get(), const_cast<void*>(data[i]), bytes[i],
+                     shapes[i], ranks[i], types[i], &value),
+                 err, input_names[i]))
+        return false;
+      inputs[i].reset(value);
+      input_values[i] = value;
+    }
+    OrtValue* raw_output = nullptr;
+    const bool ran =
+        Check(api->Run(s_.sess.get(), nullptr, input_names, input_values,
+                       kNumInputs, output_names, 1, &raw_output),
+              err, "ultra performance run");
+    OrtPtr<OrtValue> output(raw_output);
+    if (!ran) return FailRun(s_, failed, err);
+    return ReadFloats(output.get(),
+                      kUltraPerformanceWindowFrames * kPerformanceChannels,
+                      motion, err, "ultra performance output");
+  }
+
+ private:
+  Session s_;
+};
+
 class PerformanceNet : public Net {
  public:
   explicit PerformanceNet(Session s) : s_(std::move(s)) {}
@@ -1330,6 +1394,33 @@ std::unique_ptr<Net> CreateOrtNet(const std::wstring& dll_dir,
       y(static_cast<size_t>(batch) * kNumOut);
   if (!attempt.Finish(net->Run(x.data(), emo.data(), batch, y.data(), err)))
     return nullptr;
+  return net;
+}
+
+std::unique_ptr<Net> CreateUltraPerformanceNet(const std::wstring& dll_dir,
+                                               const std::wstring& model,
+                                               const OrtOptions& o,
+                                               std::string& err,
+                                               std::string& info) {
+  if (!LoadApi(dll_dir, err)) return nullptr;
+  GpuAttempt attempt(o, err);
+  if (!attempt.allowed()) return nullptr;
+  Session s;
+  if (!CreateSession(model, o.gpu, o.metacommands, o.independent_device,
+                     dll_dir,
+                     {{"batch", 1}, {"frames", kUltraPerformanceWindowFrames}},
+                     s, err, o.gpu_adapter, o.force_bundled_agility))
+    return nullptr;
+  auto net = std::make_unique<UltraPerformanceNet>(std::move(s));
+  // One run now, as CreateOrtNet's.
+  std::vector<float> mel(kUltraPerformanceWindowFrames * kMelBins),
+      emotion(kUltraPerformanceWindowFrames * kNumMod),
+      motion(kUltraPerformanceWindowFrames * kPerformanceChannels);
+  if (!attempt.Finish(net->RunUltraPerformance(mel.data(), 0, emotion.data(),
+                                               motion.data(), err)))
+    return nullptr;
+  info = std::string("Ultra Performance Thin120, 80,729 parameters, 30 fps") +
+         DescribeProvider(o);
   return net;
 }
 

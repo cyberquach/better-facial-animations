@@ -31,8 +31,9 @@ CHOICES = {
     'FaceModel': {
         value: {'General': {'Enabled': int(value != 'disabled'),
                             'UsePerformanceModel': int(value == 'performance'),
+                            'UseUltraPerformanceModel': int(value == 'ultra'),
                             'UseOldModel': int(value == 'old')}}
-        for value in ('quality', 'performance', 'old', 'disabled')
+        for value in ('quality', 'performance', 'ultra', 'old', 'disabled')
     },
     'EmotionModel': {
         value: {'General': {'SentimentAnalysis': int(value != 'disabled'),
@@ -109,8 +110,6 @@ def assemble(out, version, full_emotion=True):
         key = stripped.partition('=')[0]
         if (section, key) in controlled:
             lines.append('; ' + line)
-        elif section == 'General' and key == 'IniVersion':
-            lines.append('IniVersion=9\n')
         else:
             lines.append(line)
     (out / 'options/Settings.ini').write_text(''.join(lines), encoding='utf-8')

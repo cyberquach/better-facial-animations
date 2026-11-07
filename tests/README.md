@@ -152,9 +152,16 @@ review the pins when the morph inventory changes; do not pad missing captured
 channels to pass. Captures are not distributed. This is an offline geometry
 contract, not an in-game or SMP-physics test.
 
-`model-switch` exercises live V3/Performance/Old selection, session release,
+`model-switch` exercises live V3/Performance/Ultra Performance/Old selection, session release,
 retained playback mappings, cancellation, manual GPU retries, explicit CPU and failed mapping loads.
 It does not establish in-game switching quality.
+
+`ultra-performance-model` checks the frozen Thin120 model against
+`tests/ultra_performance.fixtures`: full-sequence ONNX CPU predictions for both
+identities, using the same synthetic PCM as the Performance fixture. It also
+checks 17-frame context cropping, one-frame input and cancellation recovery.
+Missing fixtures fail the contract. Set `BFA_TEST_ULTRA_GPU=1` only with a working
+DirectML test environment to check the same reference on GPU.
 
 `performance_model_test` checks native chunking, memory rollover/reset, cancellation
 and the packaged Block AttnRes ONNX against `tests/performance.fixtures` for both
