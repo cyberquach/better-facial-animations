@@ -1,7 +1,20 @@
 # Performance model training
 
-These local workflows train the architectures used by both Performance models:
-Audio2Emotion's width-512 temporal student and Audio2Face's Thin120 student.
+These local workflows train Audio2Emotion's width-512 temporal student and the
+legacy Audio2Face Thin120 student. BFA 6.0 uses a different, stateful Block AttnRes
+face architecture defined in `tools/performance_student.py`. The Thin120 training
+and export commands below produce legacy candidates, not 6.0-compatible weights.
+
+Export an existing trusted 6.0 checkpoint with:
+
+```sh
+python tools/export_performance.py --checkpoint checkpoint.pt --sha256 CHECKPOINT_SHA256 --out work/face-export
+```
+
+This checks fixed-cache ONNX against variable-cache PyTorch and full-sequence
+predictions, and writes `performance.fixtures` for native parity. Update that
+fixture, the ONNX, metadata, normalization and generated header together.
+The generic trainer below does not yet implement this stateful training recipe.
 They accept your own audio and teacher files. No SSH, remote worker service,
 host discovery, machine-specific paths, or automatic asset downloads are used.
 
@@ -137,7 +150,7 @@ native reference fixtures. Face export includes `performance.onnx`,
 `normalization.npz`, `performance_stats.h` and `performance-model.json`.
 
 To promote an emotion candidate, update `dist/emotion_performance.onnx`, its JSON
-and `tests/emotion_performance.fixtures` together. For face, update
+and `tests/emotion_performance.fixtures` together. For the legacy face runtime, update
 `dist/performance.onnx`, `dist/performance-model.json`,
 `dist/performance-normalization.npz` and `include/a2f/inference/performance_stats.h`
 together. Run `./build.sh compat`, the native model/parity checks in
@@ -145,7 +158,7 @@ together. Run `./build.sh compat`, the native model/parity checks in
 No training/export command modifies the shipped models automatically.
 
 These are from-scratch retraining recipes, not bit-for-bit reproductions of the
-bundled weights. The shipped Thin120 was widened from a previously trained
+bundled weights. The historical Thin120 was widened from a previously trained
 Thin96; the shipped emotion run used a different device/backend and historical
 batch changes. New corpora, normalization, initialization and hardware change
 the optimization trajectory. The original shipped model provenance remains in

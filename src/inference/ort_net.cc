@@ -357,7 +357,7 @@ bool ReadFloats(OrtValue* value, size_t expected, float* dst, std::string& err,
     err = std::string(name) + ": non-finite or missing output data";
     return false;
   }
-  std::copy_n(data, count, dst);
+  if (data != dst) std::copy_n(data, count, dst);
   return true;
 }
 
@@ -530,25 +530,45 @@ class PerformanceNet : public Net {
     return false;
   }
   bool RunPerformance(const float* mel, int64_t identity, const float* emotion,
-                      float* motion, std::string& err) override {
+                      const PerformanceState& state, float* motion,
+                      PerformanceState& next, std::string& err) override {
     if (!CanRun(s_.device.get(), err)) return FailRun(s_, failed, err);
-    constexpr int kNumInputs = 3;
+    if (identity < 0 || identity > 1 || state.frames < 0 ||
+        state.frames > kPerformanceMemoryFrames ||
+        state.keys.size() != kPerformanceStateSize ||
+        state.values.size() != kPerformanceStateSize ||
+        next.keys.size() != kPerformanceStateSize ||
+        next.values.size() != kPerformanceStateSize) {
+      err = "invalid performance state";
+      return false;
+    }
+    constexpr int kNumInputs = 6, kNumOutputs = 3;
     const int64_t mel_shape[] = {1, kPerformanceWindowFrames, kMelBins};
-    const int64_t identity_shape[] = {1};
+    const int64_t scalar_shape[] = {1};
     const int64_t emotion_shape[] = {1, kPerformanceWindowFrames, kNumMod};
-    const void* data[kNumInputs] = {mel, &identity, emotion};
+    const int64_t state_shape[] = {6, 1, 4, kPerformanceMemoryFrames, 64};
+    const void* data[kNumInputs] = {mel, &identity, emotion, state.keys.data(),
+                                   state.values.data(), &state.frames};
     const size_t bytes[kNumInputs] = {
         sizeof(float) * kPerformanceWindowFrames * kMelBins, sizeof identity,
-        sizeof(float) * kPerformanceWindowFrames * kNumMod};
-    const int64_t* shapes[kNumInputs] = {mel_shape, identity_shape,
-                                         emotion_shape};
-    const size_t ranks[kNumInputs] = {3, 1, 3};
+        sizeof(float) * kPerformanceWindowFrames * kNumMod,
+        sizeof(float) * kPerformanceStateSize,
+        sizeof(float) * kPerformanceStateSize, sizeof state.frames};
+    const int64_t* shapes[kNumInputs] = {mel_shape,     scalar_shape,
+                                         emotion_shape, state_shape,
+                                         state_shape,   scalar_shape};
+    const size_t ranks[kNumInputs] = {3, 1, 3, 5, 5, 1};
     const ONNXTensorElementDataType types[kNumInputs] = {
         ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
         ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64,
-        ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT};
-    const char* input_names[kNumInputs] = {"mel", "identity", "emotion"};
-    const char* output_names[] = {"normalized_motion"};
+        ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
+        ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
+        ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
+        ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64};
+    const char* input_names[kNumInputs] = {
+        "mel", "identity", "emotion", "past_k", "past_v", "past_frames"};
+    const char* output_names[kNumOutputs] = {"normalized_motion", "next_k",
+                                             "next_v"};
     OrtPtr<OrtValue> inputs[kNumInputs];
     const OrtValue* input_values[kNumInputs];
     for (int i = 0; i < kNumInputs; ++i) {
@@ -561,16 +581,64 @@ class PerformanceNet : public Net {
       inputs[i].reset(value);
       input_values[i] = value;
     }
-    OrtValue* raw_output = nullptr;
+    const int64_t motion_shape[] = {1, kPerformanceHopFrames,
+                                    kPerformanceChannels};
+    const int64_t* output_shapes[] = {motion_shape, state_shape, state_shape};
+    const size_t output_ranks[] = {3, 5, 5};
+    const size_t output_counts[] = {
+        kPerformanceHopFrames * kPerformanceChannels, kPerformanceStateSize,
+        kPerformanceStateSize};
+    float* output_data[] = {motion, next.keys.data(), next.values.data()};
+    const auto overlaps = [](const void* a, size_t an, const void* b,
+                             size_t bn) {
+      const auto x = reinterpret_cast<uintptr_t>(a);
+      const auto y = reinterpret_cast<uintptr_t>(b);
+      return x <= y ? y - x < an : x - y < bn;
+    };
+    bool disjoint = true;
+    for (int i = 0; i < kNumOutputs; ++i) {
+      const size_t size = output_counts[i] * sizeof(float);
+      for (int j = 0; j < kNumInputs; ++j)
+        disjoint &= !overlaps(output_data[i], size, data[j], bytes[j]);
+      for (int j = 0; j < i; ++j)
+        disjoint &= !overlaps(output_data[i], size, output_data[j],
+                              output_counts[j] * sizeof(float));
+    }
+    // These are per-line scratch buffers, published only after success. Let
+    // ORT write them directly, avoiding temporary CPU outputs and copies.
+    // Aliased callers retain the allocate/validate/copy path.
+    OrtPtr<OrtValue> outputs[kNumOutputs];
+    OrtValue* results[kNumOutputs] = {};
+    if (disjoint) {
+      for (int i = 0; i < kNumOutputs; ++i) {
+        if (!Check(api->CreateTensorWithDataAsOrtValue(
+                       s_.mem.get(), output_data[i],
+                       output_counts[i] * sizeof(float), output_shapes[i],
+                       output_ranks[i], ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
+                       &results[i]),
+                   err, output_names[i]))
+          return false;
+        outputs[i].reset(results[i]);
+      }
+    }
     const bool ran =
         Check(api->Run(s_.sess.get(), nullptr, input_names, input_values,
-                       kNumInputs, output_names, 1, &raw_output),
+                       kNumInputs, output_names, kNumOutputs, results),
               err, "performance run");
-    OrtPtr<OrtValue> output(raw_output);
+    if (!disjoint)
+      for (int i = 0; i < kNumOutputs; ++i) outputs[i].reset(results[i]);
     if (!ran) return FailRun(s_, failed, err);
-    return ReadFloats(output.get(),
-                      kPerformanceWindowFrames * kPerformanceChannels, motion,
-                      err, "performance output");
+    if (!ReadFloats(outputs[0].get(),
+                    kPerformanceHopFrames * kPerformanceChannels, motion, err,
+                    "performance output") ||
+        !ReadFloats(outputs[1].get(), kPerformanceStateSize, next.keys.data(),
+                    err, "performance keys") ||
+        !ReadFloats(outputs[2].get(), kPerformanceStateSize, next.values.data(),
+                    err, "performance values"))
+      return false;
+    next.frames = std::min<int64_t>(kPerformanceMemoryFrames,
+                                    state.frames + kPerformanceHopFrames);
+    return true;
   }
 
  private:
@@ -1280,12 +1348,14 @@ std::unique_ptr<Net> CreatePerformanceNet(const std::wstring& dll_dir,
   // One run now, as CreateOrtNet's.
   std::vector<float> mel(kPerformanceWindowFrames * kMelBins),
       emotion(kPerformanceWindowFrames * kNumMod),
-      motion(kPerformanceWindowFrames * kPerformanceChannels);
+      motion(kPerformanceHopFrames * kPerformanceChannels);
+  PerformanceState state, next;
   if (!attempt.Finish(net->RunPerformance(mel.data(), 0, emotion.data(),
-                                          motion.data(), err)))
+                                          state, motion.data(), next, err)))
     return nullptr;
-  info = std::string("Performance Thin120, 80,729 parameters, 30 fps") +
-         DescribeProvider(o);
+  info =
+      std::string("Performance Block AttnRes, 4,008,025 parameters, 30 fps") +
+      DescribeProvider(o);
   return net;
 }
 

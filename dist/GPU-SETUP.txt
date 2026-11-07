@@ -51,13 +51,14 @@ applies to both models.
 Model hardware estimates (additional to Skyrim, not total graphics memory):
 - V3: roughly 250 MB device allocations; budget about 300 MB with runtime.
   Main network arithmetic: about 28 GFLOP per second of generated speech.
-- Performance: roughly 80 MB with runtime; budget about 100 MB.
-  Main network arithmetic: about 0.007 GFLOP per second of generated speech.
+- Performance: 4M-parameter Block AttnRes model, about 16 MB of weights.
+  Per-line KV state is 3 MiB; execution also needs next-state and runtime buffers.
+  Total GPU memory and minimum hardware for this version are not measured.
 - Old: roughly 100 MB device allocations; budget about 150 MB with runtime.
   Main network arithmetic: about 97 GFLOP per second of generated speech.
 
 All figures are rough. Local standalone RTX 4070 / Wine tests observed warmed
-process footprints of about 278 / 77 / 128 MiB respectively. They exclude the
+process footprints of about 278 / 128 MiB for V3 / Old respectively. They exclude the
 game and graphics mods and are not exhaustive startup-peak measurements.
 Arithmetic estimates count multiply/add work in convolution, matrix and
 recurrent layers, not frontend/mesh/driver costs. Short lines also incur
@@ -65,18 +66,17 @@ padding and startup context. GFLOP per second of speech is not the same as a
 minimum GPU's advertised TFLOPS or a promise of ready-at-speech-start timing.
 
 Provisional starting tiers to TRY, not benchmarked minimum cards:
-V3: 4-6 TFLOPS FP32 (GTX 1660 class); Performance: 1-2 TFLOPS FP32
-(GTX 1630 class); Old: 8-12 TFLOPS FP32 (RTX 2070 Super class).
+V3: 4-6 TFLOPS FP32 (GTX 1660 class);
+Old: 8-12 TFLOPS FP32 (RTX 2070 Super class).
 These are broad planning heuristics, not measured cutoffs or purchase advice.
 Equivalent AMD/Intel hardware may work; architecture, bandwidth and runtime
 support matter as well as the advertised arithmetic rate. BFA competes with
 Skyrim for GPU compute, memory and bandwidth. Heavier graphics mods leave less
 capacity and can delay facial animation, even on a card above these tiers.
 
-Steam Deck's published GPU rate is up to 1.6 TFLOPS FP32. The current Thin120
-Performance model is a plausible compute fit and passes local GPU inference
-on both routes, but has not been validated on Deck. The community's earlier
-GPU success was with Thin96, so it does not confirm the current model.
+Performance 6.0 uses a different, larger model than earlier Performance releases.
+Earlier Thin96/Thin120 GPU measurements do not validate this model on Steam Deck.
+CPU is the deployment target; actual Deck and in-game latency remain unmeasured.
 Card comparison specifications and Deck specifications:
 https://www.nvidia.com/en-us/geforce/graphics-cards/compare/
 https://www.steamdeck.com/en/tech

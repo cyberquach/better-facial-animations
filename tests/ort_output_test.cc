@@ -40,6 +40,16 @@ int main() {
   data[2] = 3;
   CHECK(a2f::ReadFloats(value, 3, out, err, "test") && out[2] == 3);
   CHECK(released == 5);
+  // Caller-owned outputs skip only the copy, never shape/type/finite checks.
+  CHECK(a2f::ReadFloats(value, 3, data, err, "bound output"));
+  count = 2;
+  CHECK(!a2f::ReadFloats(value, 3, data, err, "bound output"));
+  count = 3; type = ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT16;
+  CHECK(!a2f::ReadFloats(value, 3, data, err, "bound output"));
+  type = ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT;
+  data[2] = std::numeric_limits<float>::quiet_NaN();
+  CHECK(!a2f::ReadFloats(value, 3, data, err, "bound output"));
+  data[2] = 3;
   // No startup file exists in the API: a failed GPU attempt is reset explicitly.
   a2f::DisableGpu("injected session failure");
   a2f::OrtOptions options;
