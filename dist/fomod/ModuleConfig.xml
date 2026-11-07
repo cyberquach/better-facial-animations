@@ -156,10 +156,19 @@ If a requirement is missing, the model does not load, vanilla lip-sync plays and
                 <type name="Recommended" />
               </typeDescriptor>
             </plugin>
-            <plugin name="Performance — fastest, experimental">
-              <description>Small Skyrim-trained model with less facial detail and less accurate lip-sync, especially on unfamiliar modded dialogue. Approximately 80 MB GPU memory; 30 fps. Eye gaze is unavailable. Speaker coverage is selected separately.</description>
+            <plugin name="Performance — V3-trained, experimental">
+              <description>4M-parameter student trained to reproduce V3's answers on familiar dialogue, with per-line memory. Unfamiliar dialogue can be less reliable. 30 fps; no eye gaze. More computation than Ultra Performance. GPU or CPU; not yet verified on Steam Deck. Speaker coverage is selected separately.</description>
               <conditionFlags>
                 <flag name="FaceModel">performance</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
+            </plugin>
+            <plugin name="Ultra Performance — lowest computation, experimental">
+              <description>The original 80,729-parameter Performance model, retained under a new name. Lowest computation cost, with less facial detail and less accurate lip-sync, especially on unfamiliar dialogue. 30 fps; no eye gaze. GPU or CPU. Speaker coverage is selected separately.</description>
+              <conditionFlags>
+                <flag name="FaceModel">ultra</flag>
               </conditionFlags>
               <typeDescriptor>
                 <type name="Optional" />

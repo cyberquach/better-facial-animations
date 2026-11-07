@@ -50,6 +50,12 @@ std::unique_ptr<Net> CreatePerformanceNet(const std::wstring& dll_dir,
                                           const std::wstring& model,
                                           const OrtOptions& o, std::string& err,
                                           std::string& info);
+// The original stateless Thin120 student, with 124 input/output frames.
+std::unique_ptr<Net> CreateUltraPerformanceNet(const std::wstring& dll_dir,
+                                               const std::wstring& model,
+                                               const OrtOptions& options,
+                                               std::string& err,
+                                               std::string& info);
 // Audio2Emotion v2.2, fixed 60000-sample windows, warmed before return.
 std::unique_ptr<EmotionNet> CreateOrtEmotionNet(const std::wstring& dll_dir,
                                                 const std::wstring& model,

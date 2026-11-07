@@ -179,6 +179,11 @@ int main(int argc, char** argv) {
       CHECK(overrides[0].values.at("UpperLip") == .42f);
       LoadIni();
       CHECK(NpcHotkey() == 67 && SnapshotTune().force_cpu);
+    } else if (!strcmp(argv[1], "legacy-face")) {
+      CHECK(SnapshotTune().SelectedModel() == a2f::kNetUltraPerformance);
+      CHECK(GetPrivateProfileIntA("General", "IniVersion", 0, ini.c_str()) == 10);
+    } else if (!strcmp(argv[1], "new-face")) {
+      CHECK(SnapshotTune().SelectedModel() == a2f::kNetPerformance);
     } else if (!strcmp(argv[1], "legacy-devices")) {
       // An old CPU-only INI must not silently enable emotion GPU work.
       CHECK(SnapshotTune().force_cpu &&
@@ -300,6 +305,16 @@ int main(int argc, char** argv) {
             "[General]\nIniVersion=9\nForceCPU=0\nVanillaEmotions=1\n");
   Child("installer-write", root);
   Child("installer-read", root);
+  // Upgrade a never-menu-saved installer choice, then a new installer choice.
+  WriteText(kRelativeIni, "[General]\nIniVersion=9\n");
+  WriteText(std::string(kInstaller) + "\\FaceModel.ini",
+            "[General]\nUsePerformanceModel=1\nUseOldModel=0\n");
+  Child("legacy-face", root);
+  Child("legacy-face", root);  // saved migration survives a fresh process
+  WriteText(kRelativeIni, "[General]\nIniVersion=9\n");
+  WriteText(std::string(kInstaller) + "\\FaceModel.ini",
+            "[General]\nUsePerformanceModel=1\nUseUltraPerformanceModel=0\n");
+  Child("new-face", root);
   for (const auto& [name, text] : fragments)
     CHECK(
         DeleteFileA((std::string(kInstaller) + "\\" + name + ".ini").c_str()));

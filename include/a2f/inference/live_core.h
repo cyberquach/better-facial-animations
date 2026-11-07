@@ -52,6 +52,10 @@ constexpr int kPerformanceContextFrames = 15;
 constexpr int kPerformanceWindowFrames =
     kPerformanceHopFrames + 2 * kPerformanceContextFrames;
 constexpr int kPerformanceChannels = 73;
+// Thin120 keeps its original convolution context and uncropped output.
+constexpr int kUltraPerformanceContextFrames = 17;
+constexpr int kUltraPerformanceWindowFrames =
+    kPerformanceHopFrames + 2 * kUltraPerformanceContextFrames;
 constexpr int kPerformanceMemoryFrames = 256;
 constexpr int kPerformanceStateSize = 6 * 4 * kPerformanceMemoryFrames * 64;
 // Owned by one GeneratePerformance call. Never shared between utterances,
@@ -67,6 +71,7 @@ constexpr int kNumEyeAngles = 4;  // right X/Y, left X/Y
 constexpr int kNetV2 = 2;
 constexpr int kNetV3 = 3;
 constexpr int kNetPerformance = 4;
+constexpr int kNetUltraPerformance = 5;
 
 // The network. v2.3 (Run): x (b, 8320) audio windows, emo (b, 26) -> out
 // (b, 301): the skin's kNumPca PCA coefficients, the tongue's kNumTongue,
@@ -96,6 +101,13 @@ class Net {
                     float* tongue, float* jaw_eyes, float* next_state,
                     std::string& err) {
     err = "not a v3.0 network";
+    return false;
+  }
+  // Thin120: 124 input/output frames, with 17 context frames on either side.
+  virtual bool RunUltraPerformance(const float* mel, int64_t identity,
+                                   const float* emotion, float* motion,
+                                   std::string& err) {
+    err = "not an ultra performance network";
     return false;
   }
   // Preferred batch; Generate pads the last batch to it (one shape, one DML

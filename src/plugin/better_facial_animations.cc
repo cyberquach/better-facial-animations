@@ -928,7 +928,7 @@ void NetEvent(const std::string& text) { skse::Report("%s", text.c_str()); }
 
 // Worker-owned successful shared variants, separately for each facial model
 // and sentiment (slot 0). Choosing these never creates/probes another device.
-a2f::SharedGpuSettings shared_gpu_settings[5];
+a2f::SharedGpuSettings shared_gpu_settings[a2f::kNetUltraPerformance + 1];
 
 void UnloadSentiment();
 
@@ -962,6 +962,8 @@ std::unique_ptr<a2f::Net> CreateNet(bool gpu, std::string& err,
   }
   const auto create = [&](std::string& e, std::string& i) {
     switch (selection->network) {
+      case a2f::kNetUltraPerformance:
+        return a2f::CreateUltraPerformanceNet(dir, file, o, e, i);
       case a2f::kNetPerformance:
         return a2f::CreatePerformanceNet(dir, file, o, e, i);
       case a2f::kNetV3:
@@ -1215,7 +1217,8 @@ void Process(const Job& j, a2f::NetKeeper& keeper) {
                   const direct::Mark& face =
                       j.entry->model_state->mapping->Face(j.female);
                   bool generated;
-                  if (net.Version() == a2f::kNetPerformance)
+                  if (net.Version() == a2f::kNetPerformance ||
+                      net.Version() == a2f::kNetUltraPerformance)
                     generated = a2f::GeneratePerformance(
                         net, pcm.data(), pcm.size(), emotion, j.female, *line,
                         e, allowed);
@@ -1299,10 +1302,11 @@ void Process(const Job& j, a2f::NetKeeper& keeper) {
         }
       Log("gen %s (%s) emo %d/%d: %.2f s audio, %u frames in %.0f ms; fed%s",
           file.c_str(),
-          generated_network == a2f::kNetPerformance ? "Performance"
-          : generated_network == a2f::kNetV2        ? "Mark"
-          : j.female                                ? "Claire"
-                                                    : "Mark 3.0",
+          generated_network == a2f::kNetUltraPerformance ? "Ultra Performance"
+          : generated_network == a2f::kNetPerformance    ? "Performance"
+          : generated_network == a2f::kNetV2             ? "Mark"
+          : j.female                                     ? "Claire"
+                                                         : "Mark 3.0",
           j.emotion.type, j.emotion.value, audio_sec, line->frames, ms,
           fed.empty() ? " no emotion" : fed.c_str());
     } else {
