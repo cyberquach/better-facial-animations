@@ -227,7 +227,9 @@ def main():
     inputs += [ROOT / c['python'] for c in selected if c.get('python')]
     inputs += [ROOT / 'tests/follower_teeth.json', ROOT / 'tests/mouth_lining.json', ROOT / 'tests/hair_assets.json',
                ROOT / 'tests/emotion_performance.fixtures', ROOT / 'tests/performance.fixtures',
+               ROOT / 'tests/ultra_performance.fixtures',
                ROOT / 'dist/performance.onnx', ROOT / 'dist/performance-model.json',
+               ROOT / 'dist/ultra-performance.onnx', ROOT / 'dist/ultra-performance-model.json',
                ROOT / 'dist/emotion_performance.onnx', ROOT / 'dist/emotion_performance.json']
     report = {
         'schema': 1,

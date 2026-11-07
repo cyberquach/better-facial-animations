@@ -29,7 +29,7 @@ The installer offers these choices without requiring SKSE Menu Framework:
   Skyrim after changing the route; uncheck the option to return to shared.
 - Processing: separate Audio2Face and Audio2Emotion choices of GPU 0 (default),
   GPU 1, GPU 2, GPU 3, or CPU. Each model saves its own device selection.
-- Audio2Face: V3, Performance, Legacy (Old), or Disabled.
+- Audio2Face: V3, Performance, Ultra Performance, Legacy (Old), or Disabled.
 - Audio2Emotion: Performance (default), Full when included, or Disabled.
   Voice emotion adds processing beyond Audio2Face; disable it to minimize work.
 - Vanilla / scene emotion cues, active-dialogue-only mode, player animation,
@@ -53,7 +53,10 @@ Model hardware estimates (additional to Skyrim, not total graphics memory):
   Main network arithmetic: about 28 GFLOP per second of generated speech.
 - Performance: 4M-parameter Block AttnRes model, about 16 MB of weights.
   Per-line KV state is 3 MiB; execution also needs next-state and runtime buffers.
-  Total GPU memory and minimum hardware for this version are not measured.
+  Standalone RTX 4070 / Wine tests measured about 122 MiB GPU memory and
+  452 MiB host RAM after warmup, excluding Skyrim. Minimum hardware is unverified.
+- Ultra Performance: original 80,729-parameter student, lowest computation cost.
+  30 fps, no eye gaze; less detailed and less accurate than the larger student.
 - Old: roughly 100 MB device allocations; budget about 150 MB with runtime.
   Main network arithmetic: about 97 GFLOP per second of generated speech.
 
@@ -75,6 +78,7 @@ Skyrim for GPU compute, memory and bandwidth. Heavier graphics mods leave less
 capacity and can delay facial animation, even on a card above these tiers.
 
 Performance 6.0 uses a different, larger model than earlier Performance releases.
+The earlier Thin120 model remains available as Ultra Performance.
 Earlier Thin96/Thin120 GPU measurements do not validate this model on Steam Deck.
 CPU is the deployment target; actual Deck and in-game latency remain unmeasured.
 Card comparison specifications and Deck specifications:
@@ -158,7 +162,7 @@ https://github.com/HansKristian-Work/vkd3d-proton/blob/master/CHANGELOG.md
    Crash Logger / Freeze Logger output before another launch replaces it.
 
 2. Reinstall this package and choose CPU for BOTH Audio2Face and Audio2Emotion.
-   For lower CPU work, choose Performance facial animation, Disabled emotion
+   For lower CPU work, choose Ultra Performance facial animation, Disabled emotion
    and Active dialogue only (Potato Mode). Either GPU route can remain selected
    for later testing; neither is attempted with both devices on CPU. Back up
    custom settings first: reinstalling replaces the main INI. Check that an
@@ -170,7 +174,8 @@ https://github.com/HansKristian-Work/vkd3d-proton/blob/master/CHANGELOG.md
    Change these entries in the EXISTING [General] section:
    ForceCPU=1
    EmotionDevice=-1
-   UsePerformanceModel=1
+   UsePerformanceModel=0
+   UseUltraPerformanceModel=1
    UseOldModel=0
    PotatoMode=1
    SentimentAnalysis=0
@@ -181,7 +186,7 @@ https://github.com/HansKristian-Work/vkd3d-proton/blob/master/CHANGELOG.md
    effective INI. Do this with Skyrim closed; its menu saves settings too.
 
 3. Launch through SKSE and load your save. No new save is required just to
-   change these settings. Performance reduces inference work; Potato limits
+   change these settings. Ultra Performance reduces inference work; Potato limits
    BFA to your conversation partner and player dialogue. Other speakers use
    vanilla animation. ForceCPU=1 together with EmotionDevice=-1 prevents BFA's
    GPU inference initialization, but cannot fix unrelated crashes or conflicts.

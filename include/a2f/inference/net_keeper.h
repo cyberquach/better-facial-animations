@@ -21,7 +21,8 @@ namespace a2f {
 // performance network); less free than this is a possible memory-pressure clue.
 constexpr double kNetVramMb = 100;
 constexpr double kNetVramMb3 = 250;
-constexpr double kNetVramMbPerformance = 80;
+constexpr double kNetVramMbPerformance = 122;
+constexpr double kNetVramMbUltraPerformance = 80;
 
 // Human-readable diagnostics for the settings window.
 std::vector<std::string> GpuWarnings(const GpuState& gpu);

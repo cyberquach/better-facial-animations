@@ -45,12 +45,20 @@ Requirements
   Or Skyrim VR 1.4.15 with SKSEVR (no Address Library needed; not yet looked at in a headset).
   Not the Epic Games Store version: SKSE does not support it.
   V3/Old GPU inference needs DirectX 12 (~250 MB VRAM / ~100 MB respectively).
-  Settings -> Animation models offers Audio2Face: Disabled, V3, Performance, Legacy.
+  Settings -> Animation models offers Audio2Face: Disabled, V3, Performance, Ultra Performance, Legacy.
   Audio2Emotion has its own Disabled, Full, Performance dropdown.
   Hover for tradeoffs. Model changes apply live; playing lines finish with their
   original animation. Performance (4M Block AttnRes) runs on GPU, or CPU with ForceCPU=1:
   compact V3-trained motion with per-line memory, 30 fps, no eye gaze feature.
-  It is experimental and Skyrim-trained; not yet verified on Steam Deck.
+  It is trained to reproduce V3's answers on the training dialogue, prioritizing
+  close reproduction of familiar lines over broad generalization. Unfamiliar
+  dialogue can be less reliable; it approximates answers, not stored animations.
+  Visual equivalence to V3 has not been established. Not yet verified on Steam Deck.
+  Ultra Performance is the original 80,729-parameter Performance model, retained
+  for the lowest computation cost. It trades facial detail and lip-sync accuracy
+  for speed, especially on unfamiliar dialogue. GPU or CPU, 30 fps, no eye gaze.
+  Older saved Performance selections migrate once to Ultra Performance, preserving
+  that model choice. Select Performance explicitly to opt into the larger model.
   Audio2Face processing device and Audio2Emotion processing device each select
   a named GPU or CPU (Force CPU). Both default to GPU 0 and save their own choice;
   changing one does not change the other. GpuAdapter (default 0) and ForceCPU
@@ -60,7 +68,10 @@ Requirements
   dropdown after game entry to discover GPUs; Refresh GPU list rescans. Missing
   GPUs report a failure; choose another device explicitly. Reselect by name after
   hardware/driver changes that reorder adapters.
-  UsePerformanceModel=1 selects it; ForceCPU applies to all three facial models. Potato Mode (PotatoMode=1) processes only the active
+  UsePerformanceModel=1 selects Performance; UseUltraPerformanceModel=1 selects
+  Ultra Performance; UseOldModel=1 selects Legacy. Set the other model switches
+  to 0; all three at 0 selects V3. ForceCPU applies to all four facial models.
+  Potato Mode (PotatoMode=1) processes only the active
   conversation NPC and the player (DBReV or experimental DBVO 2 support). Other NPC speech stays vanilla.
   Both modes initialize inference after the first successful save load or new game, then keep the model
   loaded while enabled. Disabled unloads both sessions. Early lines use vanilla animation while it warms up. An already submitted GPU run must finish
@@ -162,7 +173,8 @@ Contents of this folder
   DirectML.dll                                         Microsoft DirectML 1.15.4 (licenses/DirectML-LICENSE.txt)
   a2f3_fp16.onnx                                       Audio2Face-3D v3.0, FP16 (NOTICE.txt)
   A2FDirect3.bin                                       its faces (Claire, Mark): basis, landmarks and network projection
-  performance.onnx                                   Block AttnRes facial model
+  performance.onnx                                   Performance Block AttnRes facial model
+  ultra-performance.onnx                             Ultra Performance Thin120 facial model
   emotion_fp16.onnx                                  Full Audio2Emotion (with-sentiment only)
   emotion_performance.onnx, emotion_performance.json  Performance Audio2Emotion and provenance (both archives)
   network_fp16.onnx                                    Audio2Face-3D v2.3 Mark, FP16 (NOTICE.txt): UseOldModel=1

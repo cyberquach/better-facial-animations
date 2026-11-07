@@ -8,11 +8,13 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "a2f/inference/performance_features.h"
 #include "a2f/inference/performance_stats.h"
+#include "a2f/inference/ultra_performance_stats.h"
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -598,7 +600,8 @@ bool GeneratePerformance(Net& net, const float* pcm, size_t n,
                          std::string& err,
                          const std::function<bool()>& allowed) {
   out = Line();
-  if (!n || net.Version() != kNetPerformance) {
+  const bool ultra = net.Version() == kNetUltraPerformance;
+  if (!n || (!ultra && net.Version() != kNetPerformance)) {
     err = "invalid performance input";
     return false;
   }
@@ -626,40 +629,60 @@ bool GeneratePerformance(Net& net, const float* pcm, size_t n,
       result.emotion_mean[mod] += level / frames;
     }
   // Silence outside the clip: the log of the frontend's power floor.
+  const int context =
+      ultra ? kUltraPerformanceContextFrames : kPerformanceContextFrames;
+  const int window = kPerformanceHopFrames + 2 * context;
+  const int output_frames = ultra ? window : kPerformanceHopFrames;
+  const float* mel_mean =
+      ultra ? ultra_performance::kMelMean : performance::kMelMean;
+  const float* mel_std =
+      ultra ? ultra_performance::kMelStd : performance::kMelStd;
+  const float* target_mean =
+      ultra ? ultra_performance::kTargetMean : performance::kTargetMean;
+  const float* target_std =
+      ultra ? ultra_performance::kTargetStd : performance::kTargetStd;
   const float silent_mel = std::log(1e-6f);
-  std::vector<float> mel_window(kPerformanceWindowFrames * kMelBins),
-      emotion_window(kPerformanceWindowFrames * kNumMod),
-      motion(kPerformanceHopFrames * kPerformanceChannels);
-  PerformanceState state, next;
+  std::vector<float> mel_window(window * kMelBins),
+      emotion_window(window * kNumMod),
+      motion(output_frames * kPerformanceChannels);
+  // Ultra Performance never allocates the larger model's KV caches.
+  std::optional<PerformanceState> state, next;
+  if (!ultra) {
+    state.emplace();
+    next.emplace();
+  }
   for (size_t start = 0; start < frames; start += kPerformanceHopFrames) {
     if (cancelled()) return false;
-    for (int slot = 0; slot < kPerformanceWindowFrames; ++slot) {
-      const int64_t frame =
-          static_cast<int64_t>(start) + slot - kPerformanceContextFrames;
+    for (int slot = 0; slot < window; ++slot) {
+      const int64_t frame = static_cast<int64_t>(start) + slot - context;
       const bool in_clip = frame >= 0 && frame < static_cast<int64_t>(frames);
       const size_t clamped =
           static_cast<size_t>(std::clamp<int64_t>(frame, 0, frames - 1));
       for (int bin = 0; bin < kMelBins; ++bin) {
         const float value = in_clip ? mel[frame * kMelBins + bin] : silent_mel;
         mel_window[slot * kMelBins + bin] =
-            (value - performance::kMelMean[bin]) / performance::kMelStd[bin];
+            (value - mel_mean[bin]) / mel_std[bin];
       }
       std::copy_n(&emotions[clamped * kNumMod], kNumMod,
                   &emotion_window[slot * kNumMod]);
     }
-    if (!net.RunPerformance(mel_window.data(), female ? 0 : 1,
-                            emotion_window.data(), state, motion.data(), next,
-                            err))
-      return false;
-    std::swap(state, next);
+    const bool ran =
+        ultra
+            ? net.RunUltraPerformance(mel_window.data(), female ? 0 : 1,
+                                      emotion_window.data(), motion.data(), err)
+            : net.RunPerformance(mel_window.data(), female ? 0 : 1,
+                                 emotion_window.data(), *state, motion.data(),
+                                 *next, err);
+    if (!ran) return false;
+    if (!ultra) std::swap(state, next);
     const size_t produced =
         std::min<size_t>(kPerformanceHopFrames, frames - start);
     for (size_t slot = 0; slot < produced; ++slot)
       for (int channel = 0; channel < kPerformanceChannels; ++channel) {
         const size_t source =
-            slot * kPerformanceChannels + channel;
-        const float value = motion[source] * performance::kTargetStd[channel] +
-                            performance::kTargetMean[channel];
+            (slot + (ultra ? context : 0)) * kPerformanceChannels + channel;
+        const float value =
+            motion[source] * target_std[channel] + target_mean[channel];
         if (!std::isfinite(value)) {
           err = "nonfinite performance output";
           return false;

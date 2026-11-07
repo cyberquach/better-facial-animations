@@ -104,17 +104,22 @@ extern const std::vector<Param> kParams = [] {
        "Generate a line when its dialogue response is created, before it is "
        "spoken.",
        Sec::kGeneral, &tune.prefetch},
-      {"UsePerformanceModel", nullptr, 0, 0, "Performance model (Experimental)",
-       "Smaller model distilled from V3's output on Skyrim's dialogue. "
-       "Fastest to run: roughly 8x as fast as V3 in RTX 4070 GPU tests; "
-       "speed varies by system and dialogue. Less expressive and less "
-       "accurate at lip syncing; "
-       "lip syncing on modded dialogue may be degraded. Runs at 30 fps. "
-       "About 80 MB of VRAM on GPU; usage "
-       "varies by system. Switches live; already playing lines finish with "
-       "their "
-       "current animation. Eye gaze is unavailable with this model.",
+      {"UsePerformanceModel", nullptr, 0, 0, "Performance model",
+       "4-million-parameter student trained to reproduce V3's answers on "
+       "the training dialogue, with memory within each line. Designed for "
+       "familiar dialogue; unfamiliar or generated dialogue may be less "
+       "consistent. It does not perfectly reproduce V3. Runs at 30 fps "
+       "without eye gaze. GPU or CPU; measured about 122 MiB GPU memory on "
+       "RTX 4070 under Wine, including driver overhead. Usage varies by "
+       "system. Switches live; playing lines retain their animation.",
        Sec::kModel, &tune.performance_model},
+      {"UseUltraPerformanceModel", nullptr, 0, 0, "Ultra Performance model",
+       "The original 80,729-parameter Performance model, renamed. Lowest "
+       "processing cost, with reduced detail and less consistent lip sync. "
+       "Trained on V3's answers for familiar dialogue; unfamiliar dialogue "
+       "may be less reliable. Runs at 30 fps without eye gaze. GPU or CPU; "
+       "switches live, and playing lines retain their animation.",
+       Sec::kModel, &tune.ultra_performance_model},
       {"UseOldModel", nullptr, 0, 0, "Old model",
        "Audio2Face v2.3. Less expressive than V3 and the slowest to run: "
        "roughly half V3's speed in RTX 4070 GPU tests. Speed varies by "
@@ -298,6 +303,8 @@ const ModelInfo& ModelFor(int network) {
        a2f::kNetVramMb},
       {a2f::kNetPerformance, L"performance.onnx", L"A2FDirect3.bin",
        a2f::kNetV3, a2f::kNetVramMbPerformance},
+      {a2f::kNetUltraPerformance, L"ultra-performance.onnx", L"A2FDirect3.bin",
+       a2f::kNetV3, a2f::kNetVramMbUltraPerformance},
   };
   for (const ModelInfo& info : kModels)
     if (info.network == network) return info;
@@ -398,7 +405,8 @@ std::string NpcLabel(uint8_t* base) {
 // Version 9 makes the independent GPU route opt-in: a stored
 // IndependentGpuDevice=1 in the user's INI was 4.0's default, not a choice,
 // so it is cleared unless this install's FOMOD fragment chose it.
-constexpr int kIniVersion = 9;
+// Version 10 preserves the former Performance choice as Ultra Performance.
+constexpr int kIniVersion = 10;
 
 std::string Section(const Param& p) {
   static const char* const kNames[] = {"General",  "General",
@@ -840,7 +848,21 @@ void LoadIni() {
           old_lip ? std::clamp(value, 0.f, 3.f) / calibration : value, p.lo,
           p.hi);
   }
-  tune.SelectModel(tune.SelectedModel());  // Performance wins over Old
+  if (version < 10) {
+    CSimpleIniA user;
+    user.SetUnicode();
+    // Preserve old user or installer choices; new fragments have the Ultra key.
+    if (ReadIniFile(user, kIni) &&
+        !user.GetValue("General", "UseUltraPerformanceModel") &&
+        user.GetLongValue(
+            "General", "UsePerformanceModel",
+            !ini.GetValue("General", "UseUltraPerformanceModel") &&
+                tune.performance_model) != 0) {
+      tune.performance_model = false;
+      tune.ultra_performance_model = true;
+    }
+  }
+  tune.SelectModel(tune.SelectedModel());
   // Preserve the former shared choice when upgrading an existing INI. Once
   // saved, each model has its own device; neither follows later changes.
   tune.emotion_device = std::max<long>(

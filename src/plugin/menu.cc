@@ -641,8 +641,10 @@ void RenderProblems(const Stats& st, size_t queued, const Tune& tune,
   if (st.lines >= 5 && speed < 2 && (st.net_gpu || !st.want_gpu)) {
     snprintf(b, sizeof b, "Slow (%.1fx realtime): lines start late.", speed);
     Notice(kYellow, b);
-    Tip(&kSlowTip, st.network == a2f::kNetPerformance && !st.net_gpu
-                       ? "Performance model runs on the CPU; check "
+    Tip(&kSlowTip, (st.network == a2f::kNetPerformance ||
+                    st.network == a2f::kNetUltraPerformance) &&
+                           !st.net_gpu
+                       ? "The selected student model runs on the CPU; check "
                          "CPU load and enable Prefetch."
                    : st.net_gpu ? "The GPU is busy or short of VRAM."
                                 : "Force CPU is on: the GPU is much faster.");
@@ -903,12 +905,15 @@ constexpr ModelOption kFaceOptions[] = {
      "About 250 MB of VRAM on GPU. Switches live; already playing lines "
      "finish with their current animation."},
     {"Performance", a2f::kNetPerformance, nullptr},
+    {"Ultra Performance", a2f::kNetUltraPerformance, nullptr},
     {"Legacy", a2f::kNetV2, nullptr}};
 
 const char* FaceOptionTip(const ModelOption& option) {
   if (option.tip) return option.tip;
-  const char* key =
-      option.id == a2f::kNetV2 ? "UseOldModel" : "UsePerformanceModel";
+  const char* key = option.id == a2f::kNetV2 ? "UseOldModel"
+                    : option.id == a2f::kNetUltraPerformance
+                        ? "UseUltraPerformanceModel"
+                        : "UsePerformanceModel";
   for (const Param& param : kParams)
     if (!strcmp(param.key, key)) return param.tip;
   return "";
@@ -1148,6 +1153,7 @@ void RenderMenu() {
     // Dropdowns replace these legacy persisted checkboxes.
     if (!strcmp(p.key, "Enabled") || !strcmp(p.key, "UseOldModel") ||
         !strcmp(p.key, "UsePerformanceModel") ||
+        !strcmp(p.key, "UseUltraPerformanceModel") ||
         !strcmp(p.key, "SentimentAnalysis") ||
         !strcmp(p.key, "UsePerformanceEmotion") || !strcmp(p.key, "ForceCPU") ||
         !strcmp(p.key, "SentimentMultiplier") ||

@@ -121,7 +121,7 @@
       ],
       "plugin_objects": true,
       "covers": [
-        "live V3/Performance/Old selection and CPU preference",
+        "live V3/Performance/Ultra Performance/Old selection and CPU preference",
         "old session destruction before replacement and retained playback mappings",
         "pending cancellation, rapid changes, disabled mode and per-model statistics",
         "mapping load failure recovery and GPU explicit CPU selection"
@@ -530,6 +530,18 @@
         "pre-frontend and between-batch cancellation with no partial published output",
         "inference failure and nonfinite output propagation",
         "actual packaged ONNX parity, KV history roll, per-line reset, both identities and cancellation recovery"
+      ]
+    },
+    {
+      "id": "ultra-performance-model",
+      "test": "ultra_performance_test",
+      "sources": [
+        "tests/ultra_performance_test.cc"
+      ],
+      "plugin_objects": true,
+      "covers": [
+        "Frozen Thin120 packaged CPU output against full-sequence ONNX reference for both identities",
+        "124-frame windows with 17-frame context cropping, single-frame input and cancellation recovery"
       ]
     },
     {
