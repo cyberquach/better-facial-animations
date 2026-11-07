@@ -720,6 +720,50 @@ int main() {
   OralInheritance();
   MalformedArrays();
   FacialHairExtras();
+  for (int runtime = 0; runtime < 3; ++runtime) {
+    test_se = runtime == 0;
+    test_vr = runtime == 2;
+    MockRuntime();
+    std::array<uint8_t, 0x1000> shape{};
+    RE::BSGraphics::TriShape renderer{};
+    uint16_t indices[] = {0, 1, 2};
+    renderer.rawIndexData = indices;
+    Field<RE::BSGraphics::TriShape*>(shape.data(), test_vr ? 0x178 : 0x138) =
+        &renderer;
+    Field<uint16_t>(shape.data(), test_vr ? 0x198 : 0x158) = 1;
+    Field<uint16_t>(shape.data(), test_vr ? 0x19A : 0x15A) = 3;
+    direct::ShapeIn captured;
+    captured.part = direct::Part::kHead;
+    captured.nv = 3;
+    ReadFollowerTriangles(shape.data(), captured);
+    assert((captured.triangles == std::vector<uint16_t>{0, 1, 2}));
+    indices[2] = 3;
+    ReadFollowerTriangles(shape.data(), captured);
+    assert(captured.triangles.empty());
+    indices[2] = 2;
+    renderer.rawIndexData = nullptr;
+    ReadFollowerTriangles(shape.data(), captured);
+    assert(captured.triangles.empty());
+    renderer.rawIndexData = indices;
+    captured.skin = true;
+    ReadFollowerTriangles(shape.data(), captured);
+    assert(captured.triangles.empty());
+    captured.skin = false;
+    captured.nv = 2;
+    ReadFollowerTriangles(shape.data(), captured);
+    assert(captured.triangles.empty());
+  }
+  test_se = test_vr = false;
+  MockRuntime();
+  has_morphs = true;
+  direct::ShapeIn beard;
+  beard.part = direct::Part::kHead;
+  beard.nv = 2;
+  const auto before_beard = dynamic_vertices;
+  const int before_reads = apply_count;
+  ReadMorphs(nullptr, beard);
+  assert(dynamic_vertices == before_beard && apply_count == before_reads + 1);
+  assert(beard.morphs[direct::kBigAah].size() == 6);
   puts(
       "head-part classification passed: custom 32-bit slots, Misc, hair "
       "extras, vanilla and unknown controls");
