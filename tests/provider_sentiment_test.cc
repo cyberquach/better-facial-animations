@@ -166,15 +166,22 @@ struct PerformanceNet : a2f::Net {
     return false;
   }
   bool RunPerformance(const float*, int64_t, const float* emotion,
-                      float* motion, std::string&) override {
+                      const a2f::PerformanceState& state, float* motion,
+                      a2f::PerformanceState& next, std::string&) override {
+    next.frames = std::min<int64_t>(a2f::kPerformanceMemoryFrames,
+                                    state.frames + a2f::kPerformanceHopFrames);
     ++face_runs;
     std::fill_n(motion,
-                a2f::kPerformanceWindowFrames * a2f::kPerformanceChannels, 0.f);
-    for (int slot = 0; slot < a2f::kPerformanceWindowFrames; ++slot) {
+                a2f::kPerformanceHopFrames * a2f::kPerformanceChannels, 0.f);
+    for (int slot = 0; slot < a2f::kPerformanceHopFrames; ++slot) {
       for (int c = 0; c < a2f::kNumMod; ++c)
-        fed_peak[c] = std::max(fed_peak[c], emotion[slot * a2f::kNumMod + c]);
+        fed_peak[c] = std::max(
+            fed_peak[c],
+            emotion[(slot + a2f::kPerformanceContextFrames) * a2f::kNumMod +
+                    c]);
       motion[slot * a2f::kPerformanceChannels] =
-          emotion[slot * a2f::kNumMod + a2f::kJoy];
+          emotion[(slot + a2f::kPerformanceContextFrames) * a2f::kNumMod +
+                  a2f::kJoy];
     }
     return true;
   }

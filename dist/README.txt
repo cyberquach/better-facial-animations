@@ -48,8 +48,8 @@ Requirements
   Settings -> Animation models offers Audio2Face: Disabled, V3, Performance, Legacy.
   Audio2Emotion has its own Disabled, Full, Performance dropdown.
   Hover for tradeoffs. Model changes apply live; playing lines finish with their
-  original animation. Performance (81k Thin120) runs on GPU, or CPU with ForceCPU=1:
-  smaller, but less emotive, 30 fps, no eye gaze feature.
+  original animation. Performance (4M Block AttnRes) runs on GPU, or CPU with ForceCPU=1:
+  compact V3-trained motion with per-line memory, 30 fps, no eye gaze feature.
   It is experimental and Skyrim-trained; not yet verified on Steam Deck.
   Audio2Face processing device and Audio2Emotion processing device each select
   a named GPU or CPU (Force CPU). Both default to GPU 0 and save their own choice;
@@ -162,7 +162,7 @@ Contents of this folder
   DirectML.dll                                         Microsoft DirectML 1.15.4 (licenses/DirectML-LICENSE.txt)
   a2f3_fp16.onnx                                       Audio2Face-3D v3.0, FP16 (NOTICE.txt)
   A2FDirect3.bin                                       its faces (Claire, Mark): basis, landmarks and network projection
-  performance.onnx                                   Experimental Thin120 facial model
+  performance.onnx                                   Block AttnRes facial model
   emotion_fp16.onnx                                  Full Audio2Emotion (with-sentiment only)
   emotion_performance.onnx, emotion_performance.json  Performance Audio2Emotion and provenance (both archives)
   network_fp16.onnx                                    Audio2Face-3D v2.3 Mark, FP16 (NOTICE.txt): UseOldModel=1

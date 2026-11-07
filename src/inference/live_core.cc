@@ -629,7 +629,8 @@ bool GeneratePerformance(Net& net, const float* pcm, size_t n,
   const float silent_mel = std::log(1e-6f);
   std::vector<float> mel_window(kPerformanceWindowFrames * kMelBins),
       emotion_window(kPerformanceWindowFrames * kNumMod),
-      motion(kPerformanceWindowFrames * kPerformanceChannels);
+      motion(kPerformanceHopFrames * kPerformanceChannels);
+  PerformanceState state, next;
   for (size_t start = 0; start < frames; start += kPerformanceHopFrames) {
     if (cancelled()) return false;
     for (int slot = 0; slot < kPerformanceWindowFrames; ++slot) {
@@ -647,14 +648,16 @@ bool GeneratePerformance(Net& net, const float* pcm, size_t n,
                   &emotion_window[slot * kNumMod]);
     }
     if (!net.RunPerformance(mel_window.data(), female ? 0 : 1,
-                            emotion_window.data(), motion.data(), err))
+                            emotion_window.data(), state, motion.data(), next,
+                            err))
       return false;
+    std::swap(state, next);
     const size_t produced =
         std::min<size_t>(kPerformanceHopFrames, frames - start);
     for (size_t slot = 0; slot < produced; ++slot)
       for (int channel = 0; channel < kPerformanceChannels; ++channel) {
         const size_t source =
-            (slot + kPerformanceContextFrames) * kPerformanceChannels + channel;
+            slot * kPerformanceChannels + channel;
         const float value = motion[source] * performance::kTargetStd[channel] +
                             performance::kTargetMean[channel];
         if (!std::isfinite(value)) {

@@ -44,7 +44,8 @@ std::unique_ptr<Net> CreateOrtNet3(const std::wstring& dll_dir,
                                    const OrtOptions& o, std::string& err,
                                    std::string& info);
 
-// Fixed-shape Thin120 student; the same GPU/CPU options as the other models.
+// Fixed-shape Block AttnRes student with caller-owned per-line memory; the same
+// GPU/CPU options as the other models.
 std::unique_ptr<Net> CreatePerformanceNet(const std::wstring& dll_dir,
                                           const std::wstring& model,
                                           const OrtOptions& o, std::string& err,
