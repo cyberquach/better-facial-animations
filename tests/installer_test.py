@@ -149,7 +149,15 @@ with tempfile.TemporaryDirectory() as directory:
             else:
                 assert manual[key] == value, key
         descriptions = [d.text for d in config.iter('description')]
-        assert all('@guide:' not in text and len(text) < 800 for text in descriptions)
+        # The expanded per-OS recovery instructions are intentionally longer
+        # than ordinary option descriptions (introduced with 5.0.4).
+        route_description = route_plugin.findtext('description')
+        assert route_description and len(route_description) < 1800
+        assert all(section in route_description for section in
+                   ('WINDOWS', 'LINUX / PROTON', 'GPU-SETUP.txt'))
+        assert all('@guide:' not in text and
+                   (text == route_description or len(text) < 800)
+                   for text in descriptions)
         assert len(config.findall('installSteps/installStep')) == 6
         assert any('ForceCPU=1' in text and 'GPU-SETUP.txt' in text for text in descriptions)
         assert any('without SKSE Menu Framework' in text for text in descriptions)

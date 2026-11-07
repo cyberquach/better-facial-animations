@@ -226,7 +226,8 @@ def main():
     inputs += sorted((ROOT / 'tests').glob('*.py'))
     inputs += [ROOT / c['python'] for c in selected if c.get('python')]
     inputs += [ROOT / 'tests/follower_teeth.json', ROOT / 'tests/mouth_lining.json', ROOT / 'tests/hair_assets.json',
-               ROOT / 'tests/emotion_performance.fixtures',
+               ROOT / 'tests/emotion_performance.fixtures', ROOT / 'tests/performance.fixtures',
+               ROOT / 'dist/performance.onnx', ROOT / 'dist/performance-model.json',
                ROOT / 'dist/emotion_performance.onnx', ROOT / 'dist/emotion_performance.json']
     report = {
         'schema': 1,

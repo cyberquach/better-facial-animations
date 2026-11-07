@@ -10,7 +10,8 @@ class TrainingPortability(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         files = list((root/'tools/training').glob('*.py'))
         files += [root/'tools/training/README.md', root/'tools/emotion_student.py',
-                  root/'tools/export_emotion.py', root/'tools/export_performance_stats.py']
+                  root/'tools/export_emotion.py', root/'tools/export_performance.py',
+                  root/'tools/performance_student.py', root/'tools/export_performance_stats.py']
         for path in files:
             text = path.read_text()
             self.assertIsNone(re.search(r'/(?:home|Users)/[^/\s]+/|[A-Za-z]:[\\/]+Users[\\/]+', text), path)
