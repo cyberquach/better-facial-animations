@@ -1524,8 +1524,7 @@ void MapJaw(const Mark& mk, const Registration& g, Head& out) {
 // opens its jaw with it (names and vertex counts differ between replacers).
 // A few coincidences, e.g. a tooth touching the lip, are not a border.
 void MouthSeam(const ShapeIn& skin, const ShapeIn& mouth, const Registration& g,
-               Head::Shape& out) {
-  constexpr float kSameRestOfUnit = 0.01f;
+               Head::Shape& out, float rest_tolerance = 0.01f) {
   constexpr float kSameJawMotionOfUnit = 0.03f;
   constexpr size_t kMinSkinVertices = 8;
   if (mouth.morphs.size() <= kBigAah ||
@@ -1539,11 +1538,23 @@ void MouthSeam(const ShapeIn& skin, const ShapeIn& mouth, const Registration& g,
     uint32_t skin_vertex;
     float distance;
     if (!tree.Nearest(rest, 1, &skin_vertex, &distance) ||
-        !(distance <= kSameRestOfUnit * g.unit))
+        !(distance <= rest_tolerance * g.unit))
       continue;
     const V3 jaw_difference = At(&mouth.morphs[kBigAah][mouth_vertex * 3]) -
                               At(&skin.morphs[kBigAah][skin_vertex * 3]);
     if (!(Len(jaw_difference) <= kSameJawMotionOfUnit * g.unit)) continue;
+    // A remeshed border can have a small resting offset (Enhanced Khajiit
+    // male fangs). The wider fallback also requires matching lip pucker,
+    // so nearby teeth moving with the jaw alone cannot qualify.
+    if (rest_tolerance > 0.01f) {
+      if (mouth.morphs.size() <= kOohQ ||
+          mouth.morphs[kOohQ].size() != mouth.verts.size())
+        continue;
+      const V3 pucker_difference =
+          At(&mouth.morphs[kOohQ][mouth_vertex * 3]) -
+          At(&skin.morphs[kOohQ][skin_vertex * 3]);
+      if (!(Len(pucker_difference) <= kSameJawMotionOfUnit * g.unit)) continue;
+    }
     out.seam.push_back({mouth_vertex, skin_vertex});
     skin_vertices.push_back(skin_vertex);
   }
@@ -1737,6 +1748,9 @@ bool BuildHead(const Mark& mk, const std::vector<ShapeIn>& shapes, Head& out,
       for (int c = 0; c < 3; ++c) mo[c] -= off[c];
       Mouth(mk, sh, Shifted(sh.verts, mo), g.s, g.rot, out, hs);
       MouthSeam(*skin, sh, g, hs);
+      // Preserve established borders exactly. Only retry a rejected border,
+      // during cached head construction; playback uses the same seam/jaw data.
+      if (hs.seam.empty()) MouthSeam(*skin, sh, g, hs, 0.1f);
       MouthWalls(*skin, sh, g, hs);
     } else {
       auto& trees = part == Part::kEyes ? eye_trees : face_trees;

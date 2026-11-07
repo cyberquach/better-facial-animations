@@ -139,17 +139,19 @@ void CheckLipJawFade(const Head& head, uint32_t partial, uint32_t outside) {
 
 // An oral border duplicates skin positions and native jaw motion, as on
 // Khajiit. Nearby teeth alone must not become skin followers.
-void SharedMouthBorder(const Mark& mk, ShapeIn skin, ShapeIn mouth) {
+void SharedMouthBorder(const Mark& mk, ShapeIn skin, ShapeIn mouth,
+                      float seam_offset = 0.001f) {
   const uint32_t first_skin = skin.nv, first_mouth = mouth.nv;
   for (uint32_t i = 0; i < 8; ++i) {
     const float x = (i % 4) * 0.5f - 0.75f;
     const float z = i < 4 ? -1.8f : -2.2f;
     skin.verts.insert(skin.verts.end(), {x, 9.f, z});
-    mouth.verts.insert(mouth.verts.end(), {x + 0.001f, 9.f, z});
+    mouth.verts.insert(mouth.verts.end(), {x + seam_offset, 9.f, z});
   }
   skin.nv += 8;
   mouth.nv += 8;
   for (auto* shape : {&skin, &mouth}) {
+    shape->morphs[kOohQ].resize(shape->nv * 3, 0.f);
     for (auto& morph : shape->morphs)
       if (!morph.empty()) morph.resize(shape->nv * 3);
     for (uint32_t v = shape->nv - 8; v < shape->nv; ++v)
@@ -257,13 +259,15 @@ void SharedMouthBorder(const Mark& mk, ShapeIn skin, ShapeIn mouth) {
             "zero speech leaves the mouth at rest");
     }
   }
-  for (int control = 0; control < 3; ++control) {
+  for (int control = 0; control < (seam_offset > 0.01f ? 5 : 3); ++control) {
     ShapeIn m = mouth;
     for (uint32_t v = first_mouth; v < m.nv; ++v) {
       if (control == 0 || (control == 2 && v == first_mouth))
-        m.verts[v * 3 + 1] += 0.1f;
+        m.verts[v * 3 + 1] += 0.2f;
       if (control == 1) m.morphs[kBigAah][v * 3 + 2] += 1;
+      if (control == 3) m.morphs[kOohQ][v * 3 + 1] += 1;
     }
+    if (control == 4) m.morphs[kOohQ].clear();
     Head h;
     Check(BuildHead(mk, {skin, m}, h, why) && h.shapes[1].seam.empty() &&
               h.lip_jaw.empty(),
@@ -516,6 +520,7 @@ bool BuildFixture(TongueMotion mode, MouthFixture& fixture) {
   // Separate oral parts and head-scale checks use the tongue-free fixture.
   if (ok && mode == TongueMotion::kNone) {
     SharedMouthBorder(mk, skin, mouth);
+    SharedMouthBorder(mk, skin, mouth, 0.08f);
     std::vector<float> pose;
     std::vector<std::vector<float>> d;
     Coefficients(h, &line, 0, pose);
