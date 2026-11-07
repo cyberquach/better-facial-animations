@@ -349,6 +349,22 @@ const float* BaseVerts(uint8_t* shape, uint32_t& nv) {
 
 namespace {
 
+void ReadFollowerTriangles(uint8_t* shape, direct::ShapeIn& s) {
+  s.triangles.clear();
+  if (s.skin || s.part != direct::Part::kHead) return;
+  auto* geometry = reinterpret_cast<RE::BSTriShape*>(shape);
+  const auto* renderer = geometry->GetGeometryRuntimeData().rendererData;
+  const auto& mesh = geometry->GetTrishapeRuntimeData();
+  if (!renderer || !renderer->rawIndexData || mesh.vertexCount != s.nv ||
+      !mesh.triangleCount)
+    return;
+  const auto* indices = renderer->rawIndexData;
+  const size_t count = size_t{mesh.triangleCount} * 3;
+  if (std::all_of(indices, indices + count,
+                  [&](uint16_t index) { return index < s.nv; }))
+    s.triangles.assign(indices, indices + count);
+}
+
 // The shape's morphs it Reads (direct::Reads), each read by applying it at
 // 1.0 and putting the vertices back; all zero where the shape lacks one,
 // empty when the shape has no morphs at all.
@@ -528,6 +544,7 @@ State FindHead(uint8_t* node, const std::string& key, bool female,
     s.nv = nv;
     s.verts.assign(base, base + nv * 3);
     ReadMorphs(shape, s);
+    ReadFollowerTriangles(shape, s);
     j.shapes.push_back(std::move(s));
   });
   guard.Lock();

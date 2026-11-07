@@ -36,6 +36,89 @@ int main() {
       assert(!storage || storage == shared[0].order.data());
     }
   }
+  // Curved lips need not lie on their side of the global mouth-centre plane.
+  // A goatee on a raised lower lip must open with the jaw; a moustache on a
+  // drooping upper lip must stay with the upper face. The height-only mapping
+  // attaches both of these fixtures to the opposite side.
+  for (bool lower : {false, true}) {
+    const float z = lower ? 0.2f : -0.2f;
+    const uint8_t contact = lower ? kLowerLip : kUpperLip;
+    const uint8_t opposite = lower ? kUpperLip : kLowerLip;
+    const std::vector<float> curved = {-.1f, 0,  z,   .1f,  0,    z, 0,   -.1f,
+                                       z,    0,  .1f, z,    -.1f, 0, -z,  .1f,
+                                       0,    -z, 0,   -.1f, -z,   0, .1f, -z};
+    const std::vector<uint8_t> labels = {contact,  contact,  contact,
+                                         contact,  opposite, opposite,
+                                         opposite, opposite};
+    ShapeIn attachment;
+    attachment.part = Part::kHead;
+    attachment.nv = 6;
+    attachment.verts = {-.1f, 0, z,  .1f, 0, z,  0, .1f, z,
+                        -.1f, 0, -z, .1f, 0, -z, 0, .1f, -z};
+    attachment.triangles = {0, 1, 2, 3, 4, 5};
+    attachment.morphs.resize(kNumMorphs);
+    attachment.morphs[kBigAah].resize(18);
+    for (int i = 0; i < 6; ++i)
+      attachment.morphs[kBigAah][i * 3 + 2] = (i < 3) == lower ? -1.f : 0.f;
+    std::vector<float> opening(24);
+    for (int i = 0; i < 8; ++i)
+      opening[i * 3 + 2] = labels[i] == kLowerLip ? -1.f : 0.f;
+    Head::Shape mapped;
+    std::vector<KdTree> trees;
+    Follow(attachment, curved, 8, labels, 0, std::vector<float>(24), 0, trees,
+           mapped, opening);
+    float jaw_motion = 0;
+    for (int i = 0; i < kFollow; ++i) {
+      const uint32_t vertex = mapped.idx[i];
+      assert(labels[vertex] == contact);
+      if (labels[vertex] == kLowerLip) jaw_motion -= mapped.w[i];
+    }
+    assert(std::fabs(jaw_motion - (lower ? -1.f : 0.f)) < 1e-6f);
+  }
+  // A moustache card's root belongs to the upper lip even if its hanging tip
+  // is close to the lower lip and its original TRI stretches that tip down.
+  // The separate goatee card must still move with the jaw.
+  {
+    const std::vector<float> skin = {-1, 0, 1, 1, 0, 1, -1, .1f, 1, 1, .1f, 1,
+                                     -1, 0, 0, 1, 0, 0, -1, .1f, 0, 1, .1f, 0};
+    const std::vector<uint8_t> labels = {kUpperLip, kUpperLip, kUpperLip,
+                                         kUpperLip, kLowerLip, kLowerLip,
+                                         kLowerLip, kLowerLip};
+    std::vector<float> opening(24);
+    for (int i = 4; i < 8; ++i) opening[i * 3 + 2] = -1;
+    ShapeIn cards;
+    cards.part = Part::kHead;
+    cards.nv = 6;
+    cards.verts = {-1, 0, 1, 1, 0, 1, 0, 0, 0, -1, 0, 0, 1, 0, 0, 0, 0, -2};
+    cards.morphs.resize(kNumMorphs);
+    cards.morphs[kBigAah] = {0, 0, 0,  0, 0, 0,  0, 0, -1,
+                             0, 0, -1, 0, 0, -1, 0, 0, -1};
+    cards.triangles = {0, 1, 2, 3, 4, 5};
+    std::vector<KdTree> trees;
+    Head::Shape mapped;
+    Follow(cards, skin, 8, labels, .5f, std::vector<float>(24), 0, trees,
+           mapped, opening);
+    for (uint32_t i = 0; i < cards.nv; ++i) {
+      float movement = 0;
+      for (int j = 0; j < kFollow; ++j)
+        movement += mapped.w[i * kFollow + j] *
+                    opening[mapped.idx[i * kFollow + j] * 3 + 2];
+      assert(std::fabs(movement - (i < 3 ? 0.f : -1.f)) < 1e-6f);
+    }
+    // Missing or malformed topology keeps the ordinary vertex mapping.
+    for (auto indices :
+         {std::vector<uint16_t>{}, std::vector<uint16_t>{0, 1, 99}}) {
+      cards.triangles = indices;
+      Head::Shape fallback;
+      Follow(cards, skin, 8, labels, .5f, std::vector<float>(24), 0, trees,
+             fallback, opening);
+      float movement = 0;
+      for (int j = 0; j < kFollow; ++j)
+        movement += fallback.w[2 * kFollow + j] *
+                    opening[fallback.idx[2 * kFollow + j] * 3 + 2];
+      assert(movement < -.99f);
+    }
+  }
   // Exercise the original scalar summation independently, including a zero
   // weight with an unusable index and vertices with no following at all.
   Head head;

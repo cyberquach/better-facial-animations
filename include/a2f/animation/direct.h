@@ -53,7 +53,8 @@ constexpr int kNumLandmarks = 8;
 // skin reads the mapping's (kBlinkLeft..kOohQ and kHappy, which a head must
 // have to be animated) and the expressions; the mouth part BigAah (how far
 // each vertex follows the jaw), all speech phonemes and the expressions; the
-// eyes the two blinks.
+// eyes the two blinks; facial followers read BigAah to separate moustache
+// roots from the jaw and to anchor long beard attachments.
 enum Morph {
   kBlinkLeft,
   kBlinkRight,
@@ -135,6 +136,7 @@ constexpr bool Reads(bool skin, Part part, int m,
     part = Part::kMouth;
   if (skin) return m < kTonguePhoneme || (m >= kExpression && m < kAah);
   if (part == Part::kMouth) return m >= kBigAah;
+  if (part == Part::kHead) return m == kBigAah;
   return part == Part::kEyes && m <= kBlinkRight;
 }
 
@@ -146,7 +148,8 @@ struct ShapeIn {
   bool mouth_candidate =
       false;  // ambiguous name/relationship; validate spatially
   uint32_t nv = 0;
-  std::vector<float> verts;  // nv x 3, base (pre-morph)
+  std::vector<float> verts;         // nv x 3, base (pre-morph)
+  std::vector<uint16_t> triangles;  // optional facial-follower topology
   // by Morph, nv x 3 each: those it Reads (zero when the shape lacks it),
   // else empty
   std::vector<std::vector<float>> morphs;
