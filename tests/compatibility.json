@@ -316,7 +316,10 @@
       "covers": [
         "inference starts after startup broadcast in either logger order",
         "successful save load and new game, CPU and GPU",
-        "failed load exclusion, once-only worker and thread creation failure"
+        "failed load exclusion, once-only worker and thread creation failure",
+        "new-game initialization waits for main/loading menu closure and game-task dispatch",
+        "early menu events cannot bypass startup scans; stale tasks cancel on world changes",
+        "menu event registration, both closure orders, duplicate events and missing UI/task prerequisites"
       ]
     },
     {
