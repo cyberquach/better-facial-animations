@@ -2822,6 +2822,21 @@ void AddDirect(uint8_t* node, bool reset) {
                         settings.smile_eyes, coefficients[joy_index],
                         LimitLowerLip(actor)))
     return;
+  direct::UnsafeDelta unsafe;
+  if (direct::FindUnsafeDelta(deltas, unsafe)) {
+    // Never submit a partial head: skin, mouth and followers would disagree.
+    // The first few always reach the log, whatever the Logging setting.
+    static std::atomic<uint64_t> rejected;
+    const uint64_t count = ++rejected;
+    if (count <= 8 || (count & (count - 1)) == 0)
+      skse::Report(
+          "head %s: rejected frame %llu, shape %s (%u of %zu) vertex %u got "
+          "delta %g (limit %g); engine pose kept",
+          key.c_str(), static_cast<unsigned long long>(count),
+          head->shapes[unsafe.shape].name.c_str(), unsafe.shape,
+          head->shapes.size(), unsafe.vertex, unsafe.value, direct::kMaxDelta);
+    return;
+  }
   float peak[3] = {};
   const bool added = AddDeltas(node, *head, deltas, peak);
   ScopedLock guard(lock);

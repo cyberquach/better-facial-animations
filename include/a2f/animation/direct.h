@@ -260,6 +260,21 @@ bool Evaluate(const Head& head, const float* coefficients, const float* scales,
               float upper_lip = 1, float lower_lip = 1, float smile_eyes = 0,
               float speech_joy = 0, bool limit_lower_lip = false);
 
+// Largest per-vertex delta component (shape units; a head is ~20) a face
+// shape may receive: several times the largest speech peak seen in play
+// (about 3.3 at default strengths), leaving room for the strength sliders.
+constexpr float kMaxDelta = 12.f;
+
+struct UnsafeDelta {
+  uint32_t shape = 0, vertex = 0;
+  float value = 0;
+};
+// The first delta component that is non-finite or beyond kMaxDelta; false
+// when every shape is safe. The caller then submits nothing for the head, so
+// its parts stay consistent with each other in the engine's pose.
+bool FindUnsafeDelta(const std::vector<std::vector<float>>& deltas,
+                     UnsafeDelta& found);
+
 // The line's coefficients (head.k + kNumMouthCoef) at a fractional frame (of
 // the line's own rate), as
 // Evaluate takes them (past the end: the last frame's); zeros and false
