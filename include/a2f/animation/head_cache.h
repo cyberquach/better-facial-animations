@@ -35,6 +35,13 @@ bool HairGeometry(uint8_t* shape, const char* name);
 // Base (pre-morph) vertices of a face shape: its "FOD" extra data.
 const float* BaseVerts(uint8_t* shape, uint32_t& nv);
 
+// The name ("" if it has none) of a child of the face node that carries base
+// and morph vertices but is not a BSDynamicTriShape, or null. The engine's
+// morph kernel takes the dynamic-data lock of such a shape without checking
+// that it is dynamic: a null dereference as soon as one of its morphs has
+// weight.
+const char* StaticMorphPart(uint8_t* node);
+
 // The node's head mapping and its state (failed: not mappable). On first
 // sight reads the shapes and their morphs here, where the engine has the
 // node, and queues the build.

@@ -347,6 +347,25 @@ const float* BaseVerts(uint8_t* shape, uint32_t& nv) {
   return nullptr;
 }
 
+const char* StaticMorphPart(uint8_t* node) {
+  const auto& children = reinterpret_cast<RE::NiNode*>(node)->GetChildren();
+  const auto* kids = children.begin();
+  const uint16_t n = children.free_idx();
+  for (uint16_t i = 0; kids && i < n; ++i) {
+    auto* shape = reinterpret_cast<uint8_t*>(kids[i].get());
+    uint32_t nv = 0;
+    // Base vertices first: only face geometry has them, so the type is not
+    // read from a child that is no geometry.
+    if (!shape || !BaseVerts(shape, nv) ||
+        reinterpret_cast<RE::BSGeometry*>(shape)->GetType().underlying() == 4 ||
+        !Engine<MorphDataFn, kIdMorphData>()(shape))
+      continue;
+    const char* name = reinterpret_cast<RE::NiObjectNET*>(shape)->name.c_str();
+    return name ? name : "";
+  }
+  return nullptr;
+}
+
 namespace {
 
 void ReadFollowerTriangles(uint8_t* shape, direct::ShapeIn& s) {

@@ -2977,6 +2977,19 @@ __declspec(noinline) uint64_t ApplyMorphsHook(uint8_t* node, uint8_t force) {
   auto orig = SiteOrig<ApplyMorphsFn>(_ReturnAddress(), kIdApplyMorphs);
   const uint64_t epoch = world_epoch;
   if (!CurrentWorld(epoch)) return orig(node, force);
+  // The original would crash on this head (StaticMorphPart), with or without
+  // the plugin playing it: leave the face unmorphed instead. Not during a
+  // load, when the hook reads nothing of the node.
+  if (const char* part = StaticMorphPart(node)) {
+    static std::atomic<uint64_t> skipped;
+    const uint64_t count = ++skipped;
+    if (count <= 4 || (count & (count - 1)) == 0)
+      skse::Report("face morphs skipped (%llu): head part %s has morph data "
+                   "but is not a dynamic shape; the game would crash morphing "
+                   "it. Regenerate that NPC's face mesh.",
+                   static_cast<unsigned long long>(count), part);
+    return 0;
+  }
   const bool direct =
       ready && (num_playing || num_faces || PartnerHandle() != partner_handle);
   auto* fg = reinterpret_cast<RE::BSFaceGenAnimationData*>(
