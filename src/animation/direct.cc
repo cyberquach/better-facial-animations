@@ -693,9 +693,12 @@ void Follow(const ShapeIn& s, const std::vector<float>& skin, uint32_t snv,
     }
   }
   // Small disconnected hair cards hang from a root. Mapping their tips to
-  // the opposite lip stretches a moustache into the opening mouth, even
-  // when an authored TRI gave those tips jaw motion. Keep each card's shape
-  // and attach it at the upper edge; continuous beard surfaces stay flexible.
+  // the opposite lip stretches a moustache into the opening mouth, so each
+  // card keeps its shape and is attached at the upper edge; continuous beard
+  // surfaces stay flexible. A card rooted on the upper face whose own TRI
+  // opens a tip at least half way with the jaw spans the mouth: it stretches
+  // as authored, each vertex by its opening relative to the jaw skin under
+  // it, so the lower lip does not pass through a still strand.
   if (!authored) return;
   std::vector<uint32_t> parent(s.nv);
   for (uint32_t i = 0; i < s.nv; ++i) parent[i] = i;
@@ -739,8 +742,43 @@ void Follow(const ShapeIn& s, const std::vector<float>& skin, uint32_t snv,
     double weights[kFollow];
     const int n = trees[side].Nearest(anchor, kFollow, indices, distance);
     IdwWeights(distance, n, .05, weights);
+    float tip = 0;
+    for (uint32_t i : card) tip = std::max(tip, -s.morphs[kBigAah][i * 3 + 2]);
+    const bool spanning = side == 0 && n > 0 && tip >= .5f * jaw_drop;
     for (uint32_t i : card) {
       std::fill_n(&out.w[i * kFollow], kFollow, 0.f);
+      if (spanning) {
+        constexpr int kHalf = kFollow / 2;
+        uint32_t jaw[kHalf];
+        float jaw_distance[kHalf];
+        double jaw_weights[kHalf], root_weights[kHalf];
+        const int jaws =
+            trees[2].Nearest(At(&v[i * 3]), kHalf, jaw, jaw_distance);
+        IdwWeights(jaw_distance, jaws, .05, jaw_weights);
+        float skin_drop = 0;
+        for (int j = 0; j < jaws; ++j)
+          skin_drop -= static_cast<float>(jaw_weights[j]) *
+                       skin_open[jaw[j] * 3 + 2];
+        const float t =
+            std::clamp(-s.morphs[kBigAah][i * 3 + 2] /
+                           std::max(skin_drop, 1e-3f * jaw_drop),
+                       0.f, 1.f);
+        if (t > .02f) {
+          const int roots = std::min(n, kHalf);
+          IdwWeights(distance, roots, .05, root_weights);
+          for (int j = 0; j < roots; ++j) {
+            out.idx[i * kFollow + j] = indices[j];
+            out.w[i * kFollow + j] =
+                static_cast<float>(root_weights[j] * (1 - t));
+          }
+          for (int j = 0; j < jaws; ++j) {
+            out.idx[i * kFollow + kHalf + j] = jaw[j];
+            out.w[i * kFollow + kHalf + j] =
+                static_cast<float>(jaw_weights[j] * t);
+          }
+          continue;
+        }
+      }
       for (int j = 0; j < n; ++j) {
         out.idx[i * kFollow + j] = indices[j];
         out.w[i * kFollow + j] = static_cast<float>(weights[j]);

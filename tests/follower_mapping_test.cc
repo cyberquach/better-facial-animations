@@ -76,9 +76,10 @@ int main() {
     assert(std::fabs(jaw_motion - (lower ? -1.f : 0.f)) < 1e-6f);
   }
   // A moustache card's root belongs to the upper lip even if its hanging tip
-  // is close to the lower lip and its original TRI stretches that tip down.
-  // The separate goatee card must still move with the jaw.
-  {
+  // is close to the lower lip. A tip its TRI opens less than half way stays
+  // rigid with the root; one opened further spans the mouth and stretches as
+  // authored. The separate goatee card must still move with the jaw.
+  for (float tip : {.3f, .6f}) {
     const std::vector<float> skin = {-1, 0, 1, 1, 0, 1, -1, .1f, 1, 1, .1f, 1,
                                      -1, 0, 0, 1, 0, 0, -1, .1f, 0, 1, .1f, 0};
     const std::vector<uint8_t> labels = {kUpperLip, kUpperLip, kUpperLip,
@@ -91,7 +92,7 @@ int main() {
     cards.nv = 6;
     cards.verts = {-1, 0, 1, 1, 0, 1, 0, 0, 0, -1, 0, 0, 1, 0, 0, 0, 0, -2};
     cards.morphs.resize(kNumMorphs);
-    cards.morphs[kBigAah] = {0, 0, 0,  0, 0, 0,  0, 0, -1,
+    cards.morphs[kBigAah] = {0, 0, 0,  0, 0, 0,  0, 0, -tip,
                              0, 0, -1, 0, 0, -1, 0, 0, -1};
     cards.triangles = {0, 1, 2, 3, 4, 5};
     std::vector<KdTree> trees;
@@ -103,7 +104,8 @@ int main() {
       for (int j = 0; j < kFollow; ++j)
         movement += mapped.w[i * kFollow + j] *
                     opening[mapped.idx[i * kFollow + j] * 3 + 2];
-      assert(std::fabs(movement - (i < 3 ? 0.f : -1.f)) < 1e-6f);
+      const float expected = i < 2 ? 0.f : i > 2 ? -1.f : tip < .5f ? 0.f : -tip;
+      assert(std::fabs(movement - expected) < 1e-6f);
     }
     // Missing or malformed topology keeps the ordinary vertex mapping.
     for (auto indices :
