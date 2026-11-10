@@ -1898,6 +1898,21 @@ bool Coefficients(const Head& h, const a2f::Line* line, float frame,
   return true;
 }
 
+bool FindUnsafeDelta(const std::vector<std::vector<float>>& deltas,
+                     UnsafeDelta& found) {
+  for (size_t shape = 0; shape < deltas.size(); ++shape) {
+    const std::vector<float>& d = deltas[shape];
+    for (size_t i = 0; i < d.size(); ++i) {
+      // A NaN fails the comparison, so it is caught here too.
+      if (std::fabs(d[i]) <= kMaxDelta) continue;
+      found = {static_cast<uint32_t>(shape), static_cast<uint32_t>(i / 3),
+               d[i]};
+      return true;
+    }
+  }
+  return false;
+}
+
 bool Evaluate(const Head& h, const float* coefficients, const float* scales,
               const float* expressions, const float* phonemes,
               TongueMode tongue_mode, std::vector<std::vector<float>>& out,
