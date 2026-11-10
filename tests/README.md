@@ -32,6 +32,11 @@ also checks the built DLL and every required ID against local Address Libraries,
 including Steam 1.6.353 and GOG 1.6.659.
 
 `morph-lock-span` checks the morph hook keeps a played face's lock and every dynamic face shape's lock from before the engine's vertex reset until the deltas pass (a release in between is the one-frame speech flicker), with the engine's own locking nested, and takes no locks for faces it does not play.
+`worker-start` retains startup module-scan exclusion in both listener orders.
+It checks that first new-game inference waits for a game task with the main and
+loading menus closed, including both closure orders, early provider/GPU requests,
+stale tasks, duplicate events and thread failures. UI registration/state and thread
+creation are substituted; this is not a live Nolvus loading-screen reproduction.
 `conversation-gaze` checks v2/v3 eye-track alignment, additive look controls,
 late-start sync, player-target/scene/runtime gating, restoration and hook coexistence.
 `independent-device` also verifies complete session setup: two intra-op threads, one inter-op thread, idle spinning disabled, sequential DirectML, fixed shapes and the retained arena.

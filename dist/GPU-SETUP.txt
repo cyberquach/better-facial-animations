@@ -6,8 +6,8 @@ without having to launch Skyrim. No helper program is launched by this version.
 [Requirements and drivers]
 
 Shared GPU + V3 is the initial preset. V3 tries GPU inference after a save loads or a
-new game starts. Early dialogue keeps vanilla animation while the model warms
-up. A returned GPU failure can be retried with Try GPU again.
+new game leaves the main/loading screens. Early dialogue keeps vanilla animation
+while the model warms up. A returned GPU failure can be retried with Try GPU again.
 Shared GPU retries without metacommands, then conditionally through an observed
 graphics wrapper after device loss. Further shared attempts wait 2/4/8/16/30 seconds;
 sentiment retries after 30 seconds. GPU failures never automatically select CPU.
