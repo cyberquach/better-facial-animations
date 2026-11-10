@@ -53,7 +53,8 @@ constexpr int kNumLandmarks = 8;
 // skin reads the mapping's (kBlinkLeft..kOohQ and kHappy, which a head must
 // have to be animated) and the expressions; the mouth part BigAah (how far
 // each vertex follows the jaw), all speech phonemes and the expressions; the
-// eyes the two blinks.
+// eyes the two blinks; facial followers read BigAah to separate moustache
+// roots from the jaw and to anchor long beard attachments.
 enum Morph {
   kBlinkLeft,
   kBlinkRight,
@@ -135,6 +136,7 @@ constexpr bool Reads(bool skin, Part part, int m,
     part = Part::kMouth;
   if (skin) return m < kTonguePhoneme || (m >= kExpression && m < kAah);
   if (part == Part::kMouth) return m >= kBigAah;
+  if (part == Part::kHead) return m == kBigAah;
   return part == Part::kEyes && m <= kBlinkRight;
 }
 
@@ -146,7 +148,8 @@ struct ShapeIn {
   bool mouth_candidate =
       false;  // ambiguous name/relationship; validate spatially
   uint32_t nv = 0;
-  std::vector<float> verts;  // nv x 3, base (pre-morph)
+  std::vector<float> verts;         // nv x 3, base (pre-morph)
+  std::vector<uint16_t> triangles;  // optional facial-follower topology
   // by Morph, nv x 3 each: those it Reads (zero when the shape lacks it),
   // else empty
   std::vector<std::vector<float>> morphs;
@@ -256,6 +259,21 @@ bool Evaluate(const Head& head, const float* coefficients, const float* scales,
               TongueMode tongue_mode, std::vector<std::vector<float>>& out,
               float upper_lip = 1, float lower_lip = 1, float smile_eyes = 0,
               float speech_joy = 0, bool limit_lower_lip = false);
+
+// Largest per-vertex delta component (shape units; a head is ~20) a face
+// shape may receive: several times the largest speech peak seen in play
+// (about 3.3 at default strengths), leaving room for the strength sliders.
+constexpr float kMaxDelta = 12.f;
+
+struct UnsafeDelta {
+  uint32_t shape = 0, vertex = 0;
+  float value = 0;
+};
+// The first delta component that is non-finite or beyond kMaxDelta; false
+// when every shape is safe. The caller then submits nothing for the head, so
+// its parts stay consistent with each other in the engine's pose.
+bool FindUnsafeDelta(const std::vector<std::vector<float>>& deltas,
+                     UnsafeDelta& found);
 
 // The line's coefficients (head.k + kNumMouthCoef) at a fractional frame (of
 // the line's own rate), as

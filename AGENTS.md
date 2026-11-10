@@ -47,4 +47,7 @@ Keep README/AGENTS/docs limited to commands and facts needed to build, run or
 test. Update existing text instead of appending a section for every prompt.
 Do not add task recaps, policy essays, proposals, repeated inventories or agent
 rules unless requested. Put experiment history in the main checkout's untracked
-RESEARCH_JOURNAL.md. Link to code or the case inventory instead of restating it.
+RESEARCH_JOURNAL.md (SSD main: `/home/blane/a2f-new/RESEARCH_JOURNAL.md`).
+Read the relevant prior failure and regression controls before changing an
+existing fix.
+Link to code or the case inventory instead of restating it.

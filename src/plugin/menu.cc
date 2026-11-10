@@ -611,7 +611,7 @@ void RenderProblems(const Stats& st, size_t queued, const Tune& tune,
       Notice(kRed, "Not running: " + st.startup_error);
     else
       Notice(kYellow, st.waiting_for_game
-                          ? "The model will load when you enter a game."
+                          ? "The model will load after game entry and initial loading."
                           : "Starting.");
   }
   if (!st.net_error.empty()) {

@@ -6,11 +6,19 @@
 
 #include <atomic>
 #include <cstdint>
+namespace RE {
+class MenuOpenCloseEvent;
+template <class Event>
+class BSTEventSink;
+}  // namespace RE
 namespace bfa::testing {
 inline uint64_t (*address)(uint64_t);
 inline void (*log)(const char*, ...);
 inline void (*report)(const char*, ...);
 inline void (*before_face_lock)();
+inline void (*startup_register_menu_sink)(
+    RE::BSTEventSink<RE::MenuOpenCloseEvent>*);
+inline bool (*startup_menus_closed)();
 inline void (*save_ini)();
 inline std::atomic<double> clock_offset{0};
 inline HRESULT(WINAPI* dxgi_factory)(REFIID, void**);

@@ -110,7 +110,8 @@
       "covers": [
         "a played face's lock and every dynamic face shape's lock are held from before the engine's ApplyMorphs reset until the deltas pass has run (no release in the gap the render thread could copy)",
         "the engine's own per-shape locking nests under the hook's; non-dynamic children are never locked",
-        "faces the plugin does not play, nothing playing and a not-ready plugin take no locks"
+        "faces the plugin does not play, nothing playing and a not-ready plugin take no locks",
+        "a head with a static part that has base and morph vertices skips the engine's ApplyMorphs (its kernel would lock null dynamic data); base vertices alone, dynamic parts and other heads still reach it"
       ]
     },
     {
@@ -316,7 +317,10 @@
       "covers": [
         "inference starts after startup broadcast in either logger order",
         "successful save load and new game, CPU and GPU",
-        "failed load exclusion, once-only worker and thread creation failure"
+        "failed load exclusion, once-only worker and thread creation failure",
+        "new-game initialization waits for main/loading menu closure and game-task dispatch",
+        "early menu events cannot bypass startup scans; stale tasks cancel on world changes",
+        "menu event registration, both closure orders, duplicate events and missing UI/task prerequisites"
       ]
     },
     {

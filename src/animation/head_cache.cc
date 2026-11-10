@@ -347,7 +347,42 @@ const float* BaseVerts(uint8_t* shape, uint32_t& nv) {
   return nullptr;
 }
 
+const char* StaticMorphPart(uint8_t* node) {
+  const auto& children = reinterpret_cast<RE::NiNode*>(node)->GetChildren();
+  const auto* kids = children.begin();
+  const uint16_t n = children.free_idx();
+  for (uint16_t i = 0; kids && i < n; ++i) {
+    auto* shape = reinterpret_cast<uint8_t*>(kids[i].get());
+    uint32_t nv = 0;
+    // Base vertices first: only face geometry has them, so the type is not
+    // read from a child that is no geometry.
+    if (!shape || !BaseVerts(shape, nv) ||
+        reinterpret_cast<RE::BSGeometry*>(shape)->GetType().underlying() == 4 ||
+        !Engine<MorphDataFn, kIdMorphData>()(shape))
+      continue;
+    const char* name = reinterpret_cast<RE::NiObjectNET*>(shape)->name.c_str();
+    return name ? name : "";
+  }
+  return nullptr;
+}
+
 namespace {
+
+void ReadFollowerTriangles(uint8_t* shape, direct::ShapeIn& s) {
+  s.triangles.clear();
+  if (s.skin || s.part != direct::Part::kHead) return;
+  auto* geometry = reinterpret_cast<RE::BSTriShape*>(shape);
+  const auto* renderer = geometry->GetGeometryRuntimeData().rendererData;
+  const auto& mesh = geometry->GetTrishapeRuntimeData();
+  if (!renderer || !renderer->rawIndexData || mesh.vertexCount != s.nv ||
+      !mesh.triangleCount)
+    return;
+  const auto* indices = renderer->rawIndexData;
+  const size_t count = size_t{mesh.triangleCount} * 3;
+  if (std::all_of(indices, indices + count,
+                  [&](uint16_t index) { return index < s.nv; }))
+    s.triangles.assign(indices, indices + count);
+}
 
 // The shape's morphs it Reads (direct::Reads), each read by applying it at
 // 1.0 and putting the vertices back; all zero where the shape lacks one,
@@ -528,6 +563,7 @@ State FindHead(uint8_t* node, const std::string& key, bool female,
     s.nv = nv;
     s.verts.assign(base, base + nv * 3);
     ReadMorphs(shape, s);
+    ReadFollowerTriangles(shape, s);
     j.shapes.push_back(std::move(s));
   });
   guard.Lock();
