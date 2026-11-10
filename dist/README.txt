@@ -73,8 +73,8 @@ Requirements
   to 0; all three at 0 selects V3. ForceCPU applies to all four facial models.
   Potato Mode (PotatoMode=1) processes only the active
   conversation NPC and the player (DBReV or experimental DBVO 2 support). Other NPC speech stays vanilla.
-  Both modes initialize inference after the first successful save load or new game, then keep the model
-  loaded while enabled. Disabled unloads both sessions. Early lines use vanilla animation while it warms up. An already submitted GPU run must finish
+  Both modes initialize inference after the first successful save load, or after the main/loading
+  screens close for a new game, then keep the model loaded while enabled. Disabled unloads both sessions. Early lines use vanilla animation while it warms up. An already submitted GPU run must finish
   before cancellation. PotatoMode=0 (default) processes all speakers. If the model cannot
   be loaded on the GPU the settings window says why; vanilla lip-sync remains active.
   GPU inference defaults to a shared device (IndependentGpuDevice=0) that unwraps

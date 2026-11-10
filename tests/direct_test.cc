@@ -139,17 +139,19 @@ void CheckLipJawFade(const Head& head, uint32_t partial, uint32_t outside) {
 
 // An oral border duplicates skin positions and native jaw motion, as on
 // Khajiit. Nearby teeth alone must not become skin followers.
-void SharedMouthBorder(const Mark& mk, ShapeIn skin, ShapeIn mouth) {
+void SharedMouthBorder(const Mark& mk, ShapeIn skin, ShapeIn mouth,
+                      float seam_offset = 0.001f) {
   const uint32_t first_skin = skin.nv, first_mouth = mouth.nv;
   for (uint32_t i = 0; i < 8; ++i) {
     const float x = (i % 4) * 0.5f - 0.75f;
     const float z = i < 4 ? -1.8f : -2.2f;
     skin.verts.insert(skin.verts.end(), {x, 9.f, z});
-    mouth.verts.insert(mouth.verts.end(), {x + 0.001f, 9.f, z});
+    mouth.verts.insert(mouth.verts.end(), {x + seam_offset, 9.f, z});
   }
   skin.nv += 8;
   mouth.nv += 8;
   for (auto* shape : {&skin, &mouth}) {
+    shape->morphs[kOohQ].resize(shape->nv * 3, 0.f);
     for (auto& morph : shape->morphs)
       if (!morph.empty()) morph.resize(shape->nv * 3);
     for (uint32_t v = shape->nv - 8; v < shape->nv; ++v)
@@ -257,13 +259,15 @@ void SharedMouthBorder(const Mark& mk, ShapeIn skin, ShapeIn mouth) {
             "zero speech leaves the mouth at rest");
     }
   }
-  for (int control = 0; control < 3; ++control) {
+  for (int control = 0; control < (seam_offset > 0.01f ? 5 : 3); ++control) {
     ShapeIn m = mouth;
     for (uint32_t v = first_mouth; v < m.nv; ++v) {
       if (control == 0 || (control == 2 && v == first_mouth))
-        m.verts[v * 3 + 1] += 0.1f;
+        m.verts[v * 3 + 1] += 0.2f;
       if (control == 1) m.morphs[kBigAah][v * 3 + 2] += 1;
+      if (control == 3) m.morphs[kOohQ][v * 3 + 1] += 1;
     }
+    if (control == 4) m.morphs[kOohQ].clear();
     Head h;
     Check(BuildHead(mk, {skin, m}, h, why) && h.shapes[1].seam.empty() &&
               h.lip_jaw.empty(),
@@ -516,6 +520,7 @@ bool BuildFixture(TongueMotion mode, MouthFixture& fixture) {
   // Separate oral parts and head-scale checks use the tongue-free fixture.
   if (ok && mode == TongueMotion::kNone) {
     SharedMouthBorder(mk, skin, mouth);
+    SharedMouthBorder(mk, skin, mouth, 0.08f);
     std::vector<float> pose;
     std::vector<std::vector<float>> d;
     Coefficients(h, &line, 0, pose);
@@ -945,6 +950,31 @@ void MorphSelection() {
   Check(ok, "speech channels select the matching engine morph");
 }
 
+// Sane motion and the limit itself pass; the first non-finite or runaway
+// component is reported by shape and vertex, and nothing is modified.
+void DeltaGuard() {
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  const float inf = std::numeric_limits<float>::infinity();
+  const std::vector<std::vector<float>> safe = {
+      {0.5f, -2.f, 1.f}, {}, {0.f, 0.f, -kMaxDelta, kMaxDelta, 0.f, 0.f}};
+  UnsafeDelta found;
+  Check(!FindUnsafeDelta(safe, found), "delta guard passes sane and limit");
+  Check(!FindUnsafeDelta({}, found), "delta guard passes no shapes");
+  for (float bad : {nan, inf, -inf, kMaxDelta * 1.01f, -kMaxDelta * 1.01f}) {
+    auto d = safe;
+    d.push_back({0.f, 0.f, 0.f, 0.f, bad, 0.f});
+    d.push_back({nan});
+    const auto before = d;
+    found = {};
+    Check(FindUnsafeDelta(d, found) && found.shape == 3 && found.vertex == 1,
+          "delta guard locates the first unsafe component");
+    Check(std::isnan(bad) ? std::isnan(found.value) : found.value == bad,
+          "delta guard reports the value");
+    Check(std::memcmp(d[3].data(), before[3].data(), 6 * sizeof(float)) == 0,
+          "delta guard leaves deltas alone");
+  }
+}
+
 int RunTests() {
   // shape-local, the head and parts around it (a long beard hangs ~8 below
   // and ~7 in front of the head's centre)
@@ -958,6 +988,7 @@ int RunTests() {
   Expect("skeleton beard", Box(0, sy + 2.8f, sz - 1.8f, 4, 3, 4), -sy, -sz);
   Expect("skeleton brows", Box(0, sy + 5.3f, sz + 4, 4, 1, 1), -sy, -sz);
   Expect("skeleton eyes", Box(0, sy + 5.3f, sz + 3, 3, 1, 1), -sy, -sz);
+  DeltaGuard();
   MorphSelection();
   LegacyTongue();
   for (TongueMotion mode : {TongueMotion::kNone, TongueMotion::kWithJaw,

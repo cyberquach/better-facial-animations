@@ -3,6 +3,9 @@
 // lock from before the engine's ApplyMorphs (which resets the vertices) until
 // its own deltas are in. A release in between let the render thread copy a
 // frame without the pose: a random one-frame flicker on speaking faces.
+// A head with a static (non-dynamic) part that carries base and morph vertices
+// never reaches the engine's ApplyMorphs: its morph kernel locks that part's
+// dynamic data without checking that the part is dynamic.
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -22,12 +25,15 @@ using namespace bfa;
 constexpr int kShapes = 2;
 alignas(16) std::array<uint8_t, 0x500> node{}, fg{}, node2{}, fg2{}, npc{},
     plain{};
-alignas(16) std::array<uint8_t, 0x500> shapes[kShapes], fods[kShapes];
+alignas(16) std::array<uint8_t, 0x500> shapes[kShapes], fods[kShapes],
+    plain_fod{};
 std::array<float, 8> buffers[kShapes];
 std::array<float, 6> base{1, 2, 3, 4, 5, 6};
 uint8_t* children[] = {shapes[0].data(), plain.data(), shapes[1].data()};
 uint8_t* extras[kShapes] = {fods[0].data(), fods[1].data()};
+uint8_t* plain_extra = plain_fod.data();
 uint8_t* no_children[] = {nullptr};
+bool plain_morphs = false;
 
 // what the fakes saw
 int depth[kShapes]{}, lock_calls = 0, orig_calls = 0, lookups = 0;
@@ -82,6 +88,10 @@ uint64_t Morph(uint8_t* n, uint8_t force) {
   orig_done = true;
   return 123;
 }
+// The engine's shape -> morph data.
+void* MorphData(uint8_t* s) {
+  return s == plain.data() && plain_morphs ? plain_fod.data() : nullptr;
+}
 // AddDirect retains the line's actor through this; it runs after the
 // original and must still be under the locks.
 bool Lookup(const uint32_t& h, uint8_t** out) {
@@ -97,6 +107,7 @@ extern "C" uint64_t TestAddress(uint64_t id) {
   if (id == kIdLockDynamic.Get()) return reinterpret_cast<uint64_t>(&Lock);
   if (id == kIdUnlockDynamic.Get()) return reinterpret_cast<uint64_t>(&Unlock);
   if (id == kIdUpdateDynamic.Get()) return reinterpret_cast<uint64_t>(&Update);
+  if (id == kIdMorphData.Get()) return reinterpret_cast<uint64_t>(&MorphData);
   if (id == kIdLookupReference.Get()) return reinterpret_cast<uint64_t>(&Lookup);
   return 0;
 }
@@ -193,6 +204,40 @@ void NotReady() {
   playing.clear();
   Count();
 }
+// The static child gains base vertices, then morph data.
+void StaticMorphPartSkipsEngine() {
+  plain[0x150] = 3;  // BSTriShape
+  Field<const char*>(plain.data(), 0x10) = FixtureString("FemaleEyes");
+  Field<const char*>(plain_fod.data(), 0x10) = FixtureString("FOD");
+  Field<const float*>(plain_fod.data(), 0x18) = base.data();
+  Field<uint32_t>(plain_fod.data(), 0x24) = 2;
+  Field<uint8_t**>(plain.data(), 0x20) = &plain_extra;
+  Field<uint16_t>(plain.data(), 0x28) = 1;
+  // base vertices alone: the engine skips the shape itself
+  CHECK(!StaticMorphPart(node.data()));
+  Run(node.data());
+  plain_morphs = true;
+  CHECK(!std::strcmp(StaticMorphPart(node.data()), "FemaleEyes"));
+  Play(fg.data());
+  for (bool is_ready : {true, false}) {
+    ready = is_ready;
+    Reset();
+    CHECK(ApplyMorphsHook(node.data(), 1) == 0);
+    CHECK(orig_calls == 0 && lock_calls == 0 && lookups == 0);
+    CHECK(Field<uint32_t>(fg.data(), 0x224) == 0);
+  }
+  ready = true;
+  // a head without such a part is unaffected
+  CHECK(!StaticMorphPart(node2.data()));
+  Run(node2.data());
+  // a dynamic shape with morph data is the normal case
+  plain[0x150] = 4;
+  CHECK(!StaticMorphPart(node.data()));
+  plain[0x150] = 3;
+  plain_morphs = false;
+  playing.clear();
+  Count();
+}
 }  // namespace
 
 int main() {
@@ -203,5 +248,6 @@ int main() {
   OtherFaceWhilePlaying();
   NothingPlaying();
   NotReady();
+  StaticMorphPartSkipsEngine();
   puts("ok: face and shape locks span the morph reset and the deltas");
 }
