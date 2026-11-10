@@ -65,7 +65,7 @@ void Reset() {
   DrainTasks();
   using namespace bfa;
   startup_data_loaded = worker_started = false;
-  new_game_start_epoch = new_game_task_epoch = 0;
+  new_game_start_epoch = new_game_loaded_epoch = new_game_task_epoch = 0;
   ready = false;
   starts = 0;
   scan_finished = false;
@@ -133,8 +133,14 @@ int main() {
         CHECK(starts == 0);
         Message(enter, reinterpret_cast<void*>(1));
         if (enter == skse::kMessageNewGame) {
+          // Menus that merely read closed do not show the world has loaded.
+          CHECK(starts == 0 && tasks.empty());
+          Menu("Main Menu", false);
+          DrainTasks();
+          CHECK(starts == 0);
+          Menu("Loading Menu", false);
           CHECK(starts == 0 && tasks.size() == 1);
-          DrainTasks();  // Handles menus that closed before NewGame arrived.
+          DrainTasks();
         }
         CHECK(starts == 1 && worker_started && !stats.waiting_for_game);
         for (int i = 0; i < 3; ++i) {
@@ -175,15 +181,42 @@ int main() {
   Message(skse::kMessageDataLoaded);
   scan_finished = true;
   Message(skse::kMessageNewGame);
+  Menu("Loading Menu", false);
+  CHECK(tasks.size() == 1);
   Message(skse::kMessagePreLoadGame);
   Message(skse::kMessagePostLoadGame);  // Failed load cancels pending start.
   DrainTasks();
   CHECK(starts == 0);
+  Menu("Loading Menu", false);  // Nothing is armed any more.
+  CHECK(tasks.empty());
   Message(skse::kMessageNewGame);
+  Menu("Loading Menu", false);
   Message(skse::kMessageNewGame);
-  CHECK(tasks.size() == 2);
+  CHECK(tasks.size() == 1);
+  // The earlier world's loading-menu close does not vouch for this one.
+  Menu("Main Menu", false);
+  CHECK(tasks.size() == 1);
+  DrainTasks();
+  CHECK(starts == 0);
+  Menu("Loading Menu", false);
+  Menu("Loading Menu", false);
+  CHECK(tasks.size() == 1);
   DrainTasks();
   CHECK(starts == 1 && !new_game_task_epoch);
+
+  // A second loading screen right after the first keeps startup waiting.
+  Reset();
+  Message(skse::kMessageDataLoaded);
+  scan_finished = true;
+  Message(skse::kMessageNewGame);
+  Menu("Loading Menu", false);
+  loading_open = true;
+  DrainTasks();
+  CHECK(starts == 0 && new_game_start_epoch);
+  loading_open = false;
+  Menu("Loading Menu", false);
+  DrainTasks();
+  CHECK(starts == 1);
 
   Reset();
   Message(skse::kMessageDataLoaded);
@@ -208,6 +241,8 @@ int main() {
   startup_tasks = nullptr;
   Message(skse::kMessageNewGame);
   CHECK(starts == 0 && tasks.empty() && !stats.startup_error.empty());
+  Menu("Loading Menu", false);
+  CHECK(starts == 0 && tasks.empty() && !new_game_start_epoch);
   // A successful save load still starts without the new-game task path.
   Message(skse::kMessagePostLoadGame, reinterpret_cast<void*>(1));
   CHECK(starts == 1 && worker_started && stats.startup_error.empty());

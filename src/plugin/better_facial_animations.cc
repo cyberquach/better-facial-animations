@@ -3001,12 +3001,22 @@ __declspec(noinline) uint64_t ApplyMorphsHook(uint8_t* node, uint8_t force) {
 // ---------------- SKSE ----------------
 std::atomic<bool> startup_data_loaded{false}, worker_started{false};
 
-// A NewGame message comes from the quest initialization hook, not from
-// loading-screen completion. Keep the October 13 startup-scan prerequisite,
-// then defer only new-game startup to a game task after Main/Loading menus
-// close. Existing-save startup and the worker's lifetime stay unchanged.
+// Crash Logger scans modules synchronously in its kDataLoaded callback.
+// Starting a worker from ours can overlap that scan regardless of whether
+// ours has returned, so inference starts at a later game-entry event. That
+// does not synchronize with manual dumps or exception-time scans.
+//
+// A NewGame message comes from quest initialization, before the world has
+// loaded, so a new game starts inference from a game task once its Loading
+// Menu has been seen to close and neither that nor the Main Menu is open.
+// Menus merely reading closed is not enough: the Loading Menu may not have
+// opened yet. Existing-save startup and the worker's lifetime are unchanged.
 skse::SKSETaskInterface* startup_tasks = nullptr;
-std::atomic<uint64_t> new_game_start_epoch{0}, new_game_task_epoch{0};
+// The world a new game armed startup for, the armed world whose Loading Menu
+// has closed, and the world of the task in flight; 0: none.
+std::atomic<uint64_t> new_game_start_epoch{0}, new_game_loaded_epoch{0},
+    new_game_task_epoch{0};
+std::atomic<bool> startup_menu_sink_registered{false};
 
 bool StartupMenusClosed() {
 #ifdef ENABLE_COMMONLIBSSE_TESTING
@@ -3042,20 +3052,19 @@ void StartInferenceWorker() {
 // attempt. Epoch checks cancel a task when another world starts loading.
 void QueueNewGameStartup() {
   const uint64_t epoch = new_game_start_epoch.load();
-  if (!epoch || !startup_data_loaded || worker_started) return;
-  if (!startup_tasks) {
-    ScopedLock guard(lock);
-    stats.startup_error = "New-game startup needs the SKSE task interface.";
+  if (!epoch || new_game_loaded_epoch != epoch || !startup_data_loaded ||
+      worker_started || !startup_tasks)
     return;
-  }
   uint64_t expected = 0;
   if (!new_game_task_epoch.compare_exchange_strong(expected, epoch)) return;
   startup_tasks->AddTask([epoch] {
     uint64_t queued = epoch;
     new_game_task_epoch.compare_exchange_strong(queued, 0);
-    if (new_game_start_epoch != epoch || !CurrentWorld(epoch) ||
-        !StartupMenusClosed())
+    if (new_game_start_epoch != epoch || new_game_loaded_epoch != epoch ||
+        !CurrentWorld(epoch) || !StartupMenusClosed())
       return;
+    skse::Report("new game: loading menu closed, main and loading menus not "
+                 "open; starting inference");
     StartInferenceWorker();
     if (worker_started) {
       uint64_t pending = epoch;
@@ -3071,8 +3080,10 @@ class StartupMenuSink : public RE::BSTEventSink<RE::MenuOpenCloseEvent> {
       RE::BSTEventSource<RE::MenuOpenCloseEvent>*) override {
     if (event && !event->opening && event->menuName.c_str()) {
       const std::string_view name = event->menuName.c_str();
-      if (name == RE::MainMenu::MENU_NAME || name == RE::LoadingMenu::MENU_NAME)
-        QueueNewGameStartup();
+      const bool loading = name == RE::LoadingMenu::MENU_NAME;
+      // Only a close seen while armed counts; 0 (unarmed) records nothing.
+      if (loading) new_game_loaded_epoch = new_game_start_epoch.load();
+      if (loading || name == RE::MainMenu::MENU_NAME) QueueNewGameStartup();
     }
     return RE::BSEventNotifyControl::kContinue;
   }
@@ -3080,19 +3091,16 @@ class StartupMenuSink : public RE::BSTEventSink<RE::MenuOpenCloseEvent> {
 
 void RegisterStartupMenuSink() {
   static StartupMenuSink sink;
-  static bool registered = false;
-  if (registered) return;
+  if (startup_menu_sink_registered) return;
 #ifdef ENABLE_COMMONLIBSSE_TESTING
   if (testing::startup_register_menu_sink) {
     testing::startup_register_menu_sink(&sink);
-    registered = true;
+    startup_menu_sink_registered = true;
   }
 #else
   if (auto* ui = RE::UI::GetSingleton()) {
     ui->AddEventSink<RE::MenuOpenCloseEvent>(&sink);
-    registered = true;
-  } else {
-    skse::Report("new-game startup: menu event source unavailable");
+    startup_menu_sink_registered = true;
   }
 #endif
 }
@@ -3102,10 +3110,20 @@ void StartWorkerAfterStartup(const skse::SKSEMessage& message) {
   // Neither menu events, speech/provider requests nor GPU controls can arm
   // startup before game entry. This preserves startup module-scan exclusion.
   if (message.type == skse::kMessageNewGame) {
+    RegisterStartupMenuSink();  // again, had the UI been missing at DataLoaded
+    const char* missing = !startup_tasks ? "the SKSE task interface"
+                          : !startup_menu_sink_registered
+                              ? "the game's menu events"
+                              : nullptr;
+    if (missing) {
+      skse::Report("new game: inference cannot start without %s", missing);
+      ScopedLock guard(lock);
+      stats.startup_error = std::string("New-game startup needs ") + missing +
+                            "; load a save to start.";
+      return;
+    }
     new_game_start_epoch = world_epoch.load();
-    skse::Report(
-        "new game: deferring inference until main/loading menus close");
-    QueueNewGameStartup();
+    skse::Report("new game: inference waits for the loading menu to close");
   } else if (message.type == skse::kMessagePostLoadGame && message.data) {
     StartInferenceWorker();
   }
@@ -3119,6 +3137,7 @@ void OnMessage(skse::SKSEMessage* m) {
     // PostLoadGame is sent for a failed load too: the hooks resume either
     // way, with nothing of the old world kept.
     new_game_start_epoch = 0;
+    new_game_loaded_epoch = 0;
     new_game_task_epoch = 0;
     const bool loading = m->type == skse::kMessagePreLoadGame;
     ResetPlayback(loading);
