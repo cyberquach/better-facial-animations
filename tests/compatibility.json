@@ -223,7 +223,8 @@
         "SexLab",
         "OStim",
         "exclusive scene entry/exit",
-        "ZaZ mouth-gear keywords, equipped-only NPC/player handoff and removal",
+        "ZaZ and Devious Devices mouth-gear keywords by origin file, equipped-only NPC/player handoff and removal",
+        "scene or gear arriving during the end-of-line fade releases the face unwritten",
         "held speech samples survive full/partial phoneme suppression",
         "SE/AE/VR synthetic ABI"
       ]
@@ -292,7 +293,8 @@
         "unregistered candidate traversal",
         "recursive hair exclusion and shared/cyclic hair extras",
         "SE/AE/VR hair-tint guards, KS Scarlet aliases and SMP support meshes",
-        "hair-tinted beard, brow and eye-attached lash controls"
+        "hair-tinted beard, brow and eye-attached lash controls",
+        "unlisted shapes: only non-skin followers are enumerated, on their own vertices; none while the dynamic lock yields no data; a reset restores written vertices once"
       ]
     },
     {
@@ -484,6 +486,7 @@
         "later audible TTS replacement at the same path is generated, including Fuz Ro Doh paths",
         "pending and failed audio preserve vanilla expressions and phonemes",
         "immediate morph handoff, late readiness, sound/lip completion and load cleanup (synthetic SE/AE/VR)",
+        "end-of-line fade into the console (mfg/MFG Fix) keyframes read each frame; the neutral release unchanged with none set",
         "mapping before inference completes, retained mapping and pose transition, readiness through expression/morph flow",
         "performance lines through Process: identity, 30 fps 73-channel output, retained mapping after a switch, mid-line switch cancellation"
       ]
@@ -518,7 +521,28 @@
         "late-start sync for both NPC playback profiles",
         "temporary morph restoration, replaced keyframes and no accumulation",
         "line-end, interrupted/failed speech, disabled and load handoff",
+        "ConversationGaze off also turns off looking away",
         "GazeStrength 0 keeps the game's gaze, 2 doubles and clamps the offset"
+      ]
+    },
+    {
+      "id": "gaze-director",
+      "test": "gaze_director_test",
+      "sources": [
+        "tests/gaze_director_test.cc",
+        "src/animation/gaze_director.cc"
+      ],
+      "covers": [
+        "beats at speech start, at pauses between phrases and at large emotion changes; none for silence, short phrases or partial changes",
+        "per-emotion chance of looking at the player at a pause, as set; sad looks go down, angry ones low past the player",
+        "a look away in a pause returns once, as speech resumes or partway through the next phrase; a line's start looks away half as often",
+        "on the player outside beats, with rare short bounded glances past the head",
+        "fixations settle on nearby points and stay on them as the speaker moves",
+        "head turns only toward references in reach and only when enabled; eye range limits",
+        "after a look away the eyes rest on the player for the set time; the frequency scales looks away and 0 stops them",
+        "a known camera is never rested on: looks away, a cut onto a held look, and the eyeline beside the player's head",
+        "a sight ray stopping at the thing itself versus at an obstacle before it",
+        "invalid positions, odds and views"
       ]
     },
     {
@@ -729,6 +753,16 @@
       "covers": [
         "cached skin searches equal independently rebuilt searches for eyes, brows, beards and pinned parts",
         "follower accumulation matches the scalar reference, including zero weights and neutral restoration"
+      ]
+    },
+    {
+      "id": "rest-store",
+      "test": "rest_store_test",
+      "sources": [
+        "tests/rest_store_test.cc"
+      ],
+      "covers": [
+        "a face shape without engine base vertices keeps its first-seen rest positions across writes, is put back once, and starts over when another shape takes its address"
       ]
     }
   ],

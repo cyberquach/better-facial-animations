@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "a2f/animation/direct.h"
+#include "a2f/animation/gaze_director.h"
 #include "a2f/inference/gpu_state.h"
 
 namespace bfa {
@@ -69,6 +70,12 @@ struct FaceTune {
   float upper_lip = 1;
   float lower_lip = 1;
   float smile_eyes = 1.0f;
+  // Where this profile looks as the conversation partner (unused for the
+  // player): a2f::GazeAwayFromHold, GazeSettings' rest_seconds and player_odds.
+  float gaze_hold = 1;
+  float gaze_rest = 3;
+  float gaze_settle = 3;
+  a2f::GazeMoods gaze_odds = a2f::kGazePlayerOdds;
 };
 struct Tune {  // menu; defaults as dist/BetterFacialAnimations.ini
   bool enabled = true;
@@ -80,8 +87,14 @@ struct Tune {  // menu; defaults as dist/BetterFacialAnimations.ini
   bool performance_sentiment = true;
   float sentiment_multiplier = 1;
   bool disable_tongue = false;
+  // The partner's gaze as a whole: the line's eye motion (gaze_strength) and,
+  // with gaze_behavior, where they look (a2f/animation/gaze_director.h).
   bool conversation_gaze = true;
   float gaze_strength = 1;
+  bool gaze_behavior = true;
+  bool gaze_line_of_sight = true;
+  bool gaze_avoid_camera = true;
+  bool gaze_turn_head = true;
   // The dropdown preserves the legacy INI choices; neither set is V3. The
   // worker applies the selection and force_cpu live (SwitchModel).
   bool old_model = false;
@@ -126,7 +139,15 @@ extern SRWLOCK
 // checkbox, in an ini section (kModel is in the ini's General section) and a
 // menu group (kAuto: the section's). Menus sort by profile, then group, then
 // table order.
-enum class Sec { kGeneral, kModel, kPlayback, kDirect, kEmotion, kDebug };
+enum class Sec {
+  kGeneral,
+  kModel,
+  kPlayback,
+  kDirect,
+  kEmotion,
+  kDebug,
+  kGaze
+};
 enum class Group {
   kGeneral,
   kModel,
@@ -134,6 +155,7 @@ enum class Group {
   kPlayback,
   kTransitions,
   kMovement,
+  kGaze,
   kInputs,
   kLimits,
   kDebug,
@@ -154,6 +176,7 @@ struct Param {
   bool stored = true;  // in the ini
   Needs needs = kNone;
   Group group = Group::kAuto;
+  bool menu = true;  // false: in the ini only
   // Typed access to a profile field, independent of the global tune's layout.
   float* (*face_value)(FaceTune&, size_t) = nullptr;
   size_t face_index = 0;  // array element, when applicable

@@ -157,7 +157,7 @@ If a requirement is missing, the model does not load, vanilla lip-sync plays and
               </typeDescriptor>
             </plugin>
             <plugin name="Performance — V3-trained, experimental">
-              <description>4M-parameter student trained to reproduce V3's answers on familiar dialogue, with per-line memory. Unfamiliar dialogue can be less reliable. 30 fps; no eye gaze. More computation than Ultra Performance. GPU or CPU; not yet verified on Steam Deck. Speaker coverage is selected separately.</description>
+              <description>4M-parameter student trained to reproduce V3's answers on familiar dialogue, with per-line memory. Unfamiliar dialogue can be less reliable. 30 fps; no speech-driven eye movement. More computation than Ultra Performance. GPU or CPU; not yet verified on Steam Deck. Speaker coverage is selected separately.</description>
               <conditionFlags>
                 <flag name="FaceModel">performance</flag>
               </conditionFlags>
@@ -166,7 +166,7 @@ If a requirement is missing, the model does not load, vanilla lip-sync plays and
               </typeDescriptor>
             </plugin>
             <plugin name="Ultra Performance — lowest computation, experimental">
-              <description>The original 80,729-parameter Performance model, retained under a new name. Lowest computation cost, with less facial detail and less accurate lip-sync, especially on unfamiliar dialogue. 30 fps; no eye gaze. GPU or CPU. Speaker coverage is selected separately.</description>
+              <description>The original 80,729-parameter Performance model, retained under a new name. Lowest computation cost, with less facial detail and less accurate lip-sync, especially on unfamiliar dialogue. 30 fps; no speech-driven eye movement. GPU or CPU. Speaker coverage is selected separately.</description>
               <conditionFlags>
                 <flag name="FaceModel">ultra</flag>
               </conditionFlags>
@@ -310,8 +310,8 @@ If a requirement is missing, the model does not load, vanilla lip-sync plays and
                 <type name="Recommended" />
               </typeDescriptor>
             </plugin>
-            <plugin name="Conversation eye gaze">
-              <description>Add speech-driven eye movement while the conversation NPC looks at you. SE/AE only; unavailable with the Performance facial model. Uncheck to keep the game's eye movement.</description>
+            <plugin name="Improved eye gaze">
+              <description>The NPC you talk to looks at you, and may look away in the pauses of a line by emotion, onto nearby objects. Works with every facial model; V3 and Old also add small speech-driven eye movement. SE/AE only. Not compatible with The Fourth Wall. Uncheck to keep the game's eye movement and head tracking.</description>
               <conditionFlags>
                 <flag name="Gaze">on</flag>
               </conditionFlags>

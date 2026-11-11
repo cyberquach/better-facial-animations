@@ -153,6 +153,9 @@ struct ShapeIn {
   // by Morph, nv x 3 each: those it Reads (zero when the shape lacks it),
   // else empty
   std::vector<std::vector<float>> morphs;
+  // Baked into the face mesh without being one of the NPC's head parts: the
+  // engine neither morphs nor rebuilds it, and it lies on the skin as built.
+  bool unlisted = false;
 };
 
 constexpr int kFollow = 4;

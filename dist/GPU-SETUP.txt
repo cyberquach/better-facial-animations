@@ -56,7 +56,7 @@ Model hardware estimates (additional to Skyrim, not total graphics memory):
   Standalone RTX 4070 / Wine tests measured about 122 MiB GPU memory and
   452 MiB host RAM after warmup, excluding Skyrim. Minimum hardware is unverified.
 - Ultra Performance: original 80,729-parameter student, lowest computation cost.
-  30 fps, no eye gaze; less detailed and less accurate than the larger student.
+  30 fps, no speech-driven eye movement; less detailed and less accurate than the larger student.
 - Old: roughly 100 MB device allocations; budget about 150 MB with runtime.
   Main network arithmetic: about 97 GFLOP per second of generated speech.
 

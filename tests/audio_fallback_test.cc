@@ -687,8 +687,11 @@ void TestPlayback(uint32_t runtime, a2f::NetKeeper& keeper) {
   CHECK(playing.empty());
   // A skipped line must clear both the cached native mouth and the saved
   // BFA pose, for player and NPC, even when the lip resource remains alive.
-  for (bool player : {false, true}) {
-    for (bool external : {false, true}) {
+  // The release fades into what the console/script keyframes hold (held),
+  // read each frame; with none set it is the fade to neutral.
+  for (int round = 0; round < 8; ++round) {
+    {
+      const bool player = round & 1, external = round & 2, held = round & 4;
       t.male.face_out = external ? 0.f : .8f;
       t.player_face.face_out = external ? 0.f : .4f;
       Field<uint32_t>(actor, 0x14) = player ? kPlayerFormId : 0x123;
@@ -708,6 +711,51 @@ void TestPlayback(uint32_t runtime, a2f::NetKeeper& keeper) {
       auto& source_phon = FixtureKeyframe(fg, 0x120);
       source_phon.values = source;
       source_phon.count = direct::kNumPhonemes;
+      // Console/script channels (mfg, MFG Fix, ZaZ) belong to other writers;
+      // the expression one is reset only without SetExpressionOverride.
+      constexpr uint32_t kModifiers = 14;  // engine modifier channels
+      const bool expr_override = player != external;
+      Field<bool>(fg, 0x21E) = expr_override;
+      float console_expr[direct::kNumExpressions];
+      float console_mod[kModifiers];
+      float console_phon[direct::kNumPhonemes];
+      std::fill_n(console_expr, direct::kNumExpressions, held ? .6f : 0.f);
+      std::fill_n(console_mod, kModifiers, held ? .7f : 0.f);
+      std::fill_n(console_phon, direct::kNumPhonemes, held ? .9f : 0.f);
+      console_mod[2] = 0;  // not set: stays with the cleared final
+      float mods[kModifiers];
+      std::fill_n(mods, kModifiers, .2f);
+      auto& final_mod = FixtureKeyframe(fg, 0x100);
+      final_mod.values = mods;
+      final_mod.count = kModifiers;
+      // What the finals show of the console values at a point of the fade.
+      const auto shown = [&](float release) {
+        std::vector<float> all;
+        for (float value : console_expr)
+          all.push_back(expr_override ? value * release : 0.f);
+        for (float value : console_mod) all.push_back(value * release);
+        for (float value : console_phon) all.push_back(value * release);
+        return all;
+      };
+      const auto finals = [&] {
+        std::vector<float> all(expr, expr + direct::kNumExpressions);
+        all.insert(all.end(), mods, mods + kModifiers);
+        all.insert(all.end(), phon, phon + direct::kNumPhonemes);
+        return all;
+      };
+      const std::vector<float> cleared(finals().size(), 0.f);
+      const auto same = [](const std::vector<float>& a,
+                           const std::vector<float>& b) {
+        return !memcmp(a.data(), b.data(), a.size() * sizeof(float));
+      };
+      const std::pair<size_t, std::pair<float*, uint32_t>> console[] = {
+          {0x20, {console_expr, direct::kNumExpressions}},
+          {0x60, {console_mod, kModifiers}},
+          {0x80, {console_phon, direct::kNumPhonemes}}};
+      for (const auto& [offset, array] : console) {
+        FixtureKeyframe(fg, offset).values = array.first;
+        FixtureKeyframe(fg, offset).count = array.second;
+      }
       std::fill_n(phon, direct::kNumPhonemes, .8f);
       std::fill_n(expr, direct::kNumExpressions, .5f);
       auto& face = faces[fg];
@@ -733,17 +781,67 @@ void TestPlayback(uint32_t runtime, a2f::NetKeeper& keeper) {
         CHECK(faces.at(fg).transition.Blend(nullptr, fade_start + fade * .5,
                                           fade, true, false, pose));
         CHECK(std::fabs(pose[0] - .5f) < .001f);
-        testing::clock_offset = testing::clock_offset.load() + fade * .5;
-        CHECK(Expressions(fg, fade * .5f, t, false, actor, 42) & kKeepUpdating);
-        CHECK(faces.count(fg));
-        testing::clock_offset = testing::clock_offset.load() + fade * .5 + .01;
-        CHECK(Expressions(fg, fade * .5f, t, false, actor, 42) & kFaceChanged);
+        // The line's last frame is all the plugin's pose: nothing of the
+        // console values yet.
+        CHECK(same(finals(), cleared));
+        std::vector<float> before = finals();
+        for (int step = 1; step <= 3; ++step) {
+          // A script changes and clears its values during the fade.
+          if (step == 3 && held) {
+            console_phon[0] = .3f;
+            console_mod[1] = 0;
+          }
+          testing::clock_offset = testing::clock_offset.load() + fade * .25;
+          const double from = Now();
+          CHECK(Expressions(fg, fade * .25f, t, false, actor, 42) &
+                kKeepUpdating);
+          const double to = Now();
+          CHECK(faces.count(fg));
+          const std::vector<float> now = finals();
+          const std::vector<float>
+              low = shown(a2f::Smoothstep(
+                  static_cast<float>(from - fade_start) / fade)),
+              high = shown(a2f::Smoothstep(
+                  static_cast<float>(to - fade_start) / fade));
+          const size_t changed_phon = direct::kNumExpressions + kModifiers;
+          const size_t cleared_mod = direct::kNumExpressions + 1;
+          for (size_t i = 0; i < now.size(); ++i) {
+            CHECK(now[i] >= low[i] && now[i] <= high[i]);
+            // toward the console values, never back or past them
+            if (step < 3 || (i != changed_phon && i != cleared_mod))
+              CHECK(now[i] >= before[i]);
+          }
+          CHECK((now[direct::kNumExpressions + kModifiers + 1] > 0) == held);
+          if (!held) CHECK(same(now, cleared));
+          before = now;
+        }
+        testing::clock_offset = testing::clock_offset.load() + fade * .25 + .01;
+        CHECK(Expressions(fg, fade * .25f, t, false, actor, 42) & kFaceChanged);
       }
       CHECK(!faces.count(fg));
       RestoreFaceKeyframes(fg, world_epoch);
       for (float value : source) CHECK(value == 0);
-      for (int i = 0; i < direct::kNumPhonemes; ++i) CHECK(phon[i] == 0);
-      for (int i = 0; i < direct::kNumExpressions; ++i) CHECK(expr[i] == 0);
+      // Released exactly on the console values as they are now; with none
+      // set, on the cleared finals as before.
+      CHECK(same(finals(), shown(1)));
+      if (!held) CHECK(same(finals(), cleared));
+      CHECK(console_phon[0] == (!held ? 0.f : expected_fade > 0 ? .3f : .9f));
+      for (int i = 1; i < direct::kNumPhonemes; ++i)
+        CHECK(console_phon[i] == (held ? .9f : 0.f));
+      for (float value : console_expr)
+        CHECK(value == (expr_override && held ? .6f : 0.f));
+      for (uint32_t i = 0; i < kModifiers; ++i)
+        CHECK(console_mod[i] ==
+              (!held || i == 2 || (i == 1 && expected_fade > 0) ? 0.f : .7f));
+      for (const auto& entry : console) {
+        FixtureKeyframe(fg, entry.first).values = nullptr;
+        FixtureKeyframe(fg, entry.first).count = 0;
+      }
+      final_mod.values = nullptr;
+      final_mod.count = 0;
+      std::fill_n(phon, direct::kNumPhonemes, 0.f);
+      std::fill_n(expr, direct::kNumExpressions, 0.f);
+      Field<bool>(fg, 0x21E) = false;
       // Another writer can set the face afterward; no delayed restoration.
       phon[0] = .25f;
       expr[0] = .3f;
