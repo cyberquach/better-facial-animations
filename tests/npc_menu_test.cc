@@ -534,7 +534,7 @@ int main() {
       const std::string label = std::string(p.label) + "##" + std::to_string(i);
       const bool drawn = std::find(drawn_sliders.begin(), drawn_sliders.end(),
                                    label) != drawn_sliders.end();
-      CHECK(drawn == (p.profile == selected));
+      CHECK(drawn == (p.menu && p.profile == selected));
     }
   }
   click.clear();

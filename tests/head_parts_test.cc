@@ -25,9 +25,17 @@ void MockRuntime() {
                     L"SkyrimSE.exe",
                     reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)));
 }
-int apply_count = 0;
-float* LockDynamic(uint8_t*) { return dynamic_vertices.data(); }
+int apply_count = 0, update_count = 0;
+bool lock_fails = false;
+float* LockDynamic(uint8_t*) {
+  return lock_fails ? nullptr : dynamic_vertices.data();
+}
 void UnlockDynamic(uint8_t*) {}
+void UpdateDynamic(uint8_t*, float* xyz, bool) {
+  ++update_count;
+  for (int i = 0; i < 2; ++i)
+    for (int c = 0; c < 3; ++c) dynamic_vertices[i * 4 + c] = xyz[i * 3 + c];
+}
 void* MorphData(uint8_t*) { return has_morphs ? storage.data() : nullptr; }
 void ApplyMorph(void*, int type, int index, uint8_t*, float weight) {
   ++apply_count;
@@ -45,6 +53,8 @@ uint64_t Addr(uint64_t id) {
   if (id == kIdLockDynamic.ae) return reinterpret_cast<uint64_t>(&LockDynamic);
   if (id == kIdUnlockDynamic.ae)
     return reinterpret_cast<uint64_t>(&UnlockDynamic);
+  if (id == kIdUpdateDynamic.ae)
+    return reinterpret_cast<uint64_t>(&UpdateDynamic);
   if (id == kIdMorphData.ae) return reinterpret_cast<uint64_t>(&MorphData);
   if (id == kIdApplyMorph.ae) return reinterpret_cast<uint64_t>(&ApplyMorph);
   return 0;
@@ -527,6 +537,98 @@ void FacialHairExtras() {
   MockRuntime();
 }
 
+// A shape without base vertices (its part is not among the NPC's) stands on
+// its own vertices: only non-skin followers are admitted, and a face reset
+// puts back what playback wrote.
+void UnlistedShapes() {
+  using namespace bfa;
+  const struct {
+    const char* name;
+    uint32_t type;
+  } specs[] = {{"UnlistedBeard", kHpFacialHair},
+               {"UnlistedFace", kHpFace},
+               {"UnlistedEyes", kHpEyes}};
+  std::vector<std::array<uint8_t, 0x120>> forms(std::size(specs));
+  std::vector<uint8_t*> parts;
+  for (size_t i = 0; i < forms.size(); ++i) {
+    auto* part = forms[i].data();
+    part[0x1A] = kFtHeadPart;
+    Field<uint32_t>(part, 0x6C) = specs[i].type;
+    Field<const char*>(part, 0x118) = FixtureString(specs[i].name);
+    parts.push_back(part);
+  }
+  auto& registry =
+      Field<FixtureArray>(handler, 0x10 + kFtHeadPart * sizeof(FixtureArray));
+  registry = {parts.data(), uint32_t(parts.size()), 0, uint32_t(parts.size())};
+  LoadHeadPartTypes();
+  bool is_skin = true;
+  assert(Classify("UnlistedBeard", is_skin) == direct::Part::kHead);
+  assert(!is_skin);
+  assert(Classify("UnlistedFace", is_skin) == direct::Part::kHead && is_skin);
+  assert(Classify("UnlistedEyes", is_skin) == direct::Part::kEyes);
+
+  const auto saved_vertices = dynamic_vertices;
+  const bool saved_morphs = has_morphs;
+  const std::array<float, 8> original{1, 2, 3, 99, 4, 5, 6, 98};
+  dynamic_vertices = original;
+  std::array<uint8_t, 0x1000> node{}, shape{}, fod{};
+  uint8_t* children[] = {shape.data()};
+  uint8_t* extras[] = {fod.data()};
+  float vertices[] = {1, 2, 3, 4, 5, 6};
+  Field<uint8_t**>(node.data(), 0x118) = children;
+  Field<uint16_t>(node.data(), 0x122) = 1;
+  shape[0x150] = 4;
+  Field<uint16_t>(shape.data(), 0x15A) = 2;
+  Field<uint32_t>(shape.data(), 0x170) = 32;
+  Field<uint8_t**>(shape.data(), 0x20) = extras;
+  Field<const char*>(fod.data(), 0x10) = FixtureString("FOD");
+  Field<uint32_t>(fod.data(), 0x24) = 2;
+  Field<const float*>(fod.data(), 0x18) = vertices;
+  // Enumerations of the shape under a name; each must stand on rest.
+  auto seen = [&](const char* name) {
+    Field<const char*>(shape.data(), 0x10) = FixtureString(name);
+    int count = 0;
+    ForFaceShapes(node.data(),
+                  [&](uint8_t* s, const char*, direct::Part part, bool skin,
+                      uint32_t nv, const float* base) {
+                    ++count;
+                    assert(s == shape.data() && nv == 2 && !skin);
+                    assert(part == direct::Part::kHead);
+                    assert(std::equal(vertices, vertices + 6, base));
+                  });
+    return count;
+  };
+  // Listed and unlisted shapes map differently, so they key differently.
+  Field<uint16_t>(shape.data(), 0x28) = 1;
+  assert(seen("UnlistedBeard") == 1);
+  const std::string listed = HeadKey(node.data(), false);
+  Field<uint16_t>(shape.data(), 0x28) = 0;
+  assert(seen("UnlistedBeard") == 1);
+  assert(!listed.empty() && HeadKey(node.data(), false) != listed);
+  assert(seen("UnlistedFace") == 0);
+  assert(seen("UnlistedEyes") == 0);
+  lock_fails = true;
+  assert(seen("UnlistedBeard") == 0);
+  lock_fails = false;
+
+  // Playback moves the shape; it still stands on its rest, and a reset puts
+  // that back once.
+  float moved[] = {1, 2, 2, 4, 5, 5};
+  UpdateDynamic(shape.data(), moved, false);
+  NoteUnlistedWrite(shape.data(), moved, 2);
+  assert(seen("UnlistedBeard") == 1);
+  update_count = 0;
+  ResetUnlisted(node.data());
+  assert(update_count == 1 && dynamic_vertices == original);
+  ResetUnlisted(node.data());
+  assert(update_count == 1 && dynamic_vertices == original);
+
+  dynamic_vertices = saved_vertices;
+  has_morphs = saved_morphs;
+  registry = {};
+  LoadHeadPartTypes();
+}
+
 int main() {
   {
     direct::Head head;
@@ -720,6 +822,7 @@ int main() {
   OralInheritance();
   MalformedArrays();
   FacialHairExtras();
+  UnlistedShapes();
   for (int runtime = 0; runtime < 3; ++runtime) {
     test_se = runtime == 0;
     test_vr = runtime == 2;
@@ -750,6 +853,45 @@ int main() {
     assert(captured.triangles.empty());
     captured.skin = false;
     captured.nv = 2;
+    ReadFollowerTriangles(shape.data(), captured);
+    assert(captured.triangles.empty());
+    // A skinned shape without renderer indices: its skin partitions', by the
+    // shape's own indices or through a partition's vertex map.
+    captured.nv = 3;
+    Field<RE::BSGraphics::TriShape*>(shape.data(), test_vr ? 0x178 : 0x138) =
+        nullptr;
+    Field<uint16_t>(shape.data(), test_vr ? 0x198 : 0x158) = 0;
+    std::array<uint8_t, 0x100> skin_instance{}, skin_partition{};
+    RE::NiSkinPartition::Partition parts[2]{};
+    uint16_t first[] = {2, 1, 0}, second[] = {0, 1, 2}, map[] = {1, 2, 0};
+    parts[0].triList = first;
+    parts[0].triangles = 1;
+    parts[1].triList = second;
+    parts[1].triangles = 1;
+    parts[1].vertexMap = map;
+    parts[1].vertices = 3;
+    Field<uint32_t>(skin_partition.data(), 0x10) = 2;
+    Field<RE::NiSkinPartition::Partition*>(skin_partition.data(), 0x18) = parts;
+    Field<uint8_t*>(skin_instance.data(), 0x18) = skin_partition.data();
+    Field<uint8_t*>(shape.data(), test_vr ? 0x170 : 0x130) =
+        skin_instance.data();
+    ReadFollowerTriangles(shape.data(), captured);
+    assert((captured.triangles == std::vector<uint16_t>{2, 1, 0, 0, 1, 2}));
+    map[0] = 0, map[1] = 0, map[2] = 1;
+    ReadFollowerTriangles(shape.data(), captured);
+    assert((captured.triangles == std::vector<uint16_t>{2, 1, 0, 0, 0, 1}));
+    RE::BSGraphics::TriShape buffer{};
+    uint16_t copy[] = {1, 2, 0};
+    buffer.rawIndexData = copy;
+    parts[0].buffData = &buffer;
+    parts[1].triangles = 0;
+    ReadFollowerTriangles(shape.data(), captured);
+    assert((captured.triangles == std::vector<uint16_t>{1, 2, 0}));
+    copy[0] = 3;
+    ReadFollowerTriangles(shape.data(), captured);
+    assert(captured.triangles.empty());
+    copy[0] = 1;
+    Field<uint32_t>(skin_partition.data(), 0x10) = 65;
     ReadFollowerTriangles(shape.data(), captured);
     assert(captured.triangles.empty());
   }

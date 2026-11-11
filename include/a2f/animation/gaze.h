@@ -9,6 +9,8 @@ namespace a2f {
 // LookRight, LookUp.
 constexpr int kFirstGazeMorph = 8;
 constexpr int kNumGazeMorphs = 4;
+// A look morph at 1 turns the eye this far; custom eye TRIs may differ.
+constexpr float kFullLookDegrees = 30;
 
 // The line's eye angles at frame, both eyes averaged (the game keeps its
 // vergence), faded in from ready_frame and out at the line's end, scaled by

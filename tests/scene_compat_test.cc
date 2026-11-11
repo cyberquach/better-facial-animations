@@ -193,19 +193,53 @@ int main() {
       Field<const char*>(k->form.data(), 0x20) = FixtureString(
           k == &collar ? "zbfWornCollar" : "zbfWornGag");
     }
-    uint8_t* keyword_forms[] = {gag.form.data(), impostor.form.data(), collar.form.data()};
+    // Devious Devices: the gag keyword of its Assets master only; not one of
+    // that name from elsewhere, nor its other device keywords.
+    Faction dd_gag("devious devices - assets.ESM", 0x0A007EB8),
+        dd_impostor("Devious Devices - Integration.esm", 0x0B007EB8),
+        dd_collar("Devious Devices - Assets.esm", 0x0A003DF7),
+        dd_in_zaz("ZaZAnimationPack.esm", 0x09007EB8),
+        zaz_in_dd("Devious Devices - Assets.esm", 0x0A001234);
+    for (auto* k : {&dd_gag, &dd_impostor, &dd_collar, &dd_in_zaz, &zaz_in_dd}) {
+      k->form[0x1A] = static_cast<uint8_t>(RE::FormType::Keyword);
+      Field<const char*>(k->form.data(), 0x20) = FixtureString(
+          k == &dd_collar   ? "zad_DeviousCollar"
+          : k == &zaz_in_dd ? "zbfWornGag"
+                            : "zad_DeviousGag");
+    }
+    uint8_t* keyword_forms[] = {gag.form.data(),        impostor.form.data(),
+                                collar.form.data(),     dd_impostor.form.data(),
+                                dd_collar.form.data(),  dd_in_zaz.form.data(),
+                                zaz_in_dd.form.data(),  dd_gag.form.data()};
     auto& keywords = Field<FixtureArray>(handler, 0x10 +
         static_cast<uint8_t>(RE::FormType::Keyword) * sizeof(FixtureArray));
-    keywords = {keyword_forms, 3, 0, 3};
-    LoadMouthGearKeywords(); LoadMouthGearKeywords();
+    // Without Devious Devices nothing of it is looked for or matched.
+    keywords = {keyword_forms, 7, 0, 7};
+    LoadMouthGearKeywords();
     CHECK(mouth_gear_keywords.size() == 1);
-    CHECK(MouthGearKeyword("zbfEffectOpenMouth"));
-    CHECK(MouthGearKeyword("zbfAnimMouthClose"));
-    CHECK(MouthGearKeyword("zbfAnimMouthKhajiitPlug"));
-    CHECK(MouthGearKeyword("zbfAnimMouthShout"));
-    CHECK(MouthGearKeyword("zbfAnimMouthOpen"));
-    CHECK(!MouthGearKeyword("zbfWornPermitOral"));
-    CHECK(!MouthGearKeyword("zbfWornDevice"));
+    keywords = {keyword_forms, 8, 0, 8};
+    LoadMouthGearKeywords(); LoadMouthGearKeywords();
+    CHECK(mouth_gear_keywords.size() == 2);
+    CHECK(mouth_gear_keywords[0] ==
+          reinterpret_cast<RE::BGSKeyword*>(gag.form.data()));
+    CHECK(mouth_gear_keywords[1] ==
+          reinterpret_cast<RE::BGSKeyword*>(dd_gag.form.data()));
+    const char* zaz = "ZaZAnimationPack.esm";
+    const char* dda = "Devious Devices - Assets.esm";
+    CHECK(MouthGearKeyword(zaz, "zbfEffectOpenMouth"));
+    CHECK(MouthGearKeyword(zaz, "zbfAnimMouthClose"));
+    CHECK(MouthGearKeyword(zaz, "zbfAnimMouthKhajiitPlug"));
+    CHECK(MouthGearKeyword(zaz, "zbfAnimMouthShout"));
+    CHECK(MouthGearKeyword(zaz, "zbfAnimMouthOpen"));
+    CHECK(!MouthGearKeyword(zaz, "zbfWornPermitOral"));
+    CHECK(!MouthGearKeyword(zaz, "zbfWornDevice"));
+    CHECK(MouthGearKeyword(dda, "zad_DeviousGag"));
+    CHECK(!MouthGearKeyword(dda, "zad_DeviousGagPanel"));  // on gags only
+    CHECK(!MouthGearKeyword(dda, "zad_PermitOral"));
+    CHECK(!MouthGearKeyword(dda, "zad_DeviousHood"));
+    CHECK(!MouthGearKeyword(dda, "zad_DeviousCollar"));
+    CHECK(!MouthGearKeyword(nullptr, "zad_DeviousGag"));
+    CHECK(!MouthGearKeyword(dda, nullptr));
     alignas(16) std::array<uint8_t, sizeof(RE::TESObjectARMO)> armor_data{};
     auto* armor = reinterpret_cast<RE::TESObjectARMO*>(armor_data.data());
     armor->formType = RE::FormType::Armor;
@@ -226,8 +260,13 @@ int main() {
     CHECK(!WearingMouthGear(actor));
     biped->objects[0].item = armor;
     CHECK(WearingMouthGear(actor));
-    tags[0] = reinterpret_cast<RE::BGSKeyword*>(impostor.form.data());
-    CHECK(!WearingMouthGear(actor));
+    for (auto* other :
+         {&impostor, &collar, &dd_impostor, &dd_collar, &dd_in_zaz, &zaz_in_dd}) {
+      tags[0] = reinterpret_cast<RE::BGSKeyword*>(other->form.data());
+      CHECK(!WearingMouthGear(actor));
+    }
+    tags[0] = reinterpret_cast<RE::BGSKeyword*>(dd_gag.form.data());
+    CHECK(WearingMouthGear(actor) && FaceExternallyOwned(actor));
     tags[0] = reinterpret_cast<RE::BGSKeyword*>(gag.form.data());
     // Any equipped slot can own the face; removing one of two devices
     // must not resume BFA. Test both orders of overlapping scene/gear exit.
@@ -248,8 +287,13 @@ int main() {
     actor[0x1A] = kFtNpc;
     CHECK(!InScene(actor) && calls == 0);
     actor[0x1A] = kFtActor;
-    for (auto* faction :
-         {sl.form.data(), os.form.data(), excitement.form.data(), static_cast<uint8_t*>(nullptr)}) {
+    // Each scene faction, then a ZaZ and a Devious Devices gag.
+    uint8_t* const owners[] = {sl.form.data(), os.form.data(),
+                               excitement.form.data(), nullptr, nullptr};
+    for (size_t owner = 0; owner < std::size(owners); ++owner) {
+      uint8_t* const faction = owners[owner];
+      tags[0] = reinterpret_cast<RE::BGSKeyword*>(
+          (owner + 1 == std::size(owners) ? dd_gag : gag).form.data());
       membership = faction;
       biped->objects[0].item = faction ? nullptr : armor;
       CHECK(FaceExternallyOwned(actor));
@@ -293,6 +337,62 @@ int main() {
       for (float v : values) CHECK(v == 0.65f);
       CHECK(Expressions(fg, 0.016f, LegacyTune(), FaceExternallyOwned(actor), actor, 42) ==
             kNoUpdate);
+      // The conversation partner's expressions are not taken either.
+      partner_fg = fg; partner_ref = actor; partner_handle = 42;
+      CHECK(Expressions(fg, 0.016f, LegacyTune(), FaceExternallyOwned(actor), actor, 42) ==
+            kNoUpdate);
+      CHECK(faces.empty());
+      for (float v : values) CHECK(v == 0.65f);
+      partner_fg = nullptr; partner_ref = nullptr; partner_handle = 0;
+      // Joining a scene or being gagged while the ended line's pose fades
+      // out: released at once, with no fade frame written over the owner's
+      // finals or the console values the fade was heading for.
+      float console[direct::kNumPhonemes], shown[direct::kNumPhonemes];
+      auto& console_phon = FixtureKeyframe(fg, 0x80);
+      auto& final_phon = FixtureKeyframe(fg, 0x140);
+      console_phon.values = console; final_phon.values = shown;
+      console_phon.count = final_phon.count = direct::kNumPhonemes;
+      const auto fading = [&] {
+        seed();
+        playing.clear();
+        Face& f = faces.at(fg);
+        f.neutral_started = Now();
+        f.neutral_duration = 10;
+        std::fill_n(f.neutral_levels, direct::kNumExpressions, 0.5f);
+        std::fill_n(f.src, direct::kNumExpressions, 0.f);
+        std::fill_n(f.written, direct::kNumExpressions, 0.f);
+        Count();
+        std::fill_n(console, direct::kNumPhonemes, 0.9f);
+        std::fill_n(shown, direct::kNumPhonemes, 0.35f);
+      };
+      const auto untouched = [&] {
+        for (float v : values) CHECK(v == 0.65f);
+        for (float v : console) CHECK(v == 0.9f);
+        for (float v : shown) CHECK(v == 0.35f);
+      };
+      fading();
+      CHECK(Apply(fg, LegacyTune(), FaceExternallyOwned(actor), actor, 42, a2f::kNoSound, -1) ==
+            kNoUpdate);
+      CHECK(Expressions(fg, 0.016f, LegacyTune(), FaceExternallyOwned(actor), actor, 42) &
+            kFaceChanged);
+      CHECK(faces.empty());
+      untouched();
+      fading();
+      Field<uint8_t*>(node.data(), (skse::IsVr() ? 0x178 : 0x150)) = fg;
+      AddDirect(node.data(), true);
+      CHECK(faces.empty() && fg[0x218]);
+      untouched();
+      // Not owned, the same fade does write: the control for the above.
+      fading();
+      CHECK(Expressions(fg, 0.016f, LegacyTune(), false, actor, 42) & kKeepUpdating);
+      CHECK(faces.count(fg));
+      for (float v : values) CHECK(v == 0);
+      for (float v : shown) CHECK(v >= 0 && v < 0.35f);
+      faces.clear();
+      Count();
+      console_phon.values = final_phon.values = nullptr;
+      console_phon.count = final_phon.count = 0;
+      fg[0x218] = 0;
       seed();
       Field<uint8_t*>(node.data(), (skse::IsVr() ? 0x178 : 0x150)) = fg;
       // No animation update before this morph call: no head mapping or
@@ -314,6 +414,7 @@ int main() {
       // Leaving the scene permits conversation expression ownership again.
       membership = nullptr;
       biped->objects[0].item = nullptr;
+      tags[0] = reinterpret_cast<RE::BGSKeyword*>(gag.form.data());
       CHECK(!FaceExternallyOwned(actor));
       partner_fg = fg; partner_ref = actor; partner_handle = 42;
       Expressions(fg, 0.1f, LegacyTune(), false, actor, 42);
@@ -326,7 +427,8 @@ int main() {
     biped_calls = 0;
     biped->objects[0].item = armor;
     CHECK(!WearingMouthGear(actor));
-    CHECK(biped_calls == 0); // No ZaZ means no equipment traversal.
+    // Neither ZaZ nor Devious Devices: no equipment traversal.
+    CHECK(biped_calls == 0);
     biped->objects[0].item = nullptr;
     equipped_biped = nullptr;
     factions = {};
@@ -336,5 +438,6 @@ int main() {
     handler = data.data();
   }
   puts("scene contracts passed: SE/AE/VR dispatch, discovery, absence, "
-       "identity, admission, immediate handoff, direct-only handoff, exit");
+       "identity, admission, immediate handoff, direct-only handoff, "
+       "release during the end-of-line fade, exit");
 }

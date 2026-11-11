@@ -135,7 +135,8 @@ const char* ParamTip(const Param& p, bool npc = false) {
 Group GroupFor(const Param& p) {
   static const Group by_section[] = {Group::kGeneral,  Group::kModel,
                                      Group::kPlayback, Group::kMovement,
-                                     Group::kInputs,   Group::kDebug};
+                                     Group::kInputs,   Group::kDebug,
+                                     Group::kGaze};
   return p.group != Group::kAuto ? p.group
                                  : by_section[static_cast<int>(p.sec)];
 }
@@ -146,6 +147,7 @@ const char* GroupTitle(Group group) {
                                        "Speech timing",
                                        "Expression transitions",
                                        "Facial movement strength",
+                                       "Gaze",
                                        "Emotion input amounts",
                                        "Maximum emotion inputs",
                                        "Diagnostics"};
@@ -181,6 +183,13 @@ void GroupHelp(Group group) {
       HelpText(
           "Scales generated facial movement: 0 = none, 1 = normal. "
           "These are movement multipliers.");
+      break;
+    case Group::kGaze:
+      HelpText(
+          "The eyes of the NPC you are talking to, and where they look. "
+          "Each chance is how often a pause in a line with that emotion "
+          "leaves them looking at you; mixed emotions blend. Afraid, "
+          "surprised and disgusted are in the INI.");
       break;
     case Group::kInputs:
       HelpText(
@@ -421,7 +430,7 @@ void RenderNpcWindow() {
       Group section = Group::kAuto;
       for (size_t index : MenuOrder()) {
         const Param& param = kParams[index];
-        if (!NpcParamSupported(param)) continue;
+        if (!NpcParamSupported(param) || !param.menu) continue;
         if (GroupFor(param) != section) {
           section = GroupFor(param);
           Section(GroupTitle(section));
@@ -1157,7 +1166,7 @@ void RenderMenu() {
         !strcmp(p.key, "SentimentAnalysis") ||
         !strcmp(p.key, "UsePerformanceEmotion") || !strcmp(p.key, "ForceCPU") ||
         !strcmp(p.key, "SentimentMultiplier") ||
-        !strcmp(p.key, "VanillaEmotions"))
+        !strcmp(p.key, "VanillaEmotions") || !p.menu)
       continue;
     if (p.profile >= 0) {
       if (!profiles_shown) {

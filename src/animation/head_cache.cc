@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "a2f/animation/rest_store.h"
 #include "a2f/runtime/ids.h"
 #include "a2f/runtime/scoped_lock.h"
 #include "a2f/runtime/skse.h"
@@ -347,6 +348,44 @@ const float* BaseVerts(uint8_t* shape, uint32_t& nv) {
   return nullptr;
 }
 
+static RestStore unlisted_rest;
+
+std::shared_ptr<const std::vector<float>> UnlistedRest(uint8_t* shape,
+                                                       uint32_t nv) {
+  std::shared_ptr<const std::vector<float>> rest;
+  const float* data = Engine<LockDynamicFn, kIdLockDynamic>()(shape);
+  if (data) rest = unlisted_rest.Rest(shape, data, nv);
+  Engine<UnlockDynamicFn, kIdUnlockDynamic>()(shape);
+  return rest;
+}
+
+void NoteUnlistedWrite(uint8_t* shape, const float* xyz, uint32_t nv) {
+  unlisted_rest.Wrote(shape, xyz, nv);
+}
+
+void ResetUnlisted(uint8_t* node) {
+  if (unlisted_rest.empty()) return;
+  const auto& children = reinterpret_cast<RE::NiNode*>(node)->GetChildren();
+  const auto* kids = children.begin();
+  const uint16_t n = children.free_idx();
+  std::vector<float> xyz;
+  for (uint16_t i = 0; kids && i < n; ++i) {
+    auto* geometry = reinterpret_cast<RE::BSGeometry*>(kids[i].get());
+    if (!geometry || geometry->GetType().underlying() != 4) continue;
+    auto* dynamic = static_cast<RE::BSDynamicTriShape*>(geometry);
+    auto* shape = reinterpret_cast<uint8_t*>(dynamic);
+    const uint32_t nv = dynamic->GetTrishapeRuntimeData().vertexCount;
+    uint32_t nb = 0;
+    if (dynamic->GetDynamicTrishapeRuntimeData().dataSize != nv * 16 ||
+        BaseVerts(shape, nb))
+      continue;
+    const float* data = Engine<LockDynamicFn, kIdLockDynamic>()(shape);
+    if (data && unlisted_rest.Displaced(shape, data, nv, xyz))
+      Engine<UpdateDynamicFn, kIdUpdateDynamic>()(shape, xyz.data(), false);
+    Engine<UnlockDynamicFn, kIdUnlockDynamic>()(shape);
+  }
+}
+
 const char* StaticMorphPart(uint8_t* node) {
   const auto& children = reinterpret_cast<RE::NiNode*>(node)->GetChildren();
   const auto* kids = children.begin();
@@ -368,20 +407,71 @@ const char* StaticMorphPart(uint8_t* node) {
 
 namespace {
 
+// A follower shape's triangles (global vertex indices), which tell its hair
+// cards apart: from the renderer's index copy, else, as on a skinned FaceGen
+// shape whose block has none, from its skin partitions. Empty when neither
+// gives a complete, in-range list.
 void ReadFollowerTriangles(uint8_t* shape, direct::ShapeIn& s) {
   s.triangles.clear();
   if (s.skin || s.part != direct::Part::kHead) return;
   auto* geometry = reinterpret_cast<RE::BSTriShape*>(shape);
-  const auto* renderer = geometry->GetGeometryRuntimeData().rendererData;
+  const auto& runtime = geometry->GetGeometryRuntimeData();
+  const auto* renderer = runtime.rendererData;
   const auto& mesh = geometry->GetTrishapeRuntimeData();
-  if (!renderer || !renderer->rawIndexData || mesh.vertexCount != s.nv ||
-      !mesh.triangleCount)
+  if (mesh.vertexCount != s.nv) return;
+  auto in_range = [&](const uint16_t* indices, size_t count, uint32_t limit) {
+    return std::all_of(indices, indices + count,
+                       [&](uint16_t index) { return index < limit; });
+  };
+  if (renderer && renderer->rawIndexData && mesh.triangleCount) {
+    const auto* indices = renderer->rawIndexData;
+    const size_t count = size_t{mesh.triangleCount} * 3;
+    if (in_range(indices, count, s.nv))
+      s.triangles.assign(indices, indices + count);
     return;
-  const auto* indices = renderer->rawIndexData;
-  const size_t count = size_t{mesh.triangleCount} * 3;
-  if (std::all_of(indices, indices + count,
-                  [&](uint16_t index) { return index < s.nv; }))
-    s.triangles.assign(indices, indices + count);
+  }
+  const auto* skin = runtime.skinInstance.get();
+  const auto* partition = skin ? skin->skinPartition.get() : nullptr;
+  // The array's own pointer: its size() reads an allocation header.
+  const auto* parts =
+      partition
+          ? *reinterpret_cast<const RE::NiSkinPartition::Partition* const*>(
+                &partition->partitions)
+          : nullptr;
+  constexpr uint32_t kMaxPartitions = 64;
+  if (!parts || !partition->numPartitions ||
+      partition->numPartitions > kMaxPartitions)
+    return;
+  std::vector<uint16_t> triangles;
+  std::vector<uint8_t> owned(s.nv);
+  for (uint32_t k = 0; k < partition->numPartitions; ++k) {
+    const auto& part = parts[k];
+    const uint16_t* indices = part.buffData && part.buffData->rawIndexData
+                                  ? part.buffData->rawIndexData
+                                  : part.triList;
+    const size_t count = size_t{part.triangles} * 3;
+    if (!count) continue;
+    if (!indices) return;
+    // Indices are the shape's own, or the partition's (through its vertex
+    // map) when they do not all name vertices the partition holds.
+    const uint16_t* map = part.vertexMap;
+    bool global = in_range(indices, count, s.nv);
+    if (map) {
+      if (!in_range(map, part.vertices, s.nv)) return;
+      std::fill(owned.begin(), owned.end(), 0);
+      for (uint16_t i = 0; i < part.vertices; ++i) owned[map[i]] = 1;
+      global = global && std::all_of(indices, indices + count,
+                                     [&](uint16_t i) { return owned[i] != 0; });
+    }
+    if (global) {
+      triangles.insert(triangles.end(), indices, indices + count);
+    } else if (map && in_range(indices, count, part.vertices)) {
+      for (size_t i = 0; i < count; ++i) triangles.push_back(map[indices[i]]);
+    } else {
+      return;
+    }
+  }
+  s.triangles = std::move(triangles);
 }
 
 // The shape's morphs it Reads (direct::Reads), each read by applying it at
@@ -428,18 +518,21 @@ size_t HeadBytes(const direct::Head& h) {
   return b;
 }
 
-void LogHead(const std::string& key, const direct::Head& h, double ms) {
+void LogHead(const std::string& key, const direct::Head& h, double ms,
+             uint32_t followers, uint32_t with_triangles) {
   const float* r = h.residual;
   Log("head %s: %u skin verts, %zu shapes, Mark x%.3f, landmarks off by "
       "blink %.2f %.2f brow %.2f %.2f jaw %.2f lips %.2f smile %.2f %.2f, "
       "lips %u upper %u lower (to Mark's %.2f), mouth part %u vertices "
       "on the jaw, %u tongue, strength brows %.2f cheeks %.2f mouth "
-      "%.2f, calibration ignored %u, lip calibration %zu, %.1f ms",
+      "%.2f, calibration ignored %u, lip calibration %zu, triangles for %u "
+      "of %u followers, %.1f ms",
       key.c_str(), h.nv, h.shapes.size(), h.scale, r[0], r[1], r[2], r[3], r[4],
       r[5], r[6], r[7], h.lips[0], h.lips[1], h.lip_dist, h.jaw_verts,
       h.tongue_verts, h.auto_scale[direct::kBrows],
       h.auto_scale[direct::kCheeks], h.auto_scale[direct::kMouth],
-      h.calibration_ignored, h.calibrated_lips.size(), ms);
+      h.calibration_ignored, h.calibrated_lips.size(), with_triangles,
+      followers, ms);
 }
 
 // map_lock held: drops the least recently used heads past the budget, but
@@ -472,7 +565,13 @@ DWORD WINAPI Mapper(void*) {
     std::string why;
     bool ok = direct::BuildHead(j.mapping->Face(j.female), j.shapes, *h, why);
     if (ok) {
-      LogHead(j.key, *h, (Now() - t) * 1e3);
+      uint32_t followers = 0, with_triangles = 0;
+      for (const auto& s : j.shapes) {
+        if (s.skin || s.part != direct::Part::kHead) continue;
+        ++followers;
+        with_triangles += !s.triangles.empty();
+      }
+      LogHead(j.key, *h, (Now() - t) * 1e3, followers, with_triangles);
     } else {
       Log("head %s: not animated, %s", j.key.c_str(), why.c_str());
     }
@@ -489,9 +588,10 @@ DWORD WINAPI Mapper(void*) {
 }  // namespace
 
 // What tells one head from another: the number of shapes, the skin's
-// vertices and a hash (FNV-1a) of each shape's name, type, all base vertices
-// and morph resource, independent of child order. With a face per sex, the
-// sex selects the model face. Empty: the node has no face shapes.
+// vertices and a hash (FNV-1a) of each shape's name, type, all base vertices,
+// morph resource and whether it is unlisted, independent of child order. With
+// a face per sex, the sex selects the model face. Empty: the node has no face
+// shapes.
 std::string HeadKey(uint8_t* node, bool female,
                     std::shared_ptr<const direct::Model> mapping) {
 #ifdef ENABLE_COMMONLIBSSE_TESTING
@@ -514,6 +614,9 @@ std::string HeadKey(uint8_t* node, bool female,
     mix(&skin, sizeof skin);
     const bool mouth_candidate = MouthCandidate(name);
     mix(&mouth_candidate, sizeof mouth_candidate);
+    uint32_t nb = 0;
+    const bool unlisted = !BaseVerts(shape, nb);
+    mix(&unlisted, sizeof unlisted);
     mix(base, static_cast<size_t>(nv) * 3 * sizeof(float));
     const void* morphs = Engine<MorphDataFn, kIdMorphData>()(shape);
     mix(&morphs, sizeof morphs);
@@ -562,6 +665,8 @@ State FindHead(uint8_t* node, const std::string& key, bool female,
     s.skin = skin && part == direct::Part::kHead;
     s.nv = nv;
     s.verts.assign(base, base + nv * 3);
+    uint32_t nb = 0;
+    s.unlisted = !BaseVerts(shape, nb);
     ReadMorphs(shape, s);
     ReadFollowerTriangles(shape, s);
     j.shapes.push_back(std::move(s));

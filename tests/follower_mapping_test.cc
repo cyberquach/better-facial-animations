@@ -121,6 +121,145 @@ int main() {
       assert(movement < -.99f);
     }
   }
+  // A shape without morphs is split at the lips' height, which may lie under
+  // the seam. In an unlisted shape a vertex above it still follows the lower
+  // lip it lies on, one midway between the lips follows both, and one on the
+  // upper lip stays.
+  {
+    const std::vector<float> skin = {-1, 0, 1, 1, 0, 1, -1, .1f, 1, 1, .1f, 1,
+                                     -1, 0, 0, 1, 0, 0, -1, .1f, 0, 1, .1f, 0};
+    const std::vector<uint8_t> labels = {kUpperLip, kUpperLip, kUpperLip,
+                                         kUpperLip, kLowerLip, kLowerLip,
+                                         kLowerLip, kLowerLip};
+    std::vector<float> opening(24);
+    for (int i = 4; i < 8; ++i) opening[i * 3 + 2] = -4;
+    ShapeIn layer;
+    layer.part = Part::kHead;
+    layer.nv = 3;
+    layer.verts = {1, 0, .1f, 1, 0, .5f, 1, 0, .9f};
+    layer.unlisted = true;
+    std::vector<KdTree> trees;
+    Head::Shape mapped;
+    Follow(layer, skin, 8, labels, -.5f, std::vector<float>(24), 0, trees,
+           mapped, opening);
+    const float expected[] = {-4, -2, 0};
+    for (uint32_t i = 0; i < layer.nv; ++i) {
+      float movement = 0;
+      for (int j = 0; j < kFollow; ++j)
+        movement += mapped.w[i * kFollow + j] *
+                    opening[mapped.idx[i * kFollow + j] * 3 + 2];
+      assert(std::fabs(movement - expected[i]) < 1e-5f);
+    }
+    // In a listed shape the height alone decides.
+    layer.unlisted = false;
+    Head::Shape kept;
+    Follow(layer, skin, 8, labels, -.5f, std::vector<float>(24), 0, trees, kept,
+           opening);
+    for (size_t j = 0; j < kept.idx.size(); ++j)
+      assert(kept.w[j] == 0 || labels[kept.idx[j]] == kUpperLip);
+  }
+  // A soul patch card is rooted on the lower lip. A vertex lying on the chin
+  // moves with the chin under it rather than with the root; a strand end
+  // hanging clear of the skin keeps the root's motion.
+  {
+    const std::vector<float> skin = {
+        -1,  0, 1,  1,  0, 1,  -1,  .1f, 1,  1,  .1f, 1,
+        -1,  0, 0,  1,  0, 0,  -1,  .1f, 0,  1,  .1f, 0,
+        -.5f, 0, -1, .5f, 0, -1, -.5f, .1f, -1, .5f, .1f, -1};
+    const std::vector<uint8_t> labels = {
+        kUpperLip, kUpperLip, kUpperLip, kUpperLip, kLowerLip, kLowerLip,
+        kLowerLip, kLowerLip, 0,         0,         0,         0};
+    std::vector<float> opening(36);
+    for (int i = 4; i < 8; ++i) opening[i * 3 + 2] = -1;
+    for (int i = 8; i < 12; ++i) opening[i * 3 + 2] = -.5f;
+    ShapeIn patch;
+    patch.part = Part::kHead;
+    patch.nv = 4;
+    patch.verts = {-.2f, 0, 0, .2f, 0, 0, .5f, .05f, -1, 0, 3, -1};
+    patch.morphs.resize(kNumMorphs);
+    patch.morphs[kBigAah] = {0, 0, -1, 0, 0, -1, 0, 0, -.5f, 0, 0, -1};
+    patch.triangles = {0, 1, 2, 0, 1, 3};
+    std::vector<KdTree> trees;
+    Head::Shape mapped;
+    Follow(patch, skin, 12, labels, .5f, std::vector<float>(36), 0, trees,
+           mapped, opening);
+    for (uint32_t i = 0; i < patch.nv; ++i) {
+      float movement = 0;
+      for (int j = 0; j < kFollow; ++j)
+        movement += mapped.w[i * kFollow + j] *
+                    opening[mapped.idx[i * kFollow + j] * 3 + 2];
+      assert(std::fabs(movement - (i == 2 ? -.5f : -1.f)) < 1e-6f);
+    }
+  }
+  // A card rooted on still skin and authored to open at its tip stretches as
+  // authored when it lies off the upper lip (a jaw line strand); the same
+  // card over the upper lip (a moustache strand) stays rigid.
+  for (const bool moustache : {false, true}) {
+    const std::vector<float> skin = {
+        -.3f, 0, 1, .3f, 0, 1, -.3f, .1f, 1,  .3f, .1f, 1,
+        -.2f, 0, 0, .2f, 0, 0, -.2f, .1f, 0,  .2f, .1f, 0,
+        -1,   0, -3, 1,  0, -3, -1,  .1f, -3, 1,   .1f, -3};
+    std::vector<uint8_t> labels(12, 0);
+    for (int i = 0; i < 4; ++i) labels[i] = moustache ? kUpperLip : 0;
+    for (int i = 8; i < 12; ++i) labels[i] = kLowerLip;
+    std::vector<float> opening(36);
+    for (int i = 4; i < 8; ++i) opening[i * 3 + 2] = -.3f;
+    for (int i = 8; i < 12; ++i) opening[i * 3 + 2] = -1;
+    ShapeIn strand;
+    strand.part = Part::kHead;
+    strand.nv = 3;
+    strand.verts = {-.2f, 0, 1, .2f, 0, 1, 0, 0, .05f};
+    strand.morphs.resize(kNumMorphs);
+    strand.morphs[kBigAah] = {0, 0, 0, 0, 0, 0, 0, 0, -.3f};
+    strand.triangles = {0, 1, 2};
+    std::vector<KdTree> trees;
+    Head::Shape mapped;
+    Follow(strand, skin, 12, labels, -1.5f, std::vector<float>(36), 0, trees,
+           mapped, opening);
+    for (uint32_t i = 0; i < strand.nv; ++i) {
+      float movement = 0;
+      for (int j = 0; j < kFollow; ++j)
+        movement += mapped.w[i * kFollow + j] *
+                    opening[mapped.idx[i * kFollow + j] * 3 + 2];
+      assert(std::fabs(movement - (i == 2 && !moustache ? -.3f : 0.f)) < 1e-5f);
+    }
+  }
+  // A moustache card resting on the lower lip ignores a TRI that opens its
+  // tip part of the way. With one vertex of four on the lip (a fringe) it
+  // stays rigid with its root; with three of four on the jaw (a strand draped
+  // past the mouth corner) those vertices move with the skin under them.
+  for (const bool draped : {false, true}) {
+    const std::vector<float> skin = {-1, 0,   1,  1,  0,   1,  -1, .1f, 1,
+                                     1,  .1f, 1,  -1, 0,   0,  1,  0,   0,
+                                     -1, .1f, 0,  1,  .1f, 0,  -1, 0,   -1,
+                                     1,  0,   -1, -1, .1f, -1, 1,  .1f, -1};
+    const std::vector<uint8_t> labels = {
+        kUpperLip, kUpperLip, kUpperLip, kUpperLip, kLowerLip, kLowerLip,
+        kLowerLip, kLowerLip, 0,         0,         0,         0};
+    std::vector<float> opening(36);
+    for (int i = 4; i < 12; ++i) opening[i * 3 + 2] = -1;
+    ShapeIn strand;
+    strand.part = Part::kHead;
+    strand.nv = 4;
+    strand.verts = {-.9f, 0, 1, -.8f, 0, 1, -1, 0, draped ? -.5f : .7f,
+                    -1,   0, 0};
+    if (draped) strand.verts[5] = -1;
+    strand.morphs.resize(kNumMorphs);
+    strand.morphs[kBigAah] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -.7f};
+    if (draped) strand.morphs[kBigAah][5] = strand.morphs[kBigAah][8] = -.7f;
+    strand.triangles = {0, 1, 2, 1, 2, 3};
+    std::vector<KdTree> trees;
+    Head::Shape mapped;
+    Follow(strand, skin, 12, labels, .5f, std::vector<float>(36), 0, trees,
+           mapped, opening);
+    for (uint32_t i = 0; i < strand.nv; ++i) {
+      float movement = 0;
+      for (int j = 0; j < kFollow; ++j)
+        movement += mapped.w[i * kFollow + j] *
+                    opening[mapped.idx[i * kFollow + j] * 3 + 2];
+      assert(std::fabs(movement - (draped && i ? -1.f : 0.f)) < 1e-5f);
+    }
+  }
   // Exercise the original scalar summation independently, including a zero
   // weight with an unusable index and vertices with no following at all.
   Head head;
