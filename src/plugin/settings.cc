@@ -109,16 +109,18 @@ extern const std::vector<Param> kParams = [] {
        "the training dialogue, with memory within each line. Designed for "
        "familiar dialogue; unfamiliar or generated dialogue may be less "
        "consistent. It does not perfectly reproduce V3. Runs at 30 fps "
-       "without eye gaze. GPU or CPU; measured about 122 MiB GPU memory on "
-       "RTX 4070 under Wine, including driver overhead. Usage varies by "
-       "system. Switches live; playing lines retain their animation.",
+       "without speech-driven eye movement. GPU or CPU; measured about "
+       "122 MiB GPU memory on RTX 4070 under Wine, including driver "
+       "overhead. Usage varies by system. Switches live; playing lines "
+       "retain their animation.",
        Sec::kModel, &tune.performance_model},
       {"UseUltraPerformanceModel", nullptr, 0, 0, "Ultra Performance model",
        "The original 80,729-parameter Performance model, renamed. Lowest "
        "processing cost, with reduced detail and less consistent lip sync. "
        "Trained on V3's answers for familiar dialogue; unfamiliar dialogue "
-       "may be less reliable. Runs at 30 fps without eye gaze. GPU or CPU; "
-       "switches live, and playing lines retain their animation.",
+       "may be less reliable. Runs at 30 fps without speech-driven eye "
+       "movement. GPU or CPU; switches live, and playing lines retain "
+       "their animation.",
        Sec::kModel, &tune.ultra_performance_model},
       {"UseOldModel", nullptr, 0, 0, "Old model",
        "Audio2Face v2.3. Less expressive than V3 and the slowest to run: "
@@ -137,15 +139,104 @@ extern const std::vector<Param> kParams = [] {
        "Restore the tongue behavior from before this feature. Applies "
        "immediately.",
        Sec::kDirect, &tune.disable_tongue},
-      {"ConversationGaze", nullptr, 0, 0, "Enable eye gaze",
-       "Add speech-driven eye motion while the conversation NPC targets you. "
-       "Untick to keep the game's eye movement. Applies immediately; SE/AE "
-       "only.",
-       Sec::kDirect, &tune.conversation_gaze},
-      {"GazeStrength", &tune.gaze_strength, 0, 2, "Gaze strength",
-       "Speech eye offset strength; 0 preserves the game's gaze.", Sec::kDirect,
-       nullptr},
+      {"ConversationGaze", nullptr, 0, 0, "Enable improved eye gaze",
+       "The master switch for everything under Gaze. Unticked, the game's "
+       "own steady gaze and head tracking are back exactly as without it. "
+       "Ticked: the NPC you are talking to looks at you with speech-driven "
+       "eye motion, and may look away in the pauses of a line, for the "
+       "silence alone or in thought. How often is set per male and female "
+       "profile below, and per NPC under Overrides. Applies immediately; "
+       "SE/AE only.",
+       Sec::kDirect, &tune.conversation_gaze, -1, true, Param::kNone,
+       Group::kGaze},
+      {"GazeStrength", &tune.gaze_strength, 0, 2, "Eye motion strength",
+       "Strength of the small speech-driven eye motion while they look at "
+       "you; 0 for none. Looking away is set separately below.",
+       Sec::kDirect, nullptr, -1, true, Param::kNone, Group::kGaze},
+      // With ConversationGaze: 0 keeps the eye motion alone, as before 6.1.
+      {"GazeBehavior", nullptr, 0, 0, "Look away at pauses",
+       "Unticked, they only ever look at you.", Sec::kGaze,
+       &tune.gaze_behavior, -1, true, Param::kNone, Group::kAuto, false},
+      {"GazeTurnHead", nullptr, 0, 0, "Turn head toward objects",
+       "Looking at an object well to the side turns the head, through the "
+       "game's own head tracking. Untick to move the eyes only.",
+       Sec::kGaze, &tune.gaze_turn_head},
+      {"GazeLineOfSight", nullptr, 0, 0, "Only look at what they can see",
+       "Objects and people behind a wall or other obstacle are not looked "
+       "at.",
+       Sec::kGaze, &tune.gaze_line_of_sight, -1, true, Param::kNone,
+       Group::kAuto, false},
+      {"GazeAvoidCamera", nullptr, 0, 0, "Never look into the camera",
+       "Outside first person, looks keep clear of the camera.", Sec::kGaze,
+       &tune.gaze_avoid_camera, -1, true, Param::kNone, Group::kAuto, false},
   };
+  // Per male/female profile and per NPC; the player is never the partner.
+  static const struct {
+    const char* key;
+    const char* label;
+    const char* tip;
+    bool menu;
+  } kGazeOdds[a2f::kNumGazeMoods] = {
+      {"GazeNeutral", "Neutral: holds your eye",
+       "Chance that a pause in a neutral line leaves them looking at you: "
+       "0 = never, 1 = always. Otherwise they look at something past you, "
+       "aside or nearby. A line's start looks away half as often.",
+       true},
+      {"GazeAngry", "Angry: holds your eye",
+       "Chance per pause while angry. High: anger stares you down. "
+       "Otherwise, in frustration, a short look low and just past you.",
+       true},
+      {"GazeHappy", "Happy: holds your eye", "Chance per pause while happy.",
+       true},
+      {"GazeSad", "Sad or embarrassed: holds your eye",
+       "Chance per pause while sad, ashamed or in pain. Otherwise they "
+       "mostly look down, and hold it into the next words.",
+       true},
+      {"GazeAfraid", "Afraid: holds your eye", "Chance per pause while afraid.",
+       false},
+      {"GazeSurprised", "Surprised: holds your eye",
+       "Chance per pause while surprised.", false},
+      {"GazeDisgusted", "Disgusted: holds your eye",
+       "Chance per pause while disgusted.", false},
+  };
+  for (int profile = 0; profile < 2; ++profile) {
+    FaceTune& face = profile ? tune.female : tune.male;
+    auto gaze_param = [&](Param p, float* (*access)(FaceTune&, size_t),
+                          size_t index, bool menu) {
+      p.face_value = access;
+      p.face_index = index;
+      p.value = p.FaceValue(face);
+      p.profile = profile;
+      p.menu = menu;
+      params.push_back(p);
+    };
+    gaze_param(
+        {"GazeHold", nullptr, 0, 2, "Overall: holds your eye",
+         "How firmly they keep looking at you, over every emotion "
+         "below and the idle glances past your head. 1 = as set "
+         "below, 2 = never looks away, 0 = looks away twice as often.",
+         Sec::kGaze, nullptr},
+        [](FaceTune& f, size_t) { return &f.gaze_hold; }, 0, true);
+    gaze_param(
+        {"GazeRestSeconds", nullptr, 0, 15, "Seconds between looks away",
+         "After their eyes come back to you they stay at least this "
+         "long, whatever the line does.",
+         Sec::kGaze, nullptr},
+        [](FaceTune& f, size_t) { return &f.gaze_rest; }, 0, true);
+    gaze_param(
+        {"GazeSettleSeconds", nullptr, 0, 30,
+         "Seconds before the first look away",
+         "A conversation opens with their eyes on you: no look away "
+         "until it has run this long.",
+         Sec::kGaze, nullptr},
+        [](FaceTune& f, size_t) { return &f.gaze_settle; }, 0, true);
+    for (int mood = 0; mood < a2f::kNumGazeMoods; ++mood)
+      gaze_param(
+          {kGazeOdds[mood].key, nullptr, 0, 1, kGazeOdds[mood].label,
+           kGazeOdds[mood].tip, Sec::kGaze, nullptr},
+          [](FaceTune& f, size_t i) { return &f.gaze_odds[i]; }, mood,
+          kGazeOdds[mood].menu);
+  }
   static char mouth_tip[160];
   snprintf(mouth_tip, sizeof mouth_tip,
            "Lip and mouth skin movement. Default strength: 1.0; %g with "
@@ -409,9 +500,9 @@ std::string NpcLabel(uint8_t* base) {
 constexpr int kIniVersion = 10;
 
 std::string Section(const Param& p) {
-  static const char* const kNames[] = {"General",  "General",
-                                       "Playback", "LocalAnimationStrength",
-                                       "Emotion",  "Debug"};
+  static const char* const kNames[] = {
+      "General", "General", "Playback", "LocalAnimationStrength",
+      "Emotion", "Debug",   "Gaze"};
   std::string section = kNames[static_cast<int>(p.sec)];
   if (p.profile >= 0)
     section += p.profile == 2 ? "Player" : p.profile ? "Female" : "Male";

@@ -10,8 +10,6 @@ namespace {
 constexpr float kFadeSeconds = 0.2f;
 constexpr float kMaxStrength = 2;
 constexpr float kMaxAngleDegrees = 8;
-// A look morph at 1 turns the eye this far; custom eye TRIs may differ.
-constexpr float kFullLookDegrees = 30;
 
 }  // namespace
 

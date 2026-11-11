@@ -31,6 +31,11 @@ bool Member(const uint8_t* actor, const uint8_t*) {
   CHECK(actor == npc.data());
   return in_scene;
 }
+RE::BipedAnim* worn = nullptr;
+const RE::BSTSmartPointer<RE::BipedAnim>& Biped(const uint8_t* actor, bool) {
+  CHECK(actor == npc.data());
+  return reinterpret_cast<const RE::BSTSmartPointer<RE::BipedAnim>&>(worn);
+}
 uint32_t* Target(uint8_t* p, uint32_t* out) {
   CHECK(p == process.data());
   *out = target_handle;
@@ -162,6 +167,9 @@ extern "C" uint64_t TestAddress(uint64_t id) {
     return reinterpret_cast<uint64_t>(&Target);
   if (id == kIdLookupReference.Get())
     return reinterpret_cast<uint64_t>(&Lookup);
+  static void* no_camera = nullptr;
+  if (id == kIdPlayerCamera.Get())
+    return reinterpret_cast<uint64_t>(&no_camera);
   return 0;
 }
 namespace {
@@ -256,6 +264,24 @@ void AdmissionAndRestoration() {
   Draw(false);
   in_scene = false;
   Draw(true);
+  // A worn gag (ZaZ, Devious Devices) owns the face like a scene does.
+  alignas(16) static std::array<uint8_t, sizeof(RE::BipedAnim)> biped_data{};
+  alignas(16) static std::array<uint8_t, sizeof(RE::TESObjectARMO)> gag_data{};
+  auto* gag = reinterpret_cast<RE::TESObjectARMO*>(gag_data.data());
+  gag->formType = RE::FormType::Armor;
+  static RE::BGSKeyword* tags[] = {
+      reinterpret_cast<RE::BGSKeyword*>(other.data())};
+  gag->keywords = tags;
+  gag->numKeywords = 1;
+  worn = reinterpret_cast<RE::BipedAnim*>(biped_data.data());
+  actor_vtable[0x7E] = reinterpret_cast<void*>(&Biped);
+  mouth_gear_keywords = {tags[0]};
+  Draw(true);
+  worn->objects[0].item = gag;
+  Draw(false);
+  worn->objects[0].item = nullptr;
+  Draw(true);
+  mouth_gear_keywords.clear();
   target_handle = 8;
   Draw(false);  // scripted look at someone else
   target_handle = 0;
@@ -300,6 +326,10 @@ void AdmissionAndRestoration() {
   Toggle("Enabled", true);
   Toggle("ConversationGaze", false);
   Draw(false);
+  // The one switch: off, looking away is off with it.
+  Toggle("GazeBehavior", true);
+  Draw(false);
+  Toggle("GazeBehavior", false);
   Toggle("ConversationGaze", true);
   playing[fg.data()].direct_frame = -1;
   Draw(false);
@@ -422,6 +452,8 @@ void SamplingAndMorphs() {
 
 int main() {
   bfa::testing::address = TestAddress;
+  // The fixed offsets below are the line's own eye motion: no fixations.
+  Toggle("GazeBehavior", false);
   Generation();
   AdmissionAndRestoration();
   SamplingAndMorphs();

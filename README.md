@@ -1,109 +1,81 @@
 # Better Facial Animations
 
-An SKSE plugin for Skyrim SE and VR that generates facial animation from speech using NVIDIA Audio2Face. It animates the face and jaw, with tongue cues from the game's speech track. Supports NPC dialogue and optional player speech through Dragonborn ReVoiced.
+An SKSE plugin for Skyrim SE and VR that generates facial animation from speech using NVIDIA Audio2Face. It animates the face and jaw, with tongue cues from the game's speech track, for NPC dialogue and optionally the player.
 
-## Requirements and installation
+## Requirements
 
-- Skyrim SE 1.5.97, 1.6.353, 1.6.640, 1.6.659 (GOG), 1.6.1170, 1.6.1179 (GOG), 1.7.99 or 1.7.104, with matching SKSE and Address Library for SKSE Plugins; or Skyrim VR 1.4.15 with SKSEVR (no Address Library needed).
-- GPU-first V3 is the normal preset (`ForceCPU=0`), initialized after game entry. If its GPU attempt fails, vanilla lip-sync remains available. CPU runs only when selected; Performance trades facial detail for lower computation cost. The installer selects the GPU route, facial processing device, a separate emotion processing device, both models, and independent feature toggles. Both processing devices default to GPU 0 and are saved independently; CPU startup preserves the chosen GPU route for later opt-in.
-- GPU inference defaults to a shared D3D12 device (`IndependentGpuDevice=0`) that unwraps ReShade by itself. The opt-in **Independent GPU mode** checkbox selects an independent device/private queue (`IndependentGpuDevice=1`), requiring Windows 10 22H2 / Windows 11 with the August 2023 or later update and a driver with Independent Devices support ([specification](https://microsoft.github.io/DirectX-Specs/d3d/IndependentDevices.html)). The installer states that ordinary DirectX 12 support is insufficient and no universal minimum driver version is verified. A 4.0 INI that stored the then-default `IndependentGpuDevice=1` is migrated to 0 once (IniVersion 9); a fresh installer choice is kept. Change the installer/INI and restart to switch routes. Shared mode retries without metacommands, conditionally through an observed graphics wrapper after device loss, then at 2/4/8/16/30-second intervals. When the default runtime has no device factory, independent mode creates one over the bundled Agility SDK 619 runtime (`BetterFacialAnimations/Agility/D3D12Core.dll`, process runtime unchanged; see GPU-SETUP.txt). Independent mode creates a lost device again (3 retries at 2/4/8 s); a missing runtime API or failed device creation waits for **Try GPU again**. Successful shared variants are remembered per model; sentiment retries after 30 seconds. GPU errors never select CPU automatically: vanilla lip-sync remains available, and **Try GPU again** starts an explicit attempt. CPU is selected explicitly and independently for each model. Selecting a GPU in that model's processing-device dropdown tries it in the same session. The shared/independent GPU route applies globally to both models; there is no Auto device probe or automatic GPU-route switch. Runtime DLLs and failed independent resources remain retained. Retired `GpuDevice`, `AutoGpuDevice` and `UseDeviceWrapper` keys are ignored.
+- Skyrim SE 1.5.97, 1.6.353, 1.6.640, 1.6.659 (GOG), 1.6.1170, 1.6.1179 (GOG), 1.7.99 or 1.7.104 with matching SKSE and Address Library; or Skyrim VR 1.4.15 with SKSEVR.
 - Microsoft Visual C++ v14 x64 runtime (tested with 14.51).
+- A DirectX 12 GPU for the default setup; CPU is available when selected.
 - Optional: SKSE Menu Framework for in-game settings.
 
-Install through your mod manager. The FOMOD defaults to shared GPU, V3 facial animation and Performance emotion. It offers all facial models (or Disabled), available emotion models (or Disabled), identical device choices for each model (**GPU 0–3** or **CPU**), vanilla emotion cues, active-dialogue-only processing, player animation, early preparation, tongue motion, eye gaze, logging, and ordinary Khajiit/Argonian animation. Both devices default to GPU 0. The installer cannot detect GPU names; select another numbered slot only when its DXGI index is known. Full emotion is offered only by the with-sentiment archive. All choices work without SKSE Menu Framework. Manual installation copies only `SKSE` into `Data` and uses the same defaults. Keep bundled runtime/model files together and launch through SKSE.
+1.6.353, 1.6.640 and GOG 1.6.659 have offline checks only. VR has been exercised only with a simulated headset.
 
-Installer choices are small defaults files under `BetterFacialAnimations/Installer`; explicit values in `BetterFacialAnimations.ini` take precedence, and menu saves preserve effective choices. Back up custom settings before reinstalling. A winning INI in MO2 Overwrite or another mod can override new installer choices; edit that copy or remove its override after backing it up. Fine strength/timing controls and individual NPC/custom-race settings remain in the INI and optional menu.
+## Installation
 
-The installer includes the [GPU setup and recovery guide](dist/GPU-SETUP.txt), also installed beside the models. It covers Windows/driver and Proton requirements, CPU recovery without launching Skyrim, runtime GPU activation, and useful failure reports.
+Install through your mod manager and launch through SKSE. The FOMOD selects the facial and emotion models, the processing device for each (**GPU 0–3** or **CPU**), and optional features; the defaults are shared GPU 0, V3 facial animation and Performance emotion. Manual installation copies `SKSE` into `Data` with the same defaults.
 
-GPU startup begins after a successful save load, or after a new game leaves the main/loading screens, on the inference worker. No recovery file is created or checked; old `gpu-startup.pending` files are ignored. If startup hangs or crashes, reinstall with **CPU** selected for both facial and emotion processing. Alternatively set `ForceCPU=1` and `EmotionDevice=-1` in the effective INI. Both selections together avoid GPU inference initialization. An in-process driver call already hanging cannot be cancelled by changing settings; no helper program is used.
+Installer choices are defaults; explicit values in `Data/SKSE/Plugins/BetterFacialAnimations.ini` win. A winning INI in MO2 Overwrite or another mod overrides new installer choices.
 
-Edit `Data/SKSE/Plugins/BetterFacialAnimations.ini` ([settings reference](dist/BetterFacialAnimations.ini)), or open **SKSE Menu Framework → Better Facial Animations → Settings**. Male and Female profiles apply to NPCs; the Player profile independently controls player timing, strength and emotion for either sex. Select Male NPCs, Female NPCs or Player to show that profile's timing, transitions, movement and emotion settings. **Vanilla / scene emotion inputs** (on by default) independently enables authored emotion inputs, including dialogue-mod inputs; Sentiment Analysis remains independent. Both sources off keeps audio-driven lip-sync without these emotion inputs. Each profile has separate **maximum inputs** for the model's ten emotion channels (0–2; default 1; ceilings, not fixed levels or movement multipliers), applied after strength, volume swell and sentiment from the next line. Lower **Maximum happiness input** to soften smiles without reducing anger or sadness. Grief, out of breath and pain are currently unused by Skyrim's emotion mapping. **Audio2Emotion** offers **Disabled**, **Full** and **Performance** (default). **Full** uses the original model (`emotion_fp16.onnx`), typically requiring about 600 MB of additional VRAM plus processing time. **Performance** (`emotion_performance.onnx`) is an experimental 21.6 MB student trained to memorize Full's answers on the training dialogue, not to reliably handle unfamiliar dialogue. Results can be hit or miss on lines outside its corpus, especially obscure quest mods; even training answers are approximate. Its file size is not a VRAM estimate. Choose Full when unfamiliar dialogue coverage matters. Both run on compatible AMD/NVIDIA GPUs through DirectML, or CPU with system RAM and additional CPU work. Hover over a selected value or dropdown option for details. Both archives include Performance. The with-sentiment archive also includes Full; without-sentiment omits only Full. Audio2Emotion adds voice-driven emotion alongside scene inputs; **Sentiment addition multiplier** scales it (0 skips inference), and the profile caps limit the combined inputs. **Disabled** releases the emotion session after current work returns. INI equivalents are `SentimentAnalysis=0` to disable, otherwise `UsePerformanceEmotion=0` for Full or `1` for Performance.
+Inference starts after the first save load (or once a new game leaves the loading screens), so the first lines may play with vanilla animation. GPU failures never fall back to CPU automatically; vanilla lip-sync stays available and **Try GPU again** retries. If startup hangs or crashes, reinstall with **CPU** for both models, or set `ForceCPU=1` and `EmotionDevice=-1`. Driver, Proton and Independent GPU mode requirements are in the [GPU setup and recovery guide](dist/GPU-SETUP.txt).
 
-**Audio2Face** has its own **Disabled**, **V3**, **Performance**, **Ultra Performance**, **Legacy** dropdown. Disabled uses vanilla facial animation and unloads both sessions, remembering Audio2Emotion's selection for when facial animation is enabled again. Menu changes save automatically. Model and **Processing device** selections switch live on the worker; playing lines finish with their original animation. Separate **Audio2Face processing device** and **Audio2Emotion processing device** dropdowns list detected GPUs by name and **CPU (Force CPU)**. Both default to GPU 0 and save their own choice; changing one does not change the other. Facial GPU with emotion CPU and facial CPU with emotion GPU are both supported. `ForceCPU` and `GpuAdapter` select the facial device; `EmotionDevice=-1` selects emotion CPU, and `0` or higher selects an emotion DXGI GPU index (default 0). The shared/independent GPU route remains global. Opening either dropdown discovers GPUs on the worker after game entry; Refresh GPU list rescans. A missing GPU is reported without silently selecting another. GPU numbering can change after hardware/driver changes; reselect the intended GPU by name.
+## Models
 
-**Better Facial Animations → Overrides** provides per-NPC playback, strength, tongue, gaze and emotion settings, including **Sentiment addition multiplier** (0–2). The NPC’s **Sentiment Analysis** checkbox turns it off for that NPC while preserving their multiplier. Both controls inherit the shared settings until edited; global Sentiment Analysis must be enabled to use sentiment. On SE/AE with SKSE Menu Framework 3, choose **Assign hotkey**, press an unused keyboard key, close settings, look at the NPC and press that key to open their editor. No key is assigned by default; Escape closes the editor or cancels binding. **Select NPC under crosshair** also works with older framework versions. Edited controls save automatically; **Use global** restores inheritance for one control, and **Reset NPC to global settings** clears all of that NPC's overrides. Reopen saved entries with **Edit**, or remove them on the Overrides page. Unchecking **Enable facial animations for this NPC** keeps vanilla animation. Global enable and race restrictions still apply. Overrides apply across saves to the NPC's base record (including copies), survive load-order changes, and are preserved by global Defaults. The player and temporary NPC base records cannot be selected. For manual configuration, including VR, add `Plugin.esp|001234=1` under `[Overrides]`, then add `[Override:Plugin.esp|001234]` with `Enabled=0` to disable BFA or profile keys such as `DirectMouth=0.8`, `SmileEyes=1.2`, `VoiceEmotion=0.5`, `SentimentAnalysis=0` (sentiment off), `SentimentMultiplier=0.5` and `MaxJoy=0.4`. Omitted controls inherit the current global profile. Use six-digit hexadecimal local **NPC base** IDs (light IDs padded to six digits) and restart after manual edits. Missing plugins retain entries. Existing `[Blacklist]` entries and `BlacklistHotkey` are read for migration and replaced by the new format when settings save.
+**Audio2Face** (facial animation):
 
-## Behavior and compatibility
-
-ZaZ-tagged equipped gags and forced mouth poses temporarily yield the actor’s
-whole face to the game/gear mod, for NPCs and the player. Removing the gear
-allows new BFA lines and conversation expressions again; interrupted lines are
-dropped, not replayed. Detection uses ZaZ keywords on third-person equipped
-slots, not carried items or names. Untagged devices and script-only mouth poses
-are not covered. This integration is provisional and untested in-game.
-
-BFA fits animation to each head's own expression morphs. Custom heads, NPC replacers and High Poly Head can animate when the required morphs are present; heads missing them keep vanilla lip-sync. The Races menu lists detected races with individual checkboxes; unchecked races keep vanilla animation. Creatures and animals without FaceGen heads are skipped. Vanilla, DLC and modded voices work with packed or loose audio, with or without `.lip` files. Potato Mode (`PotatoMode=1`) limits generation and animation to the player and the NPC you are talking to. Both modes initialize inference after the first successful save load, or after the main/loading screens close for a new game, avoiding startup module scans, and keep the model ready while enabled. The first lines may use vanilla animation while it warms up. Lines with missing or silent voice audio (including Fuz Ro D'oh dialogue) keep vanilla lip-sync and expressions. BFA takes over only when an animation from audible audio is ready.
-
-Races owned by `DWAlfiqKhajiit.esp` (Creatures of Nirn - Khajiit Alfiq)
-default off in the Races menu, including corrupted and boss variants.
-They can be enabled individually; compatible face morphs are still required.
-Saved race choices are preserved. Ordinary Khajiit remain supported.
-Renamed or merged origin plugins need a separate compatibility check.
-
-The face and jaw follow Audio2Face, while the tongue combines partial jaw movement with softened authored speech cues. Playback, region strength (including separate upper and lower lip), and emotion are adjustable separately for male and female heads; `DisableTongue=1` restores the previous model-driven tongue behavior.
-
-Conversation eye gaze adds speech-driven eye motion while the speaking conversation partner looks at the player. It is enabled by default on SE/AE, preserves the game's target, and yields when the actor looks elsewhere. Toggle **Enable eye gaze** in **Better Facial Animations → Settings → Strength**; changes apply immediately. In `[LocalAnimationStrength]`, `ConversationGaze=0` disables it; `GazeStrength` (0–2, default 1) adjusts the motion. VR keeps its existing gaze. Original Skyrim eye meshes have offline visual coverage; in-game and custom-eye calibration remain unverified.
-
-Skyrim 1.6.353, 1.6.640 and GOG 1.6.659 have offline checks but remain untested in-game. VR has only been exercised with a simulated headset; visual quality in a headset is unverified. Offline compatibility checks do not establish in-game compatibility with other mods. See the [player readme](dist/README.txt) for additional details and log locations, and [test documentation](tests/README.md) for coverage and limitations.
-
-In **Settings → Animation models → Audio2Face**, choose:
-
-- **V3**: full model, 60 fps and eye gaze; about 250 MB inference VRAM on GPU.
-- **Performance**: 4M-parameter student with per-line memory, trained to reproduce
-  V3's answers on the training dialogue. Its objective is close reproduction of
-  familiar lines rather than broad generalization; unfamiliar dialogue can be
-  less reliable. It approximates those answers rather than replaying stored
-  animations. Visual equivalence to V3 has not been established. It runs at
-  30 fps without eye gaze, on GPU or CPU.
-- **Ultra Performance**: the original 80,729-parameter Performance model, retained
-  for the lowest computation cost. It trades facial detail and lip-sync accuracy
-  for speed, especially on unfamiliar dialogue. GPU or CPU, 30 fps, no eye gaze.
-- **Legacy**: Audio2Face v2.3, 30 fps, about 100 MB inference VRAM on GPU.
+- **V3**: full model, 60 fps with speech-driven eye movement; about 250 MB VRAM.
+- **Performance**: 4M-parameter student trained to reproduce V3 on the training dialogue; unfamiliar lines can be less reliable. 30 fps, GPU or CPU.
+- **Ultra Performance**: the original 80,729-parameter student, lowest cost and least detail. 30 fps, GPU or CPU.
+- **Legacy**: Audio2Face v2.3, 30 fps, about 100 MB VRAM.
 - **Disabled**: vanilla animation.
 
-Models switch live; pending work is cancelled while completed lines finish with
-their original animation. Both students use the existing male/female head mapping.
-`ForceCPU` applies to all four facial models; the new Performance model is not yet
-validated on Steam Deck. In the INI, `UsePerformanceModel=1` selects Performance,
-`UseUltraPerformanceModel=1` selects Ultra Performance, and `UseOldModel=1` selects
-Legacy. Set the other model switches to 0; all three at 0 selects V3.
-Older saved Performance selections migrate once to Ultra Performance, preserving
-that model choice. Select Performance explicitly to opt into the larger model.
+INI: `UsePerformanceModel=1`, `UseUltraPerformanceModel=1` or `UseOldModel=1`; all at 0 selects V3.
+
+**Audio2Emotion** (voice-driven emotion): **Performance** (default, 21.6 MB student, approximate outside its training dialogue), **Full** (with-sentiment archive only, about 600 MB more VRAM) or **Disabled**. INI: `SentimentAnalysis=0` disables, `UsePerformanceEmotion=0` selects Full.
+
+Model and device changes apply live; playing lines finish with their original animation.
+
+## Settings
+
+Open **SKSE Menu Framework → Better Facial Animations**, or edit the INI ([settings reference](dist/BetterFacialAnimations.ini)). Male, Female and Player profiles each have timing, region strength and emotion caps. **Races** lists detected races; unchecked races keep vanilla animation. `PotatoMode=1` animates only the player and the NPC you are talking to.
+
+**Overrides** holds per-NPC settings. On SE/AE with SKSE Menu Framework 3, assign a hotkey, close the menu, aim at an NPC and press it; **Select NPC under crosshair** also works. Manual entries use `[Overrides]` and `[Override:Plugin.esp|001234]` sections, with six-digit local NPC base IDs; restart after manual edits.
+
+### Eye gaze (SE/AE)
+
+**Settings → Gaze → Enable improved eye gaze** (`ConversationGaze`) is the master switch; off restores the game's own gaze and head tracking. While on, the NPC you talk to looks at you and may look away at pauses, a line's start or a change of emotion, onto nearby objects and people, turning the head for targets well to the side. The male and female profiles and NPC overrides set how firmly they hold your eye, the timing and the chance per emotion; keys are under `[Gaze]`, `[GazeMale]` and `[GazeFemale]`. V3 and Legacy also add speech-driven eye motion (`GazeStrength`, 0–2). VR keeps its existing gaze. Not verified in game.
+
+## Compatibility
+
+BFA fits animation to each head's own expression morphs, so custom heads, NPC replacers and High Poly Head work when the morphs are present; heads without them keep vanilla lip-sync. Packed and loose voices work with or without `.lip` files; silent or missing audio keeps vanilla animation. Creatures without FaceGen heads are skipped. Creatures of Nirn Alfiq races default off in the Races menu.
+
+Incompatible with The Fourth Wall, which writes the same eye values. See the [player readme](dist/README.txt) for other mod interactions and log locations. Offline checks do not establish in-game compatibility.
 
 ## Player dialogue
 
-Dragonborn ReVoiced (DBReV) 1.4.4+ and a compatible voice pack can animate the player. Select the voice in DBReV's MCM and use a third-person or cinematic camera to see the player's face. **General → Player facial animations**, or `[General] PlayerFacialAnimations=0` in the INI, controls player animation independently of NPC animation. Player animation works with Potato Mode and both DBReV and the experimental DBVO 2 support. The master Enabled setting still applies.
-
-For Cinematic Conversation Camera, disable its synthesized fallback lips with `[Performance] bSynthLipSync=0` in `SKSE/Plugins/SD_user.ini`. DBReV retains its own authored lip track when BFA's player feature is off.
-
-### DBVO 2 (experimental)
-
-Dragonborn Voice Over 2 **2.0.2.2** can animate the player through a native speech observer, enabled experimentally on every desktop runtime BFA supports: **1.5.97, 1.6.353, 1.6.640, 1.6.659 (GOG), 1.6.1170, 1.6.1179 (GOG), 1.7.99 and 1.7.104**. BFA detects the installed DBVO plugin automatically. **Player facial animations** controls both DBVO2 and DBReV and is on by default; the old `NativePlayerSpeech` setting is ignored. Keep DBVO's pitch at 100. VR and unknown runtimes are not enabled. DBVO itself must support and load on the selected runtime; the pinned 2.0.2.2 DLL excludes 1.7.99.
-
-The observer does not patch DBVO or replace scripts. It installs only when the entry bytes match the expected prologue and declines when another hook is present. In-game playback has been verified on 1.6.1170; 1.5.97 and 1.7.104 have passed binary hook/ABI and live SKSE/plugin startup checks; player playback still needs in-game validation. 1.6.353, 1.6.640, GOG 1.6.659, GOG 1.6.1179 and 1.7.99 are enabled but unverified. Non-default pitch, audio without LIP, rapid skips and other DBVO builds are untested; short cold lines may keep native lips. See [tests/DBVO.md](tests/DBVO.md).
+Dragonborn ReVoiced 1.4.4+ with a compatible voice pack, or Dragonborn Voice Over 2 **2.0.2.2** (experimental, desktop runtimes only), animates the player. Toggle with **General → Player facial animations** (`PlayerFacialAnimations`). Use a third-person or cinematic camera to see the face. With Cinematic Conversation Camera, set `bSynthLipSync=0` in `SD_user.ini`. DBVO details and verification status: [tests/DBVO.md](tests/DBVO.md).
 
 ## Speech providers
 
-Mods that play their own voice lines (AI dialogue, TTS) can animate them through the plain C interface in [BFA_API.h](include/a2f/speech/BFA_API.h), also shipped beside the plugin's settings. Discover `BFA_QueryInterface` at SKSE PostLoad, register a listener, take a reply ID from `NewUtteranceId`, and `Prepare` each segment's WAV bytes with its speaker, reply ID and segment number. Report the audio clock with `Start`, `Pause` and `Seek` (which also unpauses); `Stop` ends a segment. Give all of a reply's segments one reply ID: BFA keeps the face between them. Keep fallback lipsync until `kStarted`; a terminal event returns control and retires the handle, and an animated segment's arrives once BFA hands the face back, after `EndUtterance` and the fade to the engine's expressions. A segment's optional emotion (ten channels) is copied with it and generated into its animation. `EndUtterance` closes the reply, stops its segments, removes its queued/cached audio and animations, and cancels running inference (temporary worker memory is released when cancellation is observed). Playback operations return one `uint32_t` result enum; Prepare and listener registration return an ID plus an output result. Engine access is queued through SKSE. At most 256 handles/replies may remain open; inactive handles/reply holds expire after 120 seconds. SE/AE actor lookup is supported; VR reports UnsupportedRuntime. This unreleased API changes in place: rebuild callers although `BFA_API_VERSION` remains 1. Offline contracts are in `provider-api`; in-game validation is still required.
+Mods that play their own voice lines (AI dialogue, TTS) can animate them through the C interface in [BFA_API.h](include/a2f/speech/BFA_API.h), shipped beside the plugin's settings. Discover `BFA_QueryInterface` at SKSE PostLoad; the header documents the call sequence. SE/AE only. The API is unreleased and changes in place: rebuild callers.
 
 ## Development
 
-Headers live in `include/a2f/`, with implementations in `src/`; both are grouped into `animation`, `inference`, `plugin`, `runtime`, and `speech`. Use includes such as `"a2f/animation/gaze.h"` with `include/` on the header search path.
+Headers are in `include/a2f/` and sources in `src/`, grouped into `animation`, `inference`, `plugin`, `runtime` and `speech`.
 
-C++23/MSVC 19.51 with CommonLibSSE-NG 8.4.0 (SE/AE/VR enabled). Linux builds run MSVC through Wine; MinGW builds only the FFmpeg C DLL. Dependencies: static FFmpeg 8.0.1, ONNX Runtime DirectML 1.24.4, DirectML 1.15.4, the Microsoft.Direct3D.D3D12 1.619.5 NuGet package extracted to `AGILITY` (default `deps/dml/microsoft.direct3d.d3d12`; `dist/Agility/SOURCE.txt` and `SHA256SUMS` pin it), and FP16 Audio2Face v2.3/v3.0 models. `./build.sh release` produces matching `-with-sentiment` and `-without-sentiment` archives; both require `EMOTION_MODEL` (default `models/a2e/network_fp16.onnx`) to build. Ordinary builds also work without it. Prepare FP16 Full sentiment weights with `tools/a2e_fp16.py`. The bundled Performance emotion checkpoint and export provenance are in `dist/emotion_performance.*`. Portable corpus preparation, teacher labeling and training for Performance emotion and the Ultra Performance Thin120 face student are in [tools/training](tools/training/README.md). The 6.0 face model uses 4M-parameter Block Attention Residuals with per-line memory. Export a trusted checkpoint using `python tools/export_performance.py --checkpoint checkpoint.pt --sha256 <checkpoint-sha256> --out work/face-export`; update its weights, normalization and native fixtures together. Export a trusted student checkpoint with `python tools/export_emotion.py --checkpoint checkpoint.pt --sha256 <checkpoint-sha256> --output dist/emotion_performance.onnx` using Python with torch, numpy, onnx and onnxruntime (validated with 2.9.1/2.2.6/1.19.1/1.23.2 respectively). The exporter validates CPU parity and writes synthetic reference fixtures beside the output; move those to `tests/emotion_performance.fixtures` when replacing the bundled model. The native frontend uses double-precision centering to avoid spurious signal from float summation on constant audio; ordinary signal parity is tested, not bitwise identity. Set `COMMONLIB_DEPS` (default `deps/commonlib`) to a directory containing `prebuilt` (the official CommonLib v8.4.0 all-runtime CMake bundle), `fmt` (12.2.0 sources), `support` (MSVC `/MD` spdlog/DirectXTK headers and libraries), and `msvc` (MSVC 14.51.36231 plus Windows SDK 10.0.26100.0). `BFA_MSVC_ROOT` overrides the compiler directory; `BFA_BUILD_WINEPREFIX` selects a dedicated compiler prefix. [commonlib_build.py](tools/commonlib_build.py) pins the CommonLib library hash and builds production and test objects with the same ABI. Dependency paths and overrides are in [build.sh](build.sh); model preparation tools are in [tools/](tools/).
+C++23 / MSVC 19.51 with CommonLibSSE-NG 8.4.0; Linux builds run MSVC through Wine. Dependency paths and overrides (`COMMONLIB_DEPS`, `BFA_MSVC_ROOT`, `BFA_BUILD_WINEPREFIX`, `AGILITY`, `EMOTION_MODEL`) are in [build.sh](build.sh). Model export and training tools are in [tools/](tools/) and [tools/training](tools/training/README.md).
 
 ```sh
 ./build.sh                 # Assemble build/mod; no release archive
 JOBS=4 ./build.sh          # Limit parallel compilation
 ./build.sh install <dir>   # Build and copy into a mod folder
-./build.sh release         # Create a numbered archive (requires 7z)
+./build.sh release         # Numbered with/without-sentiment archives (requires 7z and EMOTION_MODEL)
 ./build.sh compat          # Offline compatibility contracts
 ./build.sh test            # Full suite (requires Wine and test assets)
 ```
 
-[VERSION](VERSION) sets the release version. Release builds stop after revision 15, the largest revision SKSE can encode; they never wrap or change `VERSION` automatically. See [tests/README.md](tests/README.md) for fixtures and test coverage.
+[VERSION](VERSION) sets the release version; release builds stop at build 15, the largest SKSE can encode. See [tests/README.md](tests/README.md) for fixtures and coverage.
 
 ## License
 
-The plugin source code is [GPL-3.0](LICENSE), with required attribution: “Based on Better Facial Animations by Cyberquach”. Bundled third-party libraries and NVIDIA models retain their separate licenses; the GPL does not replace those terms. Audio2Emotion is governed by its [specific Audio2Face-only license](dist/licenses/NVIDIA-Audio2Emotion-License.txt), which prohibits use for emotion recognition. See [NOTICE.txt](dist/NOTICE.txt) and [third-party licenses](dist/licenses/).
+The plugin source code is [GPL-3.0](LICENSE), with required attribution: “Based on Better Facial Animations by Cyberquach”. Bundled third-party libraries and NVIDIA models keep their own licenses. Audio2Emotion is governed by its [Audio2Face-only license](dist/licenses/NVIDIA-Audio2Emotion-License.txt), which prohibits use for emotion recognition. See [NOTICE.txt](dist/NOTICE.txt) and [third-party licenses](dist/licenses/).

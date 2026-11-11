@@ -383,6 +383,7 @@ int main() {
     SaveIni();
     const char* section = p.sec == Sec::kDebug    ? "Debug"
                           : p.sec == Sec::kDirect ? "LocalAnimationStrength"
+                          : p.sec == Sec::kGaze   ? "Gaze"
                                                   : "General";
     CHECK(written(section, p.key) == flipped);
     *p.flag = !flipped;
