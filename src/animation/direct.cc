@@ -681,11 +681,30 @@ void Follow(const ShapeIn& s, const std::vector<float>& skin, uint32_t snv,
     // A moustache's hanging strands can be closer to the lower lip. Opening
     // identity, when supported by the authored data, outranks that proximity.
     if (authored) c = -s.morphs[kBigAah][i * 3 + 2] > .12f * jaw_drop ? 2 : 0;
+    // The lips' height is the pucker's centroid, which can sit well under the
+    // seam. An unlisted shape lies on the skin: a vertex above that height on
+    // the lower lip belongs to the jaw, and one as near to either lip (at a
+    // mouth corner) to both. Not so a listed moustache without morphs, whose
+    // strands rest on the lip they hang over.
+    bool both = false;
+    if (s.unlisted && !eyes && c == 0 && !trees[1].order.empty()) {
+      uint32_t upper, lower;
+      float upper_distance, lower_distance;
+      if (trees[0].Nearest(p, 1, &upper, &upper_distance) &&
+          trees[1].Nearest(p, 1, &lower, &lower_distance) &&
+          lips[lower] == kLowerLip && lower_distance < .25f * jaw_drop) {
+        if (lower_distance < .5f * upper_distance)
+          c = 1;
+        else
+          both = lower_distance < 1.5f * upper_distance;
+      }
+    }
     if (trees[c].order.empty()) continue;
     uint32_t idx[kFollow];
     float dist[kFollow];
     double w[kFollow];
-    int n = trees[c].Nearest(p, kFollow, idx, dist);
+    int n = trees[c].Nearest(p, both ? kFollow / 2 : kFollow, idx, dist);
+    if (both) n += trees[1].Nearest(p, kFollow - n, idx + n, dist + n);
     IdwWeights(dist, n, 0.05, w);
     for (int j = 0; j < n; ++j) {
       out.idx[i * kFollow + j] = idx[j];
@@ -694,12 +713,22 @@ void Follow(const ShapeIn& s, const std::vector<float>& skin, uint32_t snv,
   }
   // Small disconnected hair cards hang from a root. Mapping their tips to
   // the opposite lip stretches a moustache into the opening mouth, so each
-  // card keeps its shape and is attached at the upper edge; continuous beard
-  // surfaces stay flexible. A card rooted on the upper face whose own TRI
+  // card rooted on the upper face keeps its shape and is attached at the
+  // upper edge. A card rooted on the jaw (a soul patch) keeps its shape only
+  // where it hangs free: a vertex lying on the jaw skin follows that skin, as
+  // continuous beard surfaces do, so the lip and chin do not move through it.
+  // A card rooted on the upper face whose own TRI
   // opens a tip at least half way with the jaw spans the mouth: it stretches
   // as authored, each vertex by its opening relative to the jaw skin under
   // it, so the lower lip does not pass through a still strand.
+  // A moustache card resting on the lower lip is not left to its TRI, which
+  // opens such a tip part of the way and slides it over the lip. Where most
+  // of the card rests on the jaw (a strand draped past the mouth corner),
+  // those vertices follow the skin under them in full. Where less does (a
+  // fringe over the lip), the card stays rigid and the lip opens away from
+  // it: stretched to keep its tips there, a fringe curtains the open mouth.
   if (!authored) return;
+  std::vector<float> rest(s.nv, 0.f);
   std::vector<uint32_t> parent(s.nv);
   for (uint32_t i = 0; i < s.nv; ++i) parent[i] = i;
   auto root = [&](uint32_t i) {
@@ -744,25 +773,62 @@ void Follow(const ShapeIn& s, const std::vector<float>& skin, uint32_t snv,
     IdwWeights(distance, n, .05, weights);
     float tip = 0;
     for (uint32_t i : card) tip = std::max(tip, -s.morphs[kBigAah][i * 3 + 2]);
-    const bool spanning = side == 0 && n > 0 && tip >= .5f * jaw_drop;
+    // Jaw-rooted cards: skin closer than kNear0 jaw drops is followed in
+    // full, skin further than kNear1 not at all.
+    constexpr float kNear0 = .25f, kNear1 = .75f;
+    // A strand lies further off the lip than a chin card off the chin.
+    constexpr float kRest0 = .5f, kRest1 = 1.f;
+    bool moustache = false;
+    uint32_t resting = 0;
+    for (uint32_t i : card) {
+      if (side != 0) break;
+      const V3 p = At(&v[i * 3]);
+      uint32_t upper, jaw;
+      float upper_gap, jaw_gap;
+      if (!trees[0].Nearest(p, 1, &upper, &upper_gap)) continue;
+      moustache |= lips[upper] == kUpperLip;
+      // Jaw skin is the nearest skin, and it opens at least half way.
+      if (trees[2].Nearest(p, 1, &jaw, &jaw_gap) &&
+          jaw_gap <= upper_gap + 1e-4f &&
+          -skin_open[jaw * 3 + 2] >= .5f * jaw_drop)
+        rest[i] =
+            std::clamp(kRest1 - jaw_gap / jaw_drop, 0.f, kRest1 - kRest0) /
+            (kRest1 - kRest0);
+      resting += rest[i] > 0;
+    }
+    const bool draped = moustache && resting * 2 > card.size();
+    const bool fringe = moustache && resting && !draped;
+    bool spanning =
+        side == 0 && n > 0 && !draped && !fringe && tip >= .5f * jaw_drop;
+    // A card off the upper lip (cheek, jaw line) that is authored to open
+    // further than its root does the same; a moustache strand with so small
+    // a gradient stays rigid rather than cut into the lip it lies on.
+    if (!spanning && !moustache && side == 0 && n > 0 &&
+        tip >= (std::max(fraction, 0.f) + .12f) * jaw_drop)
+      spanning = true;
     for (uint32_t i : card) {
       std::fill_n(&out.w[i * kFollow], kFollow, 0.f);
-      if (spanning) {
+      if (spanning || draped || side != 0) {
         constexpr int kHalf = kFollow / 2;
         uint32_t jaw[kHalf];
         float jaw_distance[kHalf];
         double jaw_weights[kHalf], root_weights[kHalf];
-        const int jaws =
-            trees[2].Nearest(At(&v[i * 3]), kHalf, jaw, jaw_distance);
+        const int jaws = trees[spanning || draped ? 2 : side].Nearest(
+            At(&v[i * 3]), kHalf, jaw, jaw_distance);
         IdwWeights(jaw_distance, jaws, .05, jaw_weights);
         float skin_drop = 0;
         for (int j = 0; j < jaws; ++j)
           skin_drop -= static_cast<float>(jaw_weights[j]) *
                        skin_open[jaw[j] * 3 + 2];
         const float t =
-            std::clamp(-s.morphs[kBigAah][i * 3 + 2] /
-                           std::max(skin_drop, 1e-3f * jaw_drop),
-                       0.f, 1.f);
+            !jaws ? 0.f
+            : draped ? rest[i]
+            : spanning
+                ? std::clamp(-s.morphs[kBigAah][i * 3 + 2] /
+                                 std::max(skin_drop, 1e-3f * jaw_drop),
+                             0.f, 1.f)
+                : std::clamp(kNear1 - jaw_distance[0] / jaw_drop, 0.f,
+                             kNear1 - kNear0) / (kNear1 - kNear0);
         if (t > .02f) {
           const int roots = std::min(n, kHalf);
           IdwWeights(distance, roots, .05, root_weights);

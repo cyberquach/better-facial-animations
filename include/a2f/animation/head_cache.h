@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "a2f/animation/direct.h"
 #include "a2f/plugin/plugin.h"
@@ -34,6 +35,17 @@ bool HairGeometry(uint8_t* shape, const char* name);
 
 // Base (pre-morph) vertices of a face shape: its "FOD" extra data.
 const float* BaseVerts(uint8_t* shape, uint32_t& nv);
+
+// An unlisted follower shape (no base vertices: its head part is not among
+// the NPC's, so the engine neither morphs nor rebuilds it) stands on the
+// vertices it had before the plugin first wrote to it. UnlistedRest reads
+// them (nv x 3; null when the shape's vertices cannot be read),
+// NoteUnlistedWrite records a write to any face shape, and ResetUnlisted puts
+// the node's unlisted shapes back as an engine rebuild does the others.
+std::shared_ptr<const std::vector<float>> UnlistedRest(uint8_t* shape,
+                                                       uint32_t nv);
+void NoteUnlistedWrite(uint8_t* shape, const float* xyz, uint32_t nv);
+void ResetUnlisted(uint8_t* node);
 
 // The name ("" if it has none) of a child of the face node that carries base
 // and morph vertices but is not a BSDynamicTriShape, or null. The engine's
@@ -86,6 +98,14 @@ void ForFaceShapes(uint8_t* node, Fn fn) {
     if (dynamic->GetDynamicTrishapeRuntimeData().dataSize != nv * 16) continue;
     uint32_t nb = 0;
     const float* base = BaseVerts(shape, nb);
+    std::shared_ptr<const std::vector<float>> rest;
+    if (!base && !skin &&
+        (part == direct::Part::kHead || part == direct::Part::kPinned)) {
+      rest = UnlistedRest(shape, nv);
+      if (!rest) continue;
+      base = rest->data();
+      nb = nv;
+    }
     if (!base || nb != nv) continue;
     fn(shape, name, part, skin, nv, base);
   }

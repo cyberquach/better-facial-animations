@@ -49,14 +49,14 @@ Requirements
   Audio2Emotion has its own Disabled, Full, Performance dropdown.
   Hover for tradeoffs. Model changes apply live; playing lines finish with their
   original animation. Performance (4M Block AttnRes) runs on GPU, or CPU with ForceCPU=1:
-  compact V3-trained motion with per-line memory, 30 fps, no eye gaze feature.
+  compact V3-trained motion with per-line memory, 30 fps, no speech-driven eye movement.
   It is trained to reproduce V3's answers on the training dialogue, prioritizing
   close reproduction of familiar lines over broad generalization. Unfamiliar
   dialogue can be less reliable; it approximates answers, not stored animations.
   Visual equivalence to V3 has not been established. Not yet verified on Steam Deck.
   Ultra Performance is the original 80,729-parameter Performance model, retained
   for the lowest computation cost. It trades facial detail and lip-sync accuracy
-  for speed, especially on unfamiliar dialogue. GPU or CPU, 30 fps, no eye gaze.
+  for speed, especially on unfamiliar dialogue. GPU or CPU, 30 fps, no speech-driven eye movement.
   Older saved Performance selections migrate once to Ultra Performance, preserving
   that model choice. Select Performance explicitly to opt into the larger model.
   Audio2Face processing device and Audio2Emotion processing device each select
@@ -141,10 +141,16 @@ Settings
   Each profile has ten separate model emotion caps (0..2, default 1), applied after strength and volume swell from the next line. Lower Max joy / happiness to soften smiles independently. Grief, out of breath and pain are not currently fed by Skyrim.
   Smile reaches eyes adds happy-expression motion around the eyes per profile (SmileEyes, 0..2, default 1.0 for all profiles; 0 restores the original pose). Speech uses the line's mean joy and fades with the speech pose; native happy expressions receive the same eye boost. Appearance depends on the head's authored happy morph.
   Upper lip and Lower lip multiply Mouth strength; 1 uses permanent 0.8 upper / 1.2 lower calibration.
-  Eye gaze adds speech-driven eye motion when the speaking conversation NPC looks at you (SE/AE).
-  Toggle Enable eye gaze in Better Facial Animations -> Settings -> Strength; changes apply immediately.
-  It preserves the game's target and stops when the actor looks elsewhere. Enabled by default;
-  [LocalAnimationStrength] ConversationGaze=0 disables it, GazeStrength=0..2 adjusts it (default 1).
+  Improved eye gaze (SE/AE, enabled by default) has one master switch: Enable improved eye gaze in
+  Better Facial Animations -> Settings -> Gaze (the installer's Improved eye gaze option;
+  [LocalAnimationStrength] ConversationGaze). Off restores the game's gaze and head tracking; applies immediately.
+  It adds speech-driven eye motion when the speaking conversation NPC looks at you (GazeStrength=0..2,
+  default 1), which stops when the actor looks elsewhere, and natural gaze:
+  the NPC you talk to looks at you, and may look away in the pauses of a line by a
+  chance per emotion: for the silence alone, or in thought, coming back partway through the next words.
+  Settings -> Gaze also has head turning. Per male/female profile and
+  per NPC: how firmly they hold your eye overall, the seconds between looks away, the seconds before the first one and the chances. [Gaze], [GazeMale], [GazeFemale] in the INI.
+  Not compatible with The Fourth Wall: both write the same eye values. Use one or the other.
   VR keeps its existing gaze. Tested offline on original eye meshes; in-game/custom-eye calibration is unverified.
   Older shared settings seed both NPC profiles; older lip values convert to preserve their effect.
   Overrides page: assign an unused keyboard hotkey, close settings, aim at an NPC and press it

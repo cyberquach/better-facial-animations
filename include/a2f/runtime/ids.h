@@ -71,6 +71,13 @@ constexpr skse::Rel kIdLookupFormById{14461, 14617, 0};
 // AIProcess::GetHeadtrackTarget: hidden result pointer after this, returns
 // that pointer. Unavailable on VR: its target-selection ABI is unverified.
 constexpr skse::Rel kIdHeadtrackTarget{38483, 39484, 0};
+// HighProcessData::SetHeadtrackTarget(type, reference) and
+// ClearHeadtrackTarget(type, default hold) (CommonLibSSE-NG
+// HighProcessData.h). Unavailable on VR, as above.
+constexpr skse::Rel kIdSetHeadtrack{38760, 39783, 0};
+constexpr skse::Rel kIdClearHeadtrack{38726, 39756, 0};
+// PlayerCamera* singleton (CommonLibSSE-NG PlayerCamera::GetSingleton).
+constexpr skse::Rel kIdPlayerCamera{514642, 400802, 0};
 
 // The single ids above that every runtime has, for tests/runtimes_test.cc.
 constexpr skse::Rel kIds[] = {
@@ -83,7 +90,7 @@ constexpr skse::Rel kIds[] = {
 };
 // And those some runtime lacks.
 constexpr skse::Rel kOptionalIds[] = {
-    kIdPlayer,     kIdCrosshairPick,   kIdUI,
-    kIdControlMap, kIdHeadtrackTarget, kIdLookupFormById};
+    kIdPlayer,          kIdCrosshairPick,  kIdUI,          kIdControlMap,
+    kIdHeadtrackTarget, kIdLookupFormById, kIdPlayerCamera};
 
 #endif  // INCLUDE_A2F_RUNTIME_IDS_H_

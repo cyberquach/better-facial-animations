@@ -28,6 +28,7 @@
 
 #include "a2f/animation/direct.h"
 #include "a2f/animation/gaze.h"
+#include "a2f/animation/gaze_director.h"
 #include "a2f/animation/head_cache.h"
 #include "a2f/animation/pose.h"
 #include "a2f/inference/live_core.h"
@@ -132,6 +133,8 @@ struct Entry {
   uint32_t failure_reason = BFA_kResultAudioFailed;
   State state = State::kPending;
   std::shared_ptr<const a2f::Line> line;
+  // Where the line's gaze may shift (a2f/animation/gaze_director.h).
+  std::shared_ptr<const std::vector<a2f::GazeBeat>> beats;
   uint64_t last_use = 0;
   // Generated without voice sentiment while that was unavailable: generated
   // again once the worker would try sentiment again (sentiment_retry_at).
@@ -629,12 +632,18 @@ bool InScene(const uint8_t* actor) {
 }
 
 // ZaZ's zbfBondageShell documents gag and mouth-pose keywords as the
-// inter-mod equipment contract. Resolve optional keywords after plugins load;
-// items from dependent mods count too. Never infer restraints from item names.
+// inter-mod equipment contract; Devious Devices' zadLibs asks for every gag
+// (panel, large and hooded ones too) by zad_DeviousGag on the worn device.
+// Resolve optional keywords after plugins load, each by the file that defines
+// it; items from dependent mods count too. Never infer restraints from item
+// names.
 std::vector<const RE::BGSKeyword*> mouth_gear_keywords;
 
-bool MouthGearKeyword(const char* name) {
-  if (!name) return false;
+bool MouthGearKeyword(const char* file, const char* name) {
+  if (!file || !name) return false;
+  if (!_stricmp(file, "Devious Devices - Assets.esm"))
+    return !_stricmp(name, "zad_DeviousGag");
+  if (_stricmp(file, "ZaZAnimationPack.esm")) return false;
   for (const char* wanted : {"zbfWornGag", "zbfEffectOpenMouth",
                             "zbfAnimMouthOpen", "zbfAnimMouthClose",
                             "zbfAnimMouthKhajiitPlug", "zbfAnimMouthShout"})
@@ -649,12 +658,12 @@ void LoadMouthGearKeywords() {
   for (auto* form : *forms) {
     if (!form || form->formType != RE::FormType::Keyword) continue;
     auto* keyword = static_cast<RE::BGSKeyword*>(form);
-    const char* file = SourceFileName(reinterpret_cast<uint8_t*>(form));
-    if (file && !_stricmp(file, "ZaZAnimationPack.esm") &&
-        MouthGearKeyword(keyword->formEditorID.c_str()))
+    if (MouthGearKeyword(SourceFileName(reinterpret_cast<uint8_t*>(form)),
+                         keyword->formEditorID.c_str()))
       mouth_gear_keywords.push_back(keyword);
   }
-  Log("mouth gear: %zu ZaZ keywords loaded", mouth_gear_keywords.size());
+  Log("mouth gear: %zu ZaZ and Devious Devices keywords loaded",
+      mouth_gear_keywords.size());
 }
 
 bool MouthGearItem(const RE::TESForm* item) {
@@ -1192,6 +1201,7 @@ void Process(const Job& j, a2f::NetKeeper& keeper) {
       }
   }
   std::shared_ptr<a2f::Line> line;
+  std::shared_ptr<const std::vector<a2f::GazeBeat>> beats;
   double t = Now(), audio_sec = 0;
   bool inference_attempted = false;
   int generated_network = j.entry->model_state->network;
@@ -1243,6 +1253,18 @@ void Process(const Job& j, a2f::NetKeeper& keeper) {
                 err, no_net, allowed))
           line.reset();
         PublishNet(keeper);
+        // For every line, so that turning gaze on applies to cached ones.
+        // The emotion at kFps, whatever rate the model ran at.
+        if (line) {
+          std::vector<float> track;
+          const int frames = static_cast<int>(pcm.size() * a2f::kFps /
+                                              a2f::kSampleRate);
+          if (frames > 0)
+            a2f::EmotionTrack(pcm.data(), pcm.size(), frames, emotion, track);
+          auto found = std::make_shared<std::vector<a2f::GazeBeat>>();
+          a2f::FindGazeBeats(pcm.data(), pcm.size(), track, *found);
+          beats = std::move(found);
+        }
       }
     }
   }
@@ -1256,6 +1278,7 @@ void Process(const Job& j, a2f::NetKeeper& keeper) {
   if (it != cache.end() && it->second == j.entry) {
     it->second->state = line ? State::kReady : State::kFailed;
     it->second->line = line;
+    it->second->beats = beats;
     // Re-read silent/missing assets on the next request: a TTS provider may
     // replace them later. The active line retains its fallback entry.
     if (!line && (no_net || silent || file.empty())) cache.erase(it);
@@ -2017,7 +2040,7 @@ FaceActor FaceActorOf(uint8_t* fg) {
 // by the caller, whose handle is actor_handle (null: gone); sound and
 // playing_now: its voice (ActorVoice).
 void ResetEndedFace(uint8_t* fg);
-void ClearEndedKeyframes(uint8_t* fg);
+void ClearEndedKeyframes(uint8_t* fg, float release);
 
 int Apply(uint8_t* fg, const Tune& tune, bool in_scene, uint8_t* actor,
           uint32_t actor_handle, uint32_t sound, int playing_now) {
@@ -2091,7 +2114,7 @@ int Apply(uint8_t* fg, const Tune& tune, bool in_scene, uint8_t* actor,
       ending->phonemes = {};
       std::fill_n(ending->src, direct::kNumExpressions, 0.f);
       std::fill_n(ending->written, direct::kNumExpressions, 0.f);
-      ClearEndedKeyframes(fg);
+      ClearEndedKeyframes(fg, 0);
     } else {
       ResetEndedFace(fg);
     }
@@ -2180,19 +2203,38 @@ void DropFace(uint8_t* fg) {
 
 // Both locks held. The neutral release must not restore cached dialogue
 // phonemes/expressions. Once the fade ends, DropFace releases later writers.
-void ClearEndedKeyframes(uint8_t* fg) {
+// The console/script keyframes (mfg, MFG Fix, SetExpressionOverride, ZaZ's
+// open mouth) are never BFA's: modifiers and phonemes are left alone, and the
+// expression only when no override holds it. They are where the face is
+// released to: the engine shows a nonzero console value in place of the
+// dialogue one (cleared here), and an overriding expression as it is. The
+// final keyframes get them as they are now, at release (0: the line's last
+// pose .. 1: the engine's), so the pose fades into what the engine then
+// holds; with none set they stay cleared.
+void ClearEndedKeyframes(uint8_t* fg, float release) {
   auto& data = *reinterpret_cast<RE::BSFaceGenAnimationData*>(fg);
-  for (auto* key : {&data.expressionKeyFrame, &data.expression3,
-                    &data.modifierKeyFrame, &data.modifier1, &data.modifier3,
-                    &data.phenomeKeyFrame, &data.phoneme1, &data.phoneme3}) {
-    if (key->values) std::fill_n(key->values, key->count, 0.f);
-    key->isUpdated = true;
-  }
+  auto clear = [](RE::BSFaceGenKeyframeMultiple& key) {
+    if (key.values) std::fill_n(key.values, key.count, 0.f);
+    key.isUpdated = true;
+  };
+  if (!data.exprOverride) clear(data.expressionKeyFrame);
+  for (auto* key : {&data.expression3, &data.modifier1, &data.modifier3,
+                    &data.phoneme1, &data.phoneme3})
+    clear(*key);
+  auto show = [release](const RE::BSFaceGenKeyframeMultiple& held,
+                        RE::BSFaceGenKeyframeMultiple& shown) {
+    if (!held.values || !shown.values) return;
+    for (uint32_t i = 0; i < held.count && i < shown.count; ++i)
+      if (held.values[i] != 0) shown.values[i] = held.values[i] * release;
+  };
+  if (data.exprOverride) show(data.expressionKeyFrame, data.expression3);
+  show(data.modifierKeyFrame, data.modifier3);
+  show(data.phenomeKeyFrame, data.phoneme3);
   data.unk218 = 1;
 }
 
 void ResetEndedFace(uint8_t* fg) {
-  ClearEndedKeyframes(fg);
+  ClearEndedKeyframes(fg, 1);
   DropFace(fg);
 }
 
@@ -2395,10 +2437,10 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene,
       if (elapsed >= f.neutral_duration) {
         ResetEndedFace(fg);
       } else {
-        ClearEndedKeyframes(fg);
-        const float weight = 1 - a2f::Smoothstep(elapsed / f.neutral_duration);
+        const float release = a2f::Smoothstep(elapsed / f.neutral_duration);
+        ClearEndedKeyframes(fg, release);
         for (int i = 0; i < direct::kNumExpressions; ++i)
-          f.level[i] = f.neutral_levels[i] * weight;
+          f.level[i] = f.neutral_levels[i] * (1 - release);
       }
       return kFaceChanged | kKeepUpdating;
     }
@@ -2627,6 +2669,7 @@ bool AddDeltas(uint8_t* node, const direct::Head& head,
         xyz[j] = data[v * 4 + c] + dv;
       }
     Engine<UpdateDynamicFn, kIdUpdateDynamic>()(shape, xyz.data(), false);
+    NoteUnlistedWrite(shape, xyz.data(), nv);
     Engine<UnlockDynamicFn, kIdUnlockDynamic>()(shape);
   });
   return added;
@@ -2848,21 +2891,317 @@ void AddDirect(uint8_t* node, bool reset) {
   }
 }
 
+// ---------------- Where the partner looks ----------------
+// The partner's fixations (a2f/animation/gaze_director.h) and the things
+// near them to look at. Eyes move through the look morphs, as an offset from
+// the game's gaze at the player. The head follows a reference through the
+// engine's procedure head-tracking slot, taken only while it is free and
+// given back when the look ends, the conversation does or the feature is
+// turned off. Both engine changes are made in game-thread tasks.
+constexpr uint32_t kGazeSlot = RE::HighProcessData::HEAD_TRACK_TYPE::kProcedure;
+constexpr float kGazeRadius = 800;  // game units around the partner
+constexpr float kGazeMinSize = 5, kGazeMaxSize = 200;  // bound radius
+constexpr size_t kGazeMaxPoints = 24;
+constexpr size_t kGazeMaxRays = 48;  // sight tests per collection
+// The points are collected again after this long, or once the partner has
+// moved this far.
+constexpr double kGazePointsSeconds = 30;
+constexpr float kGazePointsMove = 150;
+constexpr float kPlayerEyeHeight = 120;
+// A held head target nothing has asked for in this long is given back.
+constexpr double kGazeHeadStaleSeconds = 0.25;
+
+SRWLOCK gaze_lock = SRWLOCK_INIT;
+struct GazeScene {
+  uint32_t actor = 0;  // the partner's handle
+  a2f::GazeDirector director;
+  std::vector<a2f::GazePoint> points;
+  float points_at[3] = {};
+  // The partner's eyes when last drawn: where sight is tested from.
+  float eye[3] = {};
+  bool eye_known = false;
+  double points_time = -1e9;
+  bool collecting = false;
+} gaze_scene;  // gaze_lock
+// The actor whose slot holds which reference, and when it was last wanted.
+std::atomic<uint32_t> gaze_head_actor{0}, gaze_head_ref{0};
+std::atomic<double> gaze_head_wanted_at{0};
+// The last head request queued: actor << 32 | reference.
+std::atomic<uint64_t> gaze_head_queued{0};
+skse::SKSETaskInterface* startup_tasks = nullptr;  // set at SKSE load
+// No one is the partner: the next one's conversation starts afresh.
+std::atomic<bool> gaze_scene_over{true};
+
+uint8_t* PlayerRef() {
+  const auto address = Addr(kIdPlayer);
+  return address ? *reinterpret_cast<uint8_t**>(address) : nullptr;
+}
+
+RE::HighProcessData* HighProcess(uint8_t* actor) {
+  auto* process =
+      reinterpret_cast<RE::Actor*>(actor)->GetActorRuntimeData().currentProcess;
+  return process ? process->high : nullptr;
+}
+
+// Game thread. Gives the slot back if it still holds our reference, then
+// takes it for ref (0: none) unless a package's own look-at has it.
+void SetGazeHead(uint32_t actor_handle, uint32_t ref_handle, uint64_t epoch) {
+  auto set = Engine<void (*)(RE::HighProcessData*, uint32_t, RE::TESObjectREFR*),
+                    kIdSetHeadtrack>();
+  auto clear =
+      Engine<void (*)(RE::HighProcessData*, uint32_t, bool), kIdClearHeadtrack>();
+  const uint32_t held_actor = gaze_head_actor.exchange(0);
+  const uint32_t held_ref = gaze_head_ref.exchange(0);
+  if (!CurrentWorld(epoch) || !set || !clear) return;
+  if (held_actor && held_ref) {
+    ScopedReference holder(held_actor);
+    auto* high = holder.get() ? HighProcess(holder.get()) : nullptr;
+    if (high && high->headTrackTarget[kGazeSlot].native_handle() == held_ref)
+      clear(high, kGazeSlot, false);
+  }
+  if (!ref_handle) return;
+  ScopedReference actor(actor_handle), ref(ref_handle);
+  auto* high = actor.get() && ref.get() ? HighProcess(actor.get()) : nullptr;
+  if (!high || high->headTrackTarget[kGazeSlot].native_handle()) return;
+  set(high, kGazeSlot, reinterpret_cast<RE::TESObjectREFR*>(ref.get()));
+  gaze_head_wanted_at = Now();
+  gaze_head_ref = ref_handle;
+  gaze_head_actor = actor_handle;
+}
+
+void QueueGazeHead(uint32_t actor, uint32_t ref) {
+  const uint64_t request = (uint64_t{actor} << 32) | ref;
+  if (!startup_tasks || gaze_head_queued.exchange(request) == request) return;
+  const uint64_t epoch = world_epoch;
+  startup_tasks->AddTask([=] { SetGazeHead(actor, ref, epoch); });
+}
+
+// Game thread. Whether nothing stands between the eyes and the point: one
+// ray on the line-of-sight layer, in the looker's own collision group so
+// that their body does not stop it.
+bool GazePointVisible(RE::bhkWorld* world, RE::Actor* looker, const float* eye,
+                      const a2f::GazePoint& point, float size) {
+  const float scale = RE::bhkWorld::GetWorldScale();
+  const float* to = point.position;
+  RE::bhkPickData pick;
+  pick.rayInput.from =
+      RE::hkVector4(eye[0] * scale, eye[1] * scale, eye[2] * scale, 0);
+  pick.rayInput.to =
+      RE::hkVector4(to[0] * scale, to[1] * scale, to[2] * scale, 0);
+  RE::CFilter group{};
+  looker->GetCollisionFilterInfo(group);
+  pick.rayInput.filterInfo.filter =
+      (group.filter & 0xFFFF0000u) | static_cast<uint32_t>(RE::COL_LAYER::kLOS);
+  {
+    RE::BSReadLockGuard guard(world->worldLock);
+    world->PickObject(pick);
+  }
+  const float distance =
+      std::hypot(to[0] - eye[0], to[1] - eye[1], to[2] - eye[2]);
+  return a2f::GazeRayReaches(
+      pick.rayOutput.HasHit() ? pick.rayOutput.hitFraction : 1, distance, size);
+}
+
+// Game thread. The loaded things around the partner, nearest first: other
+// actors, and objects from the size of a cup to the size of a cupboard, that
+// the partner can see.
+void CollectGazePoints(uint32_t actor_handle, uint64_t epoch) {
+  struct Found {
+    float distance, size;
+    a2f::GazePoint point;
+    RE::TESObjectREFR* ref;
+  };
+  std::vector<Found> found;
+  float origin[3] = {}, eye[3] = {};
+  bool eye_known = false;
+  {
+    ScopedLock guard(gaze_lock, ScopedLock::kShared);
+    if (gaze_scene.actor == actor_handle && gaze_scene.eye_known) {
+      std::copy_n(gaze_scene.eye, 3, eye);
+      eye_known = true;
+    }
+  }
+  size_t nearby = 0;
+  bool sight = false;
+  ScopedReference actor(actor_handle);
+  auto* self = reinterpret_cast<RE::TESObjectREFR*>(actor.get());
+  auto* cell = self && CurrentWorld(epoch) ? self->GetParentCell() : nullptr;
+  if (cell) {
+    const RE::NiPoint3 at = self->GetPosition();
+    origin[0] = at.x;
+    origin[1] = at.y;
+    origin[2] = at.z;
+    cell->ForEachReferenceInRange(at, kGazeRadius, [&](RE::TESObjectREFR* ref) {
+      const auto next = RE::BSContainer::ForEachResult::kContinue;
+      if (!ref || ref == self || ref->formID == kPlayerFormId ||
+          ref->IsDisabled())
+        return next;
+      const RE::NiAVObject* object = ref->Get3D();
+      if (!object) return next;
+      const RE::NiBound& bound = object->worldBound;
+      Found f;
+      f.point.actor = ref->formType.underlying() == kFtActor;
+      if (!f.point.actor &&
+          !(bound.radius >= kGazeMinSize && bound.radius <= kGazeMaxSize))
+        return next;
+      f.point.position[0] = bound.center.x;
+      f.point.position[1] = bound.center.y;
+      // An actor's bound is centred on the body: look at the head's height.
+      f.point.position[2] =
+          bound.center.z + (f.point.actor ? 0.6f * bound.radius : 0);
+      f.distance = bound.center.GetDistance(at);
+      f.size = bound.radius;
+      f.ref = ref;
+      if (std::isfinite(f.distance)) found.push_back(f);
+      return next;
+    });
+    std::sort(found.begin(), found.end(), [](const Found& a, const Found& b) {
+      return a.distance < b.distance;
+    });
+    nearby = found.size();
+    RE::bhkWorld* world = cell->GetbhkWorld();
+    sight = SnapshotTune().gaze_line_of_sight && eye_known && world;
+    std::vector<Found> seen;
+    for (size_t i = 0; i < found.size() && seen.size() < kGazeMaxPoints; ++i) {
+      // Past the ray budget the rest are left out rather than assumed seen.
+      if (sight && i >= kGazeMaxRays) break;
+      if (sight &&
+          !GazePointVisible(world, reinterpret_cast<RE::Actor*>(self), eye,
+                            found[i].point, found[i].size))
+        continue;
+      found[i].point.ref = HandleOf(reinterpret_cast<uint8_t*>(found[i].ref));
+      seen.push_back(found[i]);
+    }
+    found = std::move(seen);
+  }
+  static std::atomic<int> logged;
+  if (cell && LogMore(logged))
+    Log("gaze: %zu of %zu things near %08X to look at%s", found.size(), nearby,
+        FormIdOf(actor.get()), sight ? ", by line of sight" : "");
+  ScopedLock guard(gaze_lock);
+  if (gaze_scene.actor != actor_handle) return;
+  gaze_scene.points.clear();
+  for (const Found& f : found) gaze_scene.points.push_back(f.point);
+  // Without a cell, from where the partner is drawn: no new collection
+  // until they move or the points are old.
+  std::copy_n(cell ? origin : gaze_scene.eye, 3, gaze_scene.points_at);
+  gaze_scene.points_time = Now();
+  gaze_scene.collecting = false;
+}
+
+// Where the partner's eyes go this frame, as look morph offsets added to
+// offset; asks for the head to follow, and for the points when they are old.
+// own_ref: the reference the partner's head follows for us; on_own: the
+// game's gaze is on it, and already carries the eyes there.
+void DirectGaze(uint8_t* node, uint8_t* player, uint32_t actor_handle,
+                const a2f::GazeLine* line, const a2f::GazeSettings& settings,
+                bool avoid_camera, uint32_t own_ref, bool on_own,
+                float (&offset)[2]) {
+  const RE::NiPoint3& head =
+      reinterpret_cast<RE::NiAVObject*>(node)->world.translate;
+  const RE::NiPoint3 feet =
+      reinterpret_cast<RE::TESObjectREFR*>(player)->GetPosition();
+  a2f::GazeView view = {{head.x, head.y, head.z},
+                        {feet.x, feet.y, feet.z + kPlayerEyeHeight}};
+  // A camera that is not the player's own eyes (third person, a cinematic
+  // or free camera) is somewhere the partner must not look.
+  if (avoid_camera) {
+    const auto address = Addr(kIdPlayerCamera);
+    const RE::PlayerCamera* camera =
+        address ? *reinterpret_cast<RE::PlayerCamera**>(address) : nullptr;
+    const RE::NiNode* root = camera ? camera->cameraRoot.get() : nullptr;
+    const RE::TESCameraState* state =
+        camera ? camera->currentState.get() : nullptr;
+    if (root && state && state->id != RE::CameraState::kFirstPerson) {
+      const RE::NiPoint3& at = root->world.translate;
+      view.camera[0] = at.x;
+      view.camera[1] = at.y;
+      view.camera[2] = at.z;
+      view.camera_known = true;
+    }
+  }
+  const double now = Now();
+  a2f::GazeAim aim;
+  bool collect = false;
+  {
+    ScopedLock guard(gaze_lock);
+    GazeScene& scene = gaze_scene;
+    if (gaze_scene_over.exchange(false) || scene.actor != actor_handle) {
+      scene = GazeScene();
+      scene.actor = actor_handle;
+      scene.director.Seed(static_cast<uint32_t>(GetTickCount64()) ^
+                          (actor_handle * 2654435761u));
+    }
+    std::copy_n(view.eye, 3, scene.eye);
+    scene.eye_known = true;
+    aim = scene.director.Update(now, line, view, scene.points, settings);
+    const float moved = std::hypot(view.eye[0] - scene.points_at[0],
+                                   view.eye[1] - scene.points_at[1]);
+    if (!scene.collecting && startup_tasks &&
+        (now - scene.points_time > kGazePointsSeconds ||
+         moved > kGazePointsMove)) {
+      scene.collecting = true;
+      collect = true;
+    }
+  }
+  if (collect) {
+    static std::atomic<int> logged;
+    if (LogMore(logged)) {
+      if (view.camera_known)
+        Log("gaze: camera %.0f from the player's head, %.0f from the "
+            "speaker's eyes",
+            std::hypot(view.camera[0] - view.player[0],
+                       view.camera[1] - view.player[1],
+                       view.camera[2] - view.player[2]),
+            std::hypot(view.camera[0] - view.eye[0],
+                       view.camera[1] - view.eye[1],
+                       view.camera[2] - view.eye[2]));
+      else
+        Log("gaze: no camera to keep clear of (first person, or off)");
+    }
+    const uint64_t epoch = world_epoch;
+    startup_tasks->AddTask([=] { CollectGazePoints(actor_handle, epoch); });
+  }
+  if (aim.head_ref && aim.head_ref == own_ref)
+    gaze_head_wanted_at = now;
+  else if (aim.head_ref || own_ref)
+    QueueGazeHead(actor_handle, aim.head_ref);
+  // A look whose request did not get the slot is over: the next one at the
+  // same reference asks again.
+  else if (gaze_head_queued.load(std::memory_order_relaxed))
+    gaze_head_queued = 0;
+  // Until the head is on its way the eyes lead, as far as they reach.
+  if (on_own) return;
+  offset[0] += aim.down / a2f::kFullLookDegrees;
+  offset[1] += aim.right / a2f::kFullLookDegrees;
+}
+
 // Offsets the look morphs of the NPC speaking to the player while the
 // original morph routine consumes them, then puts them back: offsets never
 // accumulate and nothing has to be restored when the actor goes away.
 uint64_t GazeMorphs(ApplyMorphsFn orig, uint8_t* node, uint8_t force,
                     bool& reset, uint64_t epoch) {
+  // Whichever face is drawn next gives back a head target nothing wants any
+  // more: the conversation ended, or the feature was turned off.
+  if (const uint32_t holder = gaze_head_actor.load(std::memory_order_relaxed);
+      holder && Now() - gaze_head_wanted_at > kGazeHeadStaleSeconds)
+    QueueGazeHead(holder, 0);
   auto* fg =
       reinterpret_cast<uint8_t*>(reinterpret_cast<RE::BSFaceGenNiNode*>(node)
                                      ->GetRuntimeData()
                                      .animationData.get());
-  if (!fg || !PartnerHandle()) return orig(node, force);
+  if (!PartnerHandle()) {
+    if (!gaze_scene_over.load(std::memory_order_relaxed))
+      gaze_scene_over.store(true, std::memory_order_relaxed);
+    return orig(node, force);
+  }
+  if (!fg) return orig(node, force);
   Tune tune = SnapshotTune();
   if (!CurrentWorld(epoch) || !ready || !tune.enabled || skse::IsVr())
     return orig(node, force);
   // Globally off, and no NPC override can turn it on: skip the handle work.
-  const bool gaze_off = !tune.conversation_gaze || tune.gaze_strength <= 0;
+  const bool gaze_off = !tune.conversation_gaze ||
+                        (tune.gaze_strength <= 0 && !tune.gaze_behavior);
   if (gaze_off && !NpcOverridesActive()) return orig(node, force);
   const FaceActor known = FaceActorOf(fg);
   if (!known.handle || known.handle != PartnerHandle())
@@ -2872,8 +3211,9 @@ uint64_t GazeMorphs(ApplyMorphsFn orig, uint8_t* node, uint8_t force,
       FaceExternallyOwned(actor.get()) || !NpcAllowed(actor.get()))
     return orig(node, force);
   tune = NpcSharedTune(std::move(tune), actor.get());
-  if (!tune.conversation_gaze || tune.gaze_strength <= 0)
-    return orig(node, force);
+  const bool speech_gaze = tune.conversation_gaze && tune.gaze_strength > 0;
+  const bool behavior = tune.conversation_gaze && tune.gaze_behavior;
+  if (!speech_gaze && !behavior) return orig(node, force);
   // Use the priority-resolved target: scripts/packages can override dialogue.
   auto* process =
       reinterpret_cast<uint8_t*>(reinterpret_cast<RE::Actor*>(actor.get())
@@ -2884,11 +3224,22 @@ uint64_t GazeMorphs(ApplyMorphsFn orig, uint8_t* node, uint8_t force,
   if (!process || !get_target) return orig(node, force);
   uint32_t target_handle = 0;
   get_target(process, &target_handle);
-  ScopedReference target(target_handle);
-  if (!target.get() || !IsPlayer(target.get())) return orig(node, force);
+  // The partner looks at the player, or at what we turned their head to.
+  const uint32_t own_ref =
+      gaze_head_actor == known.handle ? gaze_head_ref.load() : 0;
+  const bool on_own = behavior && own_ref && target_handle == own_ref;
+  ScopedReference target(on_own ? 0 : target_handle);
+  uint8_t* const player = on_own                                   ? PlayerRef()
+                          : target.get() && IsPlayer(target.get()) ? target.get()
+                                                                   : nullptr;
+  if (!player) return orig(node, force);
   skse::ScopedFaceLock face_guard(
       reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->lock);
   float offset[2] = {};
+  a2f::GazeLine gaze_line{};
+  std::shared_ptr<const std::vector<a2f::GazeBeat>> beats;
+  const FaceTune face =
+      NpcFaceTune(tune, actor.get(), IsFemale(actor.get()), false);
   {
     ScopedLock guard(lock, ScopedLock::kShared);
     auto it = playing.find(fg);
@@ -2901,14 +3252,26 @@ uint64_t GazeMorphs(ApplyMorphsFn orig, uint8_t* node, uint8_t force,
         const a2f::Line& line = *p.entry->line;
         // The sampled frame includes playback sync; fade in on that same
         // clock so late starts do not jump when the sync slider is nonzero.
-        const float ready_frame =
-            (p.ready_at +
-             NpcFaceTune(tune, actor.get(), p.female, false).time_offset) *
-            line.fps;
-        a2f::GazeOffset(line, p.direct_frame, ready_frame, tune.gaze_strength,
-                        offset);
+        const float ready_frame = (p.ready_at + face.time_offset) * line.fps;
+        if (speech_gaze)
+          a2f::GazeOffset(line, p.direct_frame, ready_frame,
+                          tune.gaze_strength, offset);
+        beats = p.entry->beats;
+        gaze_line = {reinterpret_cast<uint64_t>(p.entry.get()),
+                     p.direct_frame / line.fps, line.frames / line.fps,
+                     beats.get()};
       }
     }
+  }
+  if (behavior) {
+    a2f::GazeSettings gaze;
+    gaze.player_odds = face.gaze_odds;
+    gaze.away = a2f::GazeAwayFromHold(face.gaze_hold);
+    gaze.rest_seconds = face.gaze_rest;
+    gaze.settle_seconds = face.gaze_settle;
+    gaze.turn_head = tune.gaze_turn_head;
+    DirectGaze(node, player, known.handle, gaze_line.id ? &gaze_line : nullptr,
+               gaze, tune.gaze_avoid_camera, own_ref, on_own, offset);
   }
   auto& mods = (reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->modifier3);
   constexpr uint32_t kNeededMods = a2f::kFirstGazeMorph + a2f::kNumGazeMorphs;
@@ -3007,6 +3370,9 @@ __declspec(noinline) uint64_t ApplyMorphsHook(uint8_t* node, uint8_t force) {
       (reinterpret_cast<RE::BSFaceGenNiNode*>(node)->GetRuntimeData().flags &
        1);
   uint64_t r = GazeMorphs(orig, node, force, reset, epoch);
+  // The engine rebuilt the shapes it has base vertices for; do the unlisted
+  // ones.
+  if (reset && CurrentWorld(epoch)) ResetUnlisted(node);
   if (direct && CurrentWorld(epoch)) AddDirect(node, reset);
   return r;
 }
@@ -3024,7 +3390,6 @@ std::atomic<bool> startup_data_loaded{false}, worker_started{false};
 // Menu has been seen to close and neither that nor the Main Menu is open.
 // Menus merely reading closed is not enough: the Loading Menu may not have
 // opened yet. Existing-save startup and the worker's lifetime are unchanged.
-skse::SKSETaskInterface* startup_tasks = nullptr;
 // The world a new game armed startup for, the armed world whose Loading Menu
 // has closed, and the world of the task in flight; 0: none.
 std::atomic<uint64_t> new_game_start_epoch{0}, new_game_loaded_epoch{0},
@@ -3176,6 +3541,11 @@ void OnMessage(skse::SKSEMessage* m) {
                                  "entry; native lips retained");
   }
   if (m->type != skse::kMessageDataLoaded) return;
+  // Both write the conversation partner's eyes; nothing arbitrates.
+  if (GetModuleHandleA("FourthWall.dll"))
+    skse::Report("The Fourth Wall (FourthWall.dll) is loaded. It is not "
+                 "compatible with Better Facial Animations' gaze: remove it, "
+                 "or untick Enable improved eye gaze.");
   LoadExpressiveFaces();
   LoadHeadPartTypes();  // before the worker, which turns Direct on
   LoadSceneFactions();
@@ -3244,8 +3614,7 @@ void StartPlayerSpeech(PlayerSpeechPtr speech) {
   if (!speech || speech->stopped || !CurrentWorld(epoch)) return;
   const Tune tune = SnapshotTune();
   if (!ready || !tune.enabled || !tune.player) return;
-  const auto address = Addr(kIdPlayer);
-  auto* actor = address ? *reinterpret_cast<uint8_t**>(address) : nullptr;
+  uint8_t* const actor = PlayerRef();
   if (!SpeakerOk(actor)) return;
   std::string stem;
   if (!VoiceStem(("Sound/" + speech->path).c_str(), stem)) return;
