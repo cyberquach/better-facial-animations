@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <span>
 #include <string>
 #include <utility>
 
@@ -868,17 +869,20 @@ bool RenderProcessingDevice(const Tune& tune, bool emotion = false) {
   return changed;
 }
 
+// One dropdown row. A row without its own tip shows that of the setting
+// named by tip_key.
 struct ModelOption {
   const char* name;
   int id;
   const char* tip;
+  const char* tip_key = nullptr;
 };
 constexpr ModelOption kEmotionOptions[] = {
-    {"Disabled", 0,
+    {"Disabled", kEmotionDisabled,
      "No voice-driven emotion is added. The Audio2Emotion session is unloaded "
      "after any current inference finishes, freeing its model memory. "
      "Authored scene emotion and Audio2Face lip-sync remain available."},
-    {"Full", 1,
+    {"Full", kEmotionFull,
      "The full Audio2Emotion model analyzes each spoken line to supply emotion "
      "to Audio2Face. Use this for dialogue beyond the Performance training "
      "corpus, including unfamiliar quest mods. It does not guarantee correct "
@@ -887,7 +891,7 @@ constexpr ModelOption kEmotionOptions[] = {
      "is not required. Audio2Emotion has its own processing device dropdown. "
      "Typically needs about 600 MB of additional VRAM on GPU, plus processing "
      "time. CPU uses system RAM and adds CPU work."},
-    {"Performance", 2,
+    {"Performance", kEmotionPerformance,
      "Enabled by default. Experimental model designed to memorize the Full "
      "model's answers for "
      "the dialogue used in training. It is not trained to reliably handle "
@@ -902,7 +906,7 @@ constexpr ModelOption kEmotionOptions[] = {
      "inference buffers. The bundled checkpoint is still experimental. "
      "Choose Full when coverage of unfamiliar dialogue matters."}};
 constexpr ModelOption kFaceOptions[] = {
-    {"Disabled", 0,
+    {"Disabled", kFaceDisabled,
      "Use the game's own facial animation and lip-sync. BFA stops generating "
      "animations and unloads both inference sessions after current work "
      "returns. Your Audio2Emotion selection is remembered for when you "
@@ -913,39 +917,44 @@ constexpr ModelOption kFaceOptions[] = {
      "model in RTX 4070 GPU tests; speed varies by system and dialogue. "
      "About 250 MB of VRAM on GPU. Switches live; already playing lines "
      "finish with their current animation."},
-    {"Performance", a2f::kNetPerformance, nullptr},
-    {"Ultra Performance", a2f::kNetUltraPerformance, nullptr},
-    {"Legacy", a2f::kNetV2, nullptr}};
+    {"Performance", a2f::kNetPerformance, nullptr, "UsePerformanceModel"},
+    {"Ultra Performance", a2f::kNetUltraPerformance, nullptr,
+     "UseUltraPerformanceModel"},
+    {"Legacy", a2f::kNetV2, nullptr, "UseOldModel"}};
 
-const char* FaceOptionTip(const ModelOption& option) {
+const char* OptionTip(const ModelOption& option) {
   if (option.tip) return option.tip;
-  const char* key = option.id == a2f::kNetV2 ? "UseOldModel"
-                    : option.id == a2f::kNetUltraPerformance
-                        ? "UseUltraPerformanceModel"
-                        : "UsePerformanceModel";
-  for (const Param& param : kParams)
-    if (!strcmp(param.key, key)) return param.tip;
+  if (option.tip_key)
+    for (const Param& param : kParams)
+      if (!strcmp(param.key, option.tip_key)) return param.tip;
   return "";
 }
 
-bool RenderModelChoice(const char* label, const ModelOption* options,
-                       size_t count, int selected, bool emotion,
-                       float width = 300, bool label_above = false) {
-  const ModelOption* current = &options[0];
-  for (size_t i = 0; i < count; ++i)
-    if (options[i].id == selected) current = &options[i];
-  const auto help = [&](const ModelOption& option) {
-    return emotion ? option.tip : FaceOptionTip(option);
+// Whether an Audio2Emotion row's model is installed.
+bool EmotionOptionAvailable(const ModelOption& option) {
+  return option.id == kEmotionDisabled ||
+         (option.id == kEmotionPerformance
+              ? config.performance_sentiment_available
+              : config.sentiment_available);
+}
+
+// Every row of options is offered; the first is shown for a selection that
+// none of them names.
+bool RenderModelChoice(const char* label, std::span<const ModelOption> options,
+                       int selected, bool emotion, float width = 300,
+                       bool label_above = false) {
+  const ModelOption* current = &options.front();
+  for (const ModelOption& option : options)
+    if (option.id == selected) current = &option;
+  const auto help = [](const ModelOption& option) { return OptionTip(option); };
+  const auto installed = [&](const ModelOption& option) {
+    return !emotion || EmotionOptionAvailable(option);
   };
   if (!ig.BeginCombo || !ig.EndCombo || !ig.Selectable) {
     // Older Menu Framework without combos: one checkbox per option.
     ig.Text("%s", label);
-    for (size_t i = 0; i < count; ++i) {
-      const auto& option = options[i];
-      const bool available =
-          !emotion || !option.id ||
-          (option.id == 2 ? config.performance_sentiment_available
-                          : config.sentiment_available);
+    for (const ModelOption& option : options) {
+      const bool available = installed(option);
       bool on = selected == option.id;
       const std::string row = std::string(option.name) +
                               (available ? "" : " (not installed)") + "##" +
@@ -970,15 +979,11 @@ bool RenderModelChoice(const char* label, const ModelOption* options,
       label_above ? std::string("##") + label : label;
   const bool open = ig.BeginCombo(widget_label.c_str(), current->name, 0);
   // BeginCombo leaves the selected field as the last item, including when open.
-  Tip(options, help(*current));
+  Tip(options.data(), help(*current));
   bool changed = false;
   if (open) {
-    for (size_t i = 0; i < count; ++i) {
-      const auto& option = options[i];
-      const bool available =
-          !emotion || !option.id ||
-          (option.id == 2 ? config.performance_sentiment_available
-                          : config.sentiment_available);
+    for (const ModelOption& option : options) {
+      const bool available = installed(option);
       const std::string row = std::string(option.name) +
                               (available ? "" : " (not installed)") + "##" +
                               label;
@@ -1030,9 +1035,8 @@ bool RenderModels(const Tune& tune) {
       "Hover over a selected model or an option to compare resources and "
       "tradeoffs.");
   Space();
-  bool changed = RenderModelChoice("Audio2Face", kFaceOptions, 4,
-                                   tune.enabled ? tune.SelectedModel() : 0,
-                                   false, -1, true);
+  bool changed = RenderModelChoice("Audio2Face", kFaceOptions,
+                                   tune.FaceChoice(), false, -1, true);
   Space(12);
   changed |= RenderProcessingDevice(tune);
 
@@ -1049,9 +1053,8 @@ bool RenderModels(const Tune& tune) {
                               : (available.x > 0 ? available.x : 300);
   if (columns) ig.BeginGroup();
   changed |= RenderModelChoice(
-      "Audio2Emotion", kEmotionOptions, 3,
-      tune.sentiment_analysis ? (tune.performance_sentiment ? 2 : 1) : 0, true,
-      width, true);
+      "Audio2Emotion", kEmotionOptions, tune.SelectedEmotion(), true, width,
+      true);
   if (columns) {
     ig.EndGroup();
     ig.SameLine(0, gap);

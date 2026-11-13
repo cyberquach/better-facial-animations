@@ -102,6 +102,7 @@ bool Slider(const char* label, float* value, float, float, const char*, int) {
   return true;
 }
 std::string device_preview, hover_target, last_label;
+std::string face_preview;
 std::string current_combo;
 std::map<std::string, std::vector<std::string>> device_options;
 bool combo_open = false;
@@ -111,6 +112,7 @@ bool BeginCombo(const char* label, const char* preview, int) {
   last_label = label;
   last_item_disabled = false;
   if (!strcmp(label, "##Processing device")) device_preview = preview;
+  if (!strcmp(label, "##Audio2Face")) face_preview = preview;
   return combo_open;
 }
 bool Selectable(const char* label, bool, int, bfa::ImVec2) {
@@ -254,7 +256,7 @@ int main() {
   combo_open = true;
   CHECK(SnapshotTune().sentiment_analysis &&
         SnapshotTune().performance_sentiment);
-  SelectEmotionOption(0);
+  SelectEmotionOption(kEmotionDisabled);
   config.performance_sentiment_available = false;
   click = "Performance (not installed)##Audio2Emotion";
   RenderMenu();
@@ -272,6 +274,24 @@ int main() {
   click = "V3##Audio2Face";
   RenderMenu();
   CHECK(SnapshotTune().enabled && SnapshotTune().sentiment_analysis);
+  // Every Audio2Face model is offered and is named when selected, however
+  // it was chosen (6.1.1 listed four of five, and showed Legacy as Disabled).
+  for (const ModelOption& option : kFaceOptions) {
+    click = std::string(option.name) + "##Audio2Face";
+    RenderMenu();
+    CHECK(SnapshotTune().FaceChoice() == option.id);
+    click.clear();
+    RenderMenu();
+    CHECK(face_preview == option.name);
+  }
+  SelectFaceOption(kFaceDisabled);
+  SetSelectedModel(a2f::kNetV2);
+  SelectFaceOption(a2f::kNetV2);
+  RenderMenu();
+  CHECK(face_preview == "Legacy");
+  click = "V3##Audio2Face";
+  RenderMenu();
+  CHECK(SnapshotTune().SelectedModel() == a2f::kNetV3);
   config.sentiment_available = true;
   click = "Full##Audio2Emotion";
   RenderMenu();
@@ -293,7 +313,8 @@ int main() {
   tooltip.clear();
   for (int frame = 0; frame < 12; ++frame) {
     menu_time += .05;
-    RenderModelChoice("Audio2Emotion", kEmotionOptions, 3, 2, true);
+    RenderModelChoice("Audio2Emotion", kEmotionOptions, kEmotionPerformance,
+                      true);
   }
   std::replace(tooltip.begin(), tooltip.end(), '\n', ' ');
   CHECK(tooltip.find("memorize") != std::string::npos);
@@ -303,7 +324,8 @@ int main() {
   tooltip.clear();
   for (int frame = 0; frame < 12; ++frame) {
     menu_time += .05;
-    RenderModelChoice("Audio2Emotion", kEmotionOptions, 3, 2, true);
+    RenderModelChoice("Audio2Emotion", kEmotionOptions, kEmotionPerformance,
+                      true);
   }
   std::replace(tooltip.begin(), tooltip.end(), '\n', ' ');
   CHECK(tooltip.find("AMD and NVIDIA") != std::string::npos);

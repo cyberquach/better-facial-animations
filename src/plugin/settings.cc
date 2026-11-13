@@ -806,14 +806,15 @@ void SetSelectedModel(int network) {
 
 void SelectFaceOption(int network) {
   ScopedLock guard(settings_lock);
-  tune.enabled = network != 0;
-  if (network) tune.SelectModel(network);
+  tune.enabled = network != kFaceDisabled;
+  if (tune.enabled) tune.SelectModel(network);
 }
 
 void SelectEmotionOption(int model) {
   ScopedLock guard(settings_lock);
-  tune.sentiment_analysis = model != 0;
-  if (model) tune.performance_sentiment = model == 2;
+  tune.sentiment_analysis = model != kEmotionDisabled;
+  if (tune.sentiment_analysis)
+    tune.performance_sentiment = model == kEmotionPerformance;
 }
 
 bool SentimentAvailable(const Tune& selected) {

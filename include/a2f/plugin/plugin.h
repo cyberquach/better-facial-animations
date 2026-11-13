@@ -36,6 +36,15 @@ struct ModelInfo {
 };
 const ModelInfo& ModelFor(int network);
 
+// Audio2Face menu choice: kFaceDisabled or an a2f::kNet* network.
+constexpr int kFaceDisabled = 0;
+// Audio2Emotion menu choice.
+enum EmotionChoice : int {
+  kEmotionDisabled = 0,
+  kEmotionFull = 1,
+  kEmotionPerformance = 2,  // experimental student
+};
+
 struct Config {  // fixed after load
   bool performance_sentiment_available = false;
   bool sentiment_available = false;  // optional model found at settings load
@@ -110,6 +119,13 @@ struct Tune {  // menu; defaults as dist/BetterFacialAnimations.ini
     performance_model = network == a2f::kNetPerformance;
     ultra_performance_model = network == a2f::kNetUltraPerformance;
     old_model = network == a2f::kNetV2;
+  }
+  // The menu's current choices (see SelectFaceOption, SelectEmotionOption).
+  int FaceChoice() const { return enabled ? SelectedModel() : kFaceDisabled; }
+  int SelectedEmotion() const {
+    return !sentiment_analysis     ? kEmotionDisabled
+           : performance_sentiment ? kEmotionPerformance
+                                   : kEmotionFull;
   }
   bool force_cpu = false;
   int gpu_adapter = 0;  // remembered while CPU is selected
@@ -189,9 +205,9 @@ extern const size_t kNumParams;
 
 // Puts the selection back to network, e.g. after a switch failed.
 void SetSelectedModel(int network);
-// 0 disables output while retaining the last facial model.
+// kFaceDisabled disables output while retaining the last facial model.
 void SelectFaceOption(int network);
-// 0 Disabled, 1 Full, 2 Performance (experimental student).
+// An EmotionChoice; kEmotionDisabled retains the last emotion model.
 void SelectEmotionOption(int model);
 bool SentimentAvailable(const Tune& tune);
 
