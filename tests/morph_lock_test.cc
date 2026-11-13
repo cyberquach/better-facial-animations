@@ -3,9 +3,10 @@
 // lock from before the engine's ApplyMorphs (which resets the vertices) until
 // its own deltas are in. A release in between let the render thread copy a
 // frame without the pose: a random one-frame flicker on speaking faces.
-// A head with a static (non-dynamic) part that carries base and morph vertices
-// never reaches the engine's ApplyMorphs: its morph kernel locks that part's
-// dynamic data without checking that the part is dynamic.
+// A static (non-dynamic) head part that carries base and morph vertices is
+// hidden from the engine's ApplyMorphs (no extra data during the call): its
+// morph kernel locks that part's dynamic data without checking that the part
+// is dynamic. The rest of the head is still morphed.
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -41,6 +42,7 @@ int orig_depth[kShapes]{}, lookup_depth = 99;
 bool orig_done = false, in_hook = false, released_in_gap = false,
      face_owned_in_orig = false;
 uint32_t face_count_in_orig = 0;
+int plain_extras_in_orig = -1;
 
 int Index(uint8_t* s) {
   for (int i = 0; i < kShapes; ++i)
@@ -71,6 +73,7 @@ void Update(uint8_t* s, const float* xyz, bool) {
 uint64_t Morph(uint8_t* n, uint8_t force) {
   CHECK((n == node.data() || n == node2.data()) && force == 1);
   ++orig_calls;
+  plain_extras_in_orig = Field<uint16_t>(plain.data(), 0x28);
   auto* f = Field<uint8_t*>(n, 0x150);
   face_owned_in_orig = Field<uint32_t>(f, 0x220) == GetCurrentThreadId();
   face_count_in_orig = Field<uint32_t>(f, 0x224);
@@ -205,7 +208,7 @@ void NotReady() {
   Count();
 }
 // The static child gains base vertices, then morph data.
-void StaticMorphPartSkipsEngine() {
+void StaticMorphPartHiddenFromEngine() {
   plain[0x150] = 3;  // BSTriShape
   Field<const char*>(plain.data(), 0x10) = FixtureString("FemaleEyes");
   Field<const char*>(plain_fod.data(), 0x10) = FixtureString("FOD");
@@ -216,15 +219,18 @@ void StaticMorphPartSkipsEngine() {
   // base vertices alone: the engine skips the shape itself
   CHECK(!StaticMorphPart(node.data()));
   Run(node.data());
+  CHECK(plain_extras_in_orig == 1);
   plain_morphs = true;
   CHECK(!std::strcmp(StaticMorphPart(node.data()), "FemaleEyes"));
   Play(fg.data());
   for (bool is_ready : {true, false}) {
     ready = is_ready;
-    Reset();
-    CHECK(ApplyMorphsHook(node.data(), 1) == 0);
-    CHECK(orig_calls == 0 && lock_calls == 0 && lookups == 0);
-    CHECK(Field<uint32_t>(fg.data(), 0x224) == 0);
+    // the engine and the hooks behind this one still run, on a head whose
+    // static part shows no base or morph vertices; then the part has them back
+    Run(node.data());
+    CHECK(plain_extras_in_orig == 0);
+    CHECK(Field<uint16_t>(plain.data(), 0x28) == 1);
+    CHECK(!std::strcmp(StaticMorphPart(node.data()), "FemaleEyes"));
   }
   ready = true;
   // a head without such a part is unaffected
@@ -248,6 +254,6 @@ int main() {
   OtherFaceWhilePlaying();
   NothingPlaying();
   NotReady();
-  StaticMorphPartSkipsEngine();
+  StaticMorphPartHiddenFromEngine();
   puts("ok: face and shape locks span the morph reset and the deltas");
 }

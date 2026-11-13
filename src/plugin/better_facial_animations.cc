@@ -1517,8 +1517,9 @@ DWORD WINAPI Worker(void*) {
 // (looked up by return address), so a plugin that patches a site after us is
 // chained.
 template <typename Fn>
-Fn SiteOrig(void* ret, skse::Rel callee_id) {
-  return call_sites::Orig<Fn>(ret, reinterpret_cast<void*>(Addr(callee_id)));
+Fn SiteOrig(void* ret, Fn hook, skse::Rel callee_id) {
+  return call_sites::Orig<Fn>(ret, reinterpret_cast<void*>(hook),
+                              reinterpret_cast<void*>(Addr(callee_id)));
 }
 IMAGE_NT_HEADERS* NtHeaders(uint64_t base) {
   return reinterpret_cast<IMAGE_NT_HEADERS*>(
@@ -1826,7 +1827,7 @@ __declspec(noinline) float SpeakHook(uint8_t* actor, const char* voice,
                                      uint64_t a7, uint64_t a8, uint64_t a9,
                                      uint64_t a10, uint64_t a11, uint64_t a12,
                                      uint64_t a13, uint64_t a14) {
-  auto orig = SiteOrig<SpeakFn>(_ReturnAddress(), kIdSpeakVoiceLine);
+  auto orig = SiteOrig(_ReturnAddress(), &SpeakHook, kIdSpeakVoiceLine);
   const uint64_t epoch = world_epoch;
   SpeechCallScope scope;
   float dur = orig(actor, voice, handle, emo_type, emo_value, a6, a7, a8, a9,
@@ -1860,7 +1861,7 @@ __declspec(noinline) uint8_t* ResponseHook(uint8_t* self, void* topic,
                                            void* info, uint8_t* speaker,
                                            void* response) {
   auto orig =
-      SiteOrig<ResponseCtorFn>(_ReturnAddress(), kIdDialogueResponseCtor);
+      SiteOrig(_ReturnAddress(), &ResponseHook, kIdDialogueResponseCtor);
   const uint64_t epoch = world_epoch;
   uint8_t* r = orig(self, topic, info, speaker, response);
   if (!CurrentWorld(epoch)) return r;
@@ -2577,7 +2578,7 @@ bool InstallFaceNodeUpdateHook() {
 // recompute of the face keyframes (ID 26598) -- writing earlier would be
 // overwritten. Returns "changed" so the morphs are re-applied.
 __declspec(noinline) bool AnimUpdateHook(uint8_t* fg, float dt, uint64_t flag) {
-  auto orig = SiteOrig<AnimUpdateFn>(_ReturnAddress(), kIdFaceAnimUpdate);
+  auto orig = SiteOrig(_ReturnAddress(), &AnimUpdateHook, kIdFaceAnimUpdate);
   if (!FaceNeedsUpdate(fg)) return orig(fg, dt, flag);
   // Skyrim uses the global frame delta even for zero-time pose refreshes
   // (for example Fluid Motion's second pass). Still recompute the keyframes.
@@ -3337,21 +3338,24 @@ class ScopedShapeLocks {
 // plays, the face's lock (first, as GazeMorphs and AddDirect take it inside)
 // and the shape locks span the original and the deltas.
 __declspec(noinline) uint64_t ApplyMorphsHook(uint8_t* node, uint8_t force) {
-  auto orig = SiteOrig<ApplyMorphsFn>(_ReturnAddress(), kIdApplyMorphs);
+  auto orig = SiteOrig(_ReturnAddress(), &ApplyMorphsHook, kIdApplyMorphs);
   const uint64_t epoch = world_epoch;
   if (!CurrentWorld(epoch)) return orig(node, force);
-  // The original would crash on this head (StaticMorphPart), with or without
-  // the plugin playing it: leave the face unmorphed instead. Not during a
-  // load, when the hook reads nothing of the node.
+  // The original would crash on a static morph part (StaticMorphPart), with
+  // or without the plugin playing the head: hide such parts from it, so the
+  // rest of the face (and every hook behind this one) still gets its morphs.
+  // Not during a load, when the hook reads nothing of the node.
+  std::optional<ScopedStaticParts> hidden;
   if (const char* part = StaticMorphPart(node)) {
     static std::atomic<uint64_t> skipped;
     const uint64_t count = ++skipped;
     if (count <= 4 || (count & (count - 1)) == 0)
-      skse::Report("face morphs skipped (%llu): head part %s has morph data "
-                   "but is not a dynamic shape; the game would crash morphing "
-                   "it. Regenerate that NPC's face mesh.",
+      skse::Report("face part left unmorphed (%llu): head part %s has morph "
+                   "data but is not a dynamic shape; the game would crash "
+                   "morphing it. Regenerate that NPC's face mesh.",
                    static_cast<unsigned long long>(count), part);
-    return 0;
+    hidden.emplace(node);
+    if (!hidden->complete()) return 0;
   }
   const bool direct =
       ready && (num_playing || num_faces || PartnerHandle() != partner_handle);
@@ -3370,6 +3374,7 @@ __declspec(noinline) uint64_t ApplyMorphsHook(uint8_t* node, uint8_t force) {
       (reinterpret_cast<RE::BSFaceGenNiNode*>(node)->GetRuntimeData().flags &
        1);
   uint64_t r = GazeMorphs(orig, node, force, reset, epoch);
+  hidden.reset();
   // The engine rebuilt the shapes it has base vertices for; do the unlisted
   // ones.
   if (reset && CurrentWorld(epoch)) ResetUnlisted(node);

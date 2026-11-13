@@ -54,6 +54,27 @@ void ResetUnlisted(uint8_t* node);
 // weight.
 const char* StaticMorphPart(uint8_t* node);
 
+// For its lifetime the node's static morph parts (StaticMorphPart) show no
+// extra data, so the engine's ApplyMorphs passes them over (it looks their
+// base and morph vertices up there) and morphs the rest of the head. The
+// engine could not have morphed them anyway. complete(): every such part is
+// hidden; otherwise the engine must not be called.
+class ScopedStaticParts {
+ public:
+  explicit ScopedStaticParts(uint8_t* node);
+  ~ScopedStaticParts();
+  ScopedStaticParts(const ScopedStaticParts&) = delete;
+  ScopedStaticParts& operator=(const ScopedStaticParts&) = delete;
+  bool complete() const { return complete_; }
+
+ private:
+  static constexpr int kMax = 8;
+  uint8_t* shapes_[kMax];
+  uint16_t sizes_[kMax];
+  int count_ = 0;
+  bool complete_ = true;
+};
+
 // The node's head mapping and its state (failed: not mappable). On first
 // sight reads the shapes and their morphs here, where the engine has the
 // node, and queues the build.
