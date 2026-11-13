@@ -111,7 +111,7 @@
         "a played face's lock and every dynamic face shape's lock are held from before the engine's ApplyMorphs reset until the deltas pass has run (no release in the gap the render thread could copy)",
         "the engine's own per-shape locking nests under the hook's; non-dynamic children are never locked",
         "faces the plugin does not play, nothing playing and a not-ready plugin take no locks",
-        "a head with a static part that has base and morph vertices skips the engine's ApplyMorphs (its kernel would lock null dynamic data); base vertices alone, dynamic parts and other heads still reach it"
+        "a static head part that has base and morph vertices is hidden from the engine's ApplyMorphs for the call (its kernel would lock null dynamic data) and restored after; the rest of that head, base vertices alone, dynamic parts and other heads still reach the engine"
       ]
     },
     {
@@ -305,7 +305,9 @@
       ],
       "covers": [
         "shared native call sites",
-        "synthetic other-plugin hooks"
+        "synthetic other-plugin hooks",
+        "a plugin that patches a site late and calls the hook from its own code still reaches the plugins chained behind",
+        "no single site for such a caller, or its original is the caller: the callee, no loop"
       ]
     },
     {
