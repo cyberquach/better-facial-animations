@@ -9,7 +9,7 @@
 
 // Call-site hooks: a `call rel32` in the game is redirected through a thunk
 // to a hook, and each site keeps its own original target (looked up by the
-// hook from its return address).
+// hook from its return address, see Orig()).
 //
 // Another plugin may patch the same site after us and keep our thunk as its
 // original. Retake() puts our hook back in front of that plugin and points
@@ -80,14 +80,35 @@ inline bool Hook(uint64_t at, void* hook, const char* what,
   return true;
 }
 
-// Original target of the site that called a hook; `fallback` (the callee
+// Original target of the site that called `hook`; `fallback` (the callee
 // itself) for unknown callers.
+//
+// A plugin that patches a site after Retake() may call the thunk it kept as
+// its original instead of jumping to it: the return address is then inside
+// that plugin. The site is the one of this hook that no longer calls its
+// thunk while the thunk still reaches the hook. Its original is used only
+// when it is the single answer and not the plugin now at the site, which
+// would come back into the hook.
 template <typename Fn>
-Fn Orig(void* ret, void* fallback) {
+Fn Orig(void* ret, void* hook, void* fallback) {
   for (int i = 0; i < num_sites; ++i)
     if (sites[i].at + 5 == reinterpret_cast<uint64_t>(ret))
       return reinterpret_cast<Fn>(sites[i].orig);
-  return reinterpret_cast<Fn>(fallback);
+  void* orig = nullptr;
+  for (int i = 0; i < num_sites; ++i) {
+    const Site& s = sites[i];
+    if (s.hook != hook || *reinterpret_cast<void**>(s.thunk + 8) != hook)
+      continue;
+    if (*reinterpret_cast<uint8_t*>(s.at) == 0xE8) {
+      const uint64_t target = CallTarget(s.at);
+      if (target == reinterpret_cast<uint64_t>(s.thunk)) continue;
+      if (target == reinterpret_cast<uint64_t>(s.orig))
+        return reinterpret_cast<Fn>(fallback);
+    }
+    if (orig && orig != s.orig) return reinterpret_cast<Fn>(fallback);
+    orig = s.orig;
+  }
+  return reinterpret_cast<Fn>(orig ? orig : fallback);
 }
 
 enum class Retaken {

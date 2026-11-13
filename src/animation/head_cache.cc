@@ -386,23 +386,57 @@ void ResetUnlisted(uint8_t* node) {
   }
 }
 
+namespace {
+// A child with base vertices and morph data that is no BSDynamicTriShape.
+// Base vertices first: only face geometry has them, so the type is not read
+// from a child that is no geometry.
+bool IsStaticMorphPart(uint8_t* shape) {
+  uint32_t nv = 0;
+  return shape && BaseVerts(shape, nv) &&
+         reinterpret_cast<RE::BSGeometry*>(shape)->GetType().underlying() !=
+             4 &&
+         Engine<MorphDataFn, kIdMorphData>()(shape);
+}
+}  // namespace
+
 const char* StaticMorphPart(uint8_t* node) {
   const auto& children = reinterpret_cast<RE::NiNode*>(node)->GetChildren();
   const auto* kids = children.begin();
   const uint16_t n = children.free_idx();
   for (uint16_t i = 0; kids && i < n; ++i) {
     auto* shape = reinterpret_cast<uint8_t*>(kids[i].get());
-    uint32_t nv = 0;
-    // Base vertices first: only face geometry has them, so the type is not
-    // read from a child that is no geometry.
-    if (!shape || !BaseVerts(shape, nv) ||
-        reinterpret_cast<RE::BSGeometry*>(shape)->GetType().underlying() == 4 ||
-        !Engine<MorphDataFn, kIdMorphData>()(shape))
-      continue;
+    if (!IsStaticMorphPart(shape)) continue;
     const char* name = reinterpret_cast<RE::NiObjectNET*>(shape)->name.c_str();
     return name ? name : "";
   }
   return nullptr;
+}
+
+ScopedStaticParts::ScopedStaticParts(uint8_t* node) {
+  const auto& children = reinterpret_cast<RE::NiNode*>(node)->GetChildren();
+  const auto* kids = children.begin();
+  const uint16_t n = children.free_idx();
+  for (uint16_t i = 0; kids && i < n; ++i) {
+    auto* shape = reinterpret_cast<uint8_t*>(kids[i].get());
+    if (!IsStaticMorphPart(shape)) continue;
+    if (count_ == kMax) {
+      complete_ = false;
+      return;
+    }
+    uint16_t& size = reinterpret_cast<RE::NiObjectNET*>(shape)->extraDataSize;
+    shapes_[count_] = shape;
+    sizes_[count_++] = size;
+    size = 0;
+  }
+}
+
+ScopedStaticParts::~ScopedStaticParts() {
+  for (int i = 0; i < count_; ++i) {
+    uint16_t& size =
+        reinterpret_cast<RE::NiObjectNET*>(shapes_[i])->extraDataSize;
+    // unless something gave the part extra data meanwhile
+    if (!size) size = sizes_[i];
+  }
 }
 
 namespace {
