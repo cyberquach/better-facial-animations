@@ -7,6 +7,7 @@
 !/build.sh
 !/VERSION
 !/README.md
+!/CHANGELOG.md
 !/LICENSE
 !/.gitignore
 !/.clang-format
@@ -14,6 +15,7 @@
 /tools/*
 !/tools/*.py
 !/tools/training/
+/tools/training/**/*.pt
 !/tools/face_audit/
 **/__pycache__/
 

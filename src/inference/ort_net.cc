@@ -478,17 +478,24 @@ class OrtNet3 : public Net {
                                             {1, kNumIdentity3},
                                             {1, kFrames3, kNumMod},
                                             {2, 2, 1, 256}};
-    static const size_t kRanks[kIn] = {2, 2, 3, 4};
-    static const size_t kSizes[kIn] = {kWindow3, kNumIdentity3,
-                                       kFrames3 * kNumMod, kState3};
-    static const char* const kInNames[kIn] = {"window", "identity", "emotion",
-                                              "input_latents"};
-    static const char* const kOutNames[kOut] = {"skin_latent", "tongue_latent",
-                                                "jaw_eyes", "output_latents"};
-    const float* data[kIn] = {window, identity, emotion, state};
-    float* dst[kOut] = {skin, tongue, jaw_eyes, next_state};
-    const size_t out_size[kOut] = {kFrames3 * kLatent3, kFrames3 * kLatent3,
-                                   kFrames3 * kJawEyes3, kState3};
+    static const size_t kRanks[] = {2, 2, 3, 4};
+    static_assert(std::size(kRanks) == kIn);
+    static const size_t kSizes[] = {kWindow3, kNumIdentity3, kFrames3 * kNumMod,
+                                    kState3};
+    static_assert(std::size(kSizes) == kIn);
+    static const char* const kInNames[] = {"window", "identity", "emotion",
+                                           "input_latents"};
+    static_assert(std::size(kInNames) == kIn);
+    static const char* const kOutNames[] = {"skin_latent", "tongue_latent",
+                                            "jaw_eyes", "output_latents"};
+    static_assert(std::size(kOutNames) == kOut);
+    const float* data[] = {window, identity, emotion, state};
+    static_assert(std::size(data) == kIn);
+    float* dst[] = {skin, tongue, jaw_eyes, next_state};
+    static_assert(std::size(dst) == kOut);
+    const size_t out_size[] = {kFrames3 * kLatent3, kFrames3 * kLatent3,
+                               kFrames3 * kJawEyes3, kState3};
+    static_assert(std::size(out_size) == kOut);
     OrtPtr<OrtValue> in[kIn];
     const OrtValue* ins[kIn] = {};
     for (int i = 0; i < kIn; ++i) {
@@ -541,19 +548,24 @@ class UltraPerformanceNet : public Net {
     const int64_t mel_shape[] = {1, kUltraPerformanceWindowFrames, kMelBins};
     const int64_t identity_shape[] = {1};
     const int64_t emotion_shape[] = {1, kUltraPerformanceWindowFrames, kNumMod};
-    const void* data[kNumInputs] = {mel, &identity, emotion};
-    const size_t bytes[kNumInputs] = {
+    const void* data[] = {mel, &identity, emotion};
+    static_assert(std::size(data) == kNumInputs);
+    const size_t bytes[] = {
         sizeof(float) * kUltraPerformanceWindowFrames * kMelBins,
         sizeof identity,
         sizeof(float) * kUltraPerformanceWindowFrames * kNumMod};
-    const int64_t* shapes[kNumInputs] = {mel_shape, identity_shape,
-                                         emotion_shape};
-    const size_t ranks[kNumInputs] = {3, 1, 3};
-    const ONNXTensorElementDataType types[kNumInputs] = {
+    static_assert(std::size(bytes) == kNumInputs);
+    const int64_t* shapes[] = {mel_shape, identity_shape, emotion_shape};
+    static_assert(std::size(shapes) == kNumInputs);
+    const size_t ranks[] = {3, 1, 3};
+    static_assert(std::size(ranks) == kNumInputs);
+    const ONNXTensorElementDataType types[] = {
         ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
         ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64,
         ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT};
-    const char* input_names[kNumInputs] = {"mel", "identity", "emotion"};
+    static_assert(std::size(types) == kNumInputs);
+    const char* input_names[] = {"mel", "identity", "emotion"};
+    static_assert(std::size(input_names) == kNumInputs);
     const char* output_names[] = {"normalized_motion"};
     OrtPtr<OrtValue> inputs[kNumInputs];
     const OrtValue* input_values[kNumInputs];
@@ -610,29 +622,41 @@ class PerformanceNet : public Net {
     const int64_t mel_shape[] = {1, kPerformanceWindowFrames, kMelBins};
     const int64_t scalar_shape[] = {1};
     const int64_t emotion_shape[] = {1, kPerformanceWindowFrames, kNumMod};
-    const int64_t state_shape[] = {6, 1, 4, kPerformanceMemoryFrames, 64};
-    const void* data[kNumInputs] = {mel, &identity, emotion, state.keys.data(),
-                                   state.values.data(), &state.frames};
-    const size_t bytes[kNumInputs] = {
-        sizeof(float) * kPerformanceWindowFrames * kMelBins, sizeof identity,
-        sizeof(float) * kPerformanceWindowFrames * kNumMod,
-        sizeof(float) * kPerformanceStateSize,
-        sizeof(float) * kPerformanceStateSize, sizeof state.frames};
-    const int64_t* shapes[kNumInputs] = {mel_shape,     scalar_shape,
-                                         emotion_shape, state_shape,
-                                         state_shape,   scalar_shape};
-    const size_t ranks[kNumInputs] = {3, 1, 3, 5, 5, 1};
-    const ONNXTensorElementDataType types[kNumInputs] = {
+    const int64_t state_shape[] = {kPerformanceLayers, 1, kPerformanceHeads,
+                                   kPerformanceMemoryFrames,
+                                   kPerformanceHeadDim};
+    const void* data[] = {mel,
+                          &identity,
+                          emotion,
+                          state.keys.data(),
+                          state.values.data(),
+                          &state.frames};
+    static_assert(std::size(data) == kNumInputs);
+    const size_t bytes[] = {sizeof(float) * kPerformanceWindowFrames * kMelBins,
+                            sizeof identity,
+                            sizeof(float) * kPerformanceWindowFrames * kNumMod,
+                            sizeof(float) * kPerformanceStateSize,
+                            sizeof(float) * kPerformanceStateSize,
+                            sizeof state.frames};
+    static_assert(std::size(bytes) == kNumInputs);
+    const int64_t* shapes[] = {mel_shape,   scalar_shape, emotion_shape,
+                               state_shape, state_shape,  scalar_shape};
+    static_assert(std::size(shapes) == kNumInputs);
+    const size_t ranks[] = {3, 1, 3, 5, 5, 1};
+    static_assert(std::size(ranks) == kNumInputs);
+    const ONNXTensorElementDataType types[] = {
         ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
         ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64,
         ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
         ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
         ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT,
         ONNX_TENSOR_ELEMENT_DATA_TYPE_INT64};
-    const char* input_names[kNumInputs] = {
-        "mel", "identity", "emotion", "past_k", "past_v", "past_frames"};
-    const char* output_names[kNumOutputs] = {"normalized_motion", "next_k",
-                                             "next_v"};
+    static_assert(std::size(types) == kNumInputs);
+    const char* input_names[] = {"mel",    "identity", "emotion",
+                                 "past_k", "past_v",   "past_frames"};
+    static_assert(std::size(input_names) == kNumInputs);
+    const char* output_names[] = {"normalized_motion", "next_k", "next_v"};
+    static_assert(std::size(output_names) == kNumOutputs);
     OrtPtr<OrtValue> inputs[kNumInputs];
     const OrtValue* input_values[kNumInputs];
     for (int i = 0; i < kNumInputs; ++i) {
@@ -1156,12 +1180,16 @@ bool AppendSharedProvider(const OrtDmlApi* dml, OrtSessionOptions* options,
 // A session of model on DirectML (selected adapter, with the driver's
 // metacommands or without) or the CPU, with the free dimensions dims fixed
 // (name, size): let DirectML plan one static shape (also 4x faster at batch
-// 1-2). False (with err, and out empty) when it cannot be made.
+// 1-2). graph_fusion (OrtOptions) false runs each node as its own DirectML
+// operator: the fused graph keeps more copies of the weights (Performance
+// 317 -> 184 MiB, 13% slower; V3 406 -> 268 MiB, 5% slower; Legacy
+// unchanged). False (with err, and out empty) when it cannot be made.
 using Dims = std::initializer_list<std::pair<const char*, int>>;
 bool CreateSession(const std::wstring& model, bool gpu, bool metacommands,
                    bool independent_device, const std::wstring& dll_dir,
                    Dims dims, Session& out, std::string& err,
-                   int gpu_adapter = 0, bool force_bundled_agility = false) {
+                   int gpu_adapter = 0, bool force_bundled_agility = false,
+                   bool graph_fusion = false) {
   Session s;
   s.independent = independent_device;
   const ScopedWrappers keep(s.wrappers);
@@ -1219,6 +1247,11 @@ bool CreateSession(const std::wstring& model, bool gpu, bool metacommands,
         Check(api->DisableMemPattern(so.get()), err, "mem pattern") &&
         Check(api->SetSessionExecutionMode(so.get(), ORT_SEQUENTIAL), err,
               "mode") &&
+        // read when the session is created (ORT 1.24 Initialize)
+        (graph_fusion ||
+         Check(api->AddSessionConfigEntry(so.get(),
+                                          "ep.dml.disable_graph_fusion", "1"),
+               err, "graph fusion")) &&
         Check(api->GetExecutionProviderApi(
                   "DML", ORT_API_VERSION, reinterpret_cast<const void**>(&dml)),
               err, "DML api");
@@ -1296,7 +1329,8 @@ std::string DescribeProvider(const OrtOptions& o) {
       !o.gpu
           ? ", CPU 2 threads"
           : ", DirectML device " + std::to_string(o.gpu_adapter) +
-                (o.metacommands ? ", metacommands on" : ", metacommands off");
+                (o.metacommands ? ", metacommands on" : ", metacommands off") +
+                (o.graph_fusion ? ", graph fusion on" : ", graph fusion off");
   if (o.gpu && o.independent_device)
     description += ", independent device, private compute queue";
   else if (o.gpu)
@@ -1314,7 +1348,7 @@ class OrtEmotionNet : public EmotionNet {
     std::vector<float> mel;
     if (performance_) EmotionFeatures(pcm, mel);
     const int64_t raw_shape[] = {1, kVoiceWindow};
-    const int64_t mel_shape[] = {1, 48, 188};
+    const int64_t mel_shape[] = {1, kVoiceMels, kVoiceMelFrames};
     const float* data = performance_ ? mel.data() : pcm;
     const size_t count = performance_ ? mel.size() : kVoiceWindow;
     OrtValue* input = nullptr;
@@ -1360,7 +1394,7 @@ std::unique_ptr<EmotionNet> CreateOrtEmotionNet(const std::wstring& dll_dir,
   if (!CreateSession(
           model, o.gpu, o.metacommands, o.independent_device, dll_dir,
           {{"batch_size", 1}, {"seq_len", kVoiceWindow}, {"batch", 1}}, session,
-          err, o.gpu_adapter, o.force_bundled_agility))
+          err, o.gpu_adapter, o.force_bundled_agility, o.graph_fusion))
     return nullptr;
   auto net = std::make_unique<OrtEmotionNet>(std::move(session), performance);
   std::vector<float> silence(kVoiceWindow);
@@ -1382,7 +1416,7 @@ std::unique_ptr<Net> CreateOrtNet(const std::wstring& dll_dir,
   if (!CreateSession(
           model, o.gpu, o.metacommands, o.independent_device, dll_dir,
           {{"input_dynamic_axes_1", batch}, {"emotion_dynamic_axes_1", batch}},
-          s, err, o.gpu_adapter, o.force_bundled_agility))
+          s, err, o.gpu_adapter, o.force_bundled_agility, o.graph_fusion))
     return nullptr;
   info = std::string("Audio2Face-3D v2.3, onnxruntime ") + version +
          DescribeProvider(o) + ", batch " + std::to_string(batch);
@@ -1409,7 +1443,8 @@ std::unique_ptr<Net> CreateUltraPerformanceNet(const std::wstring& dll_dir,
   if (!CreateSession(model, o.gpu, o.metacommands, o.independent_device,
                      dll_dir,
                      {{"batch", 1}, {"frames", kUltraPerformanceWindowFrames}},
-                     s, err, o.gpu_adapter, o.force_bundled_agility))
+                     s, err, o.gpu_adapter, o.force_bundled_agility,
+                     o.graph_fusion))
     return nullptr;
   auto net = std::make_unique<UltraPerformanceNet>(std::move(s));
   // One run now, as CreateOrtNet's.
@@ -1424,6 +1459,16 @@ std::unique_ptr<Net> CreateUltraPerformanceNet(const std::wstring& dll_dir,
   return net;
 }
 
+namespace {
+// 22359897 -> "22,359,897".
+std::string Grouped(int value) {
+  std::string digits = std::to_string(value);
+  for (int at = static_cast<int>(digits.size()) - 3; at > 0; at -= 3)
+    digits.insert(at, ",");
+  return digits;
+}
+}  // namespace
+
 std::unique_ptr<Net> CreatePerformanceNet(const std::wstring& dll_dir,
                                           const std::wstring& model,
                                           const OrtOptions& o, std::string& err,
@@ -1433,7 +1478,8 @@ std::unique_ptr<Net> CreatePerformanceNet(const std::wstring& dll_dir,
   if (!attempt.allowed()) return nullptr;
   Session s;
   if (!CreateSession(model, o.gpu, o.metacommands, o.independent_device,
-                     dll_dir, {{"batch", 1}}, s, err, o.gpu_adapter, o.force_bundled_agility))
+                     dll_dir, {{"batch", 1}}, s, err, o.gpu_adapter,
+                     o.force_bundled_agility, o.graph_fusion))
     return nullptr;
   auto net = std::make_unique<PerformanceNet>(std::move(s));
   // One run now, as CreateOrtNet's.
@@ -1444,9 +1490,8 @@ std::unique_ptr<Net> CreatePerformanceNet(const std::wstring& dll_dir,
   if (!attempt.Finish(net->RunPerformance(mel.data(), 0, emotion.data(),
                                           state, motion.data(), next, err)))
     return nullptr;
-  info =
-      std::string("Performance Block AttnRes, 4,008,025 parameters, 30 fps") +
-      DescribeProvider(o);
+  info = "Performance Block AttnRes, " + Grouped(kPerformanceParameters) +
+         " parameters, 30 fps" + DescribeProvider(o);
   return net;
 }
 
@@ -1464,7 +1509,8 @@ std::unique_ptr<Net> CreateOrtNet3(const std::wstring& dll_dir,
                       {"identity_dynamic_axes_1", 1},
                       {"emotion_dynamic_axes_1", 1},
                       {"input_latents_dynamic_axes_1", 1}},
-                     s, err, o.gpu_adapter, o.force_bundled_agility))
+                     s, err, o.gpu_adapter, o.force_bundled_agility,
+                     o.graph_fusion))
     return nullptr;
   info = std::string("Audio2Face-3D v3.0, onnxruntime ") + version +
          DescribeProvider(o);
@@ -1473,7 +1519,8 @@ std::unique_ptr<Net> CreateOrtNet3(const std::wstring& dll_dir,
   std::vector<float> x(kWindow3), emo(kFrames3 * kNumMod), state(kState3),
       skin(kFrames3 * kLatent3), tongue(kFrames3 * kLatent3),
       jaw(kFrames3 * kJawEyes3), next(kState3);
-  const float identity[kNumIdentity3] = {1, 0, 0};
+  const float identity[] = {1, 0, 0};
+  static_assert(std::size(identity) == kNumIdentity3);
   if (!attempt.Finish(net->Run3(x.data(), identity, emo.data(), state.data(),
                                 skin.data(), tongue.data(), jaw.data(),
                                 next.data(), err)))

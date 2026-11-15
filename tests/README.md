@@ -31,7 +31,8 @@ race/voice reads before and after the 1.6.629 layout change. `build.sh test`
 also checks the built DLL and every required ID against local Address Libraries,
 including Steam 1.6.353 and GOG 1.6.659.
 
-`morph-lock-span` checks the morph hook keeps a played face's lock and every dynamic face shape's lock from before the engine's vertex reset until the deltas pass (a release in between is the one-frame speech flicker), with the engine's own locking nested, and takes no locks for faces it does not play.
+`morph-lock-span` checks the morph hook takes a played face's lock and every dynamic face shape's lock before the engine's vertex reset, with the engine's own locking nested, and takes no locks for faces it does not play; it writes no deltas, so the reset-to-deltas span is checked by `face-frame`.
+`face-frame` runs the real update and morph hooks over an engine fake and checks every shape whenever the render thread could copy it: the engine's pose of its keyframes or that plus one head's whole frame, vanilla lips plus pose weight making one mouth, and every plugin write inside the lock span from the shape's reset.
 `worker-start` retains startup module-scan exclusion in both listener orders.
 It checks that first new-game inference waits for a game task with the main and
 loading menus closed, including both closure orders, early provider/GPU requests,
@@ -104,7 +105,31 @@ For changes to head-part classification, hair exclusion or face-shape traversal,
 run `./build.sh compat` and the `hair-assets` regression gate before merging or
 releasing those changes.
 `follower-mapping` checks reused attachment searches against independently built
-searches and playback against the original scalar summation.
+searches, playback against the original scalar summation, and the facial-hair
+attachment rules (cheek and jaw line, soul patch, moustache strands and fringe).
+For changes to how facial hair follows the skin, also run the `beard-clearance`
+asset gate:
+
+```bash
+python3 tools/compatibility.py --tier assets --case beard-clearance --fixtures fixtures.json
+```
+
+Map `"beard-clearance": {"path": "/path/to/captures"}` to the local captures
+pinned in [beard_clearance.json](beard_clearance.json), made from installed
+FaceGen with `tools/face_audit/beard_capture.py <output dir> <plugin:formid>...`.
+The runner requires a native C++17 compiler (`HOST_CXX`, default `g++`) and
+never downloads assets. Missing files block; modified hashes fail. Keep these
+third-party derived captures outside Git.
+
+The gate replays recorded v3 speech on every pinned head, with and without
+follower triangles. Samples of each beard, brow-line scar and braid triangle
+that are visible at rest count as clipped when the skin in front of them is a
+back face more than 0.2 units away; each head pins a ceiling on clipped samples
+and on edges stretched past twice their length, a floor on visible samples, and
+a floor on the clipping the measure reports under the 6.1.2 attachment (jaw-side
+hair attached by its own opening alone), reimposed inside the test.
+The `beard-clearance-measure` contract checks that measure on synthetic
+surfaces in the normal suite. Neither establishes the look in game.
 `head-parts` runs synthetic oral-extra inheritance, hair-extra graph, shader, alias and facial-hair controls
 on SE/AE/VR layouts in the normal suite and CI. `hair-assets` replays the reviewed
 installed-source corpus through the current production traversal: all 18,581

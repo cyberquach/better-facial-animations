@@ -223,6 +223,7 @@ extern "C" uint64_t TestAddress(uint64_t id) {
 int main() {
   bfa::testing::address = TestAddress;
   using namespace bfa;
+  SetSelectedModel(a2f::kNetV3);  // the fixture's network (config.network)
   skse::SetRuntime(skse::Version(1, 6, 1170));
   static void* vtable[0x100]{};
   vtable[0x63] = reinterpret_cast<void*>(&GetFace);

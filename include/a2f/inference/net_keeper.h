@@ -17,12 +17,18 @@
 
 namespace a2f {
 
-// VRAM of the loaded GPU session (FP16; v2.3 at batch 2, v3.0 and the
-// performance network); less free than this is a possible memory-pressure clue.
+// VRAM of the loaded GPU session (FP16), with graph fusion off and on (Fused);
+// less free than this is a possible memory-pressure clue. v2.3 at batch 2,
+// either way.
 constexpr double kNetVramMb = 100;
-constexpr double kNetVramMb3 = 250;
-constexpr double kNetVramMbPerformance = 122;
-constexpr double kNetVramMbUltraPerformance = 80;
+// 268 MiB measured (DXGI, RTX 5070 Ti, Windows).
+constexpr double kNetVramMb3 = 270;
+constexpr double kNetVramMb3Fused = 410;
+// Width 608: 184 MiB measured (DXGI, RTX 5070 Ti, Windows).
+constexpr double kNetVramMbPerformance = 185;
+constexpr double kNetVramMbPerformanceFused = 315;
+// 8.6 MiB measured, about 1 MB more fused (DXGI, RTX 5070 Ti, Windows).
+constexpr double kNetVramMbUltraPerformance = 10;
 
 // Human-readable diagnostics for the settings window.
 std::vector<std::string> GpuWarnings(const GpuState& gpu);

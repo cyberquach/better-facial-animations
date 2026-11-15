@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 #include <span>
 #include <string>
 #include <utility>
@@ -121,8 +122,8 @@ const char* ParamTip(const Param& p, bool npc = false) {
            "emotion_performance.onnx in "
            "Data/SKSE/Plugins/BetterFacialAnimations. Restart Skyrim after "
            "installing it, then enable Sentiment Analysis.\n\n"
-           "Full uses about 600 MB "
-           "of additional VRAM on GPU and adds processing time. Force CPU "
+           "Full uses about 745 MB "
+           "of VRAM on GPU and adds processing time. Force CPU "
            "uses system memory and additional CPU processing.";
   if (npc && !strcmp(p.key, "SentimentAnalysis"))
     return "Enable voice-detected emotion for this NPC. "
@@ -138,6 +139,7 @@ Group GroupFor(const Param& p) {
                                      Group::kPlayback, Group::kMovement,
                                      Group::kInputs,   Group::kDebug,
                                      Group::kGaze};
+  static_assert(std::size(by_section) == static_cast<size_t>(Sec::kGaze) + 1);
   return p.group != Group::kAuto ? p.group
                                  : by_section[static_cast<int>(p.sec)];
 }
@@ -152,6 +154,7 @@ const char* GroupTitle(Group group) {
                                        "Emotion input amounts",
                                        "Maximum emotion inputs",
                                        "Diagnostics"};
+  static_assert(std::size(titles) == static_cast<size_t>(Group::kAuto));
   return titles[static_cast<int>(group)];
 }
 void Space(float height = 6) {
@@ -217,8 +220,8 @@ const std::vector<size_t>& MenuOrder() {
       const Param& right = kParams[b];
       // Diagnostics follows all profiles rather than interrupting the
       // shared controls.
-      const int lp = left.sec == Sec::kDebug ? 3 : left.profile;
-      const int rp = right.sec == Sec::kDebug ? 3 : right.profile;
+      const int lp = left.sec == Sec::kDebug ? kNumProfiles : left.profile;
+      const int rp = right.sec == Sec::kDebug ? kNumProfiles : right.profile;
       return lp != rp ? lp < rp : GroupFor(left) < GroupFor(right);
     });
     return indices;
@@ -439,7 +442,7 @@ void RenderNpcWindow() {
         }
         auto value = npc.values.find(param.key);
         const float fallback =
-            param.profile == 0 ? *param.FaceValue(inherited)
+            param.profile == kProfileMale ? *param.FaceValue(inherited)
             : !strcmp(param.key, "SentimentAnalysis")
                 ? defaults.sentiment_analysis
             : !strcmp(param.key, "SentimentMultiplier")
@@ -869,13 +872,10 @@ bool RenderProcessingDevice(const Tune& tune, bool emotion = false) {
   return changed;
 }
 
-// One dropdown row. A row without its own tip shows that of the setting
-// named by tip_key.
-struct ModelOption {
+struct ModelOption {  // one dropdown row
   const char* name;
   int id;
   const char* tip;
-  const char* tip_key = nullptr;
 };
 constexpr ModelOption kEmotionOptions[] = {
     {"Disabled", kEmotionDisabled,
@@ -889,7 +889,7 @@ constexpr ModelOption kEmotionOptions[] = {
      "emotion on every line.\n\n"
      "Supports compatible AMD and NVIDIA GPUs through DirectML; a NVIDIA GPU "
      "is not required. Audio2Emotion has its own processing device dropdown. "
-     "Typically needs about 600 MB of additional VRAM on GPU, plus processing "
+     "Uses about 745 MB of VRAM on GPU, plus processing "
      "time. CPU uses system RAM and adds CPU work."},
     {"Performance", kEmotionPerformance,
      "Enabled by default. Experimental model designed to memorize the Full "
@@ -898,37 +898,29 @@ constexpr ModelOption kEmotionOptions[] = {
      "dialogue outside that corpus. Results on unfamiliar lines can be hit "
      "or miss, especially in obscure quest mods. It does not perfectly "
      "reproduce every training answer either.\n\n"
-     "About 21.6 MB of model weights on disk (not a VRAM estimate). Uses the "
-     "same "
-     "AMD/NVIDIA DirectML "
-     "or CPU options as Full. Runtime RAM/VRAM and speed depend on the device "
-     "and "
-     "inference buffers. The bundled checkpoint is still experimental. "
+     "About 31 MB of VRAM on GPU. Uses the same AMD/NVIDIA DirectML or CPU "
+     "options as Full. The bundled checkpoint is still experimental. "
      "Choose Full when coverage of unfamiliar dialogue matters."}};
-constexpr ModelOption kFaceOptions[] = {
-    {"Disabled", kFaceDisabled,
-     "Use the game's own facial animation and lip-sync. BFA stops generating "
-     "animations and unloads both inference sessions after current work "
-     "returns. Your Audio2Emotion selection is remembered for when you "
-     "enable Audio2Face again; it only supplies inputs to Audio2Face."},
-    {"V3", a2f::kNetV3,
-     "Audio2Face v3.0. The most expressive model, with detailed lip syncing "
-     "at 60 fps. Roughly 2x as fast as the Old "
-     "model in RTX 4070 GPU tests; speed varies by system and dialogue. "
-     "About 250 MB of VRAM on GPU. Switches live; already playing lines "
-     "finish with their current animation."},
-    {"Performance", a2f::kNetPerformance, nullptr, "UsePerformanceModel"},
-    {"Ultra Performance", a2f::kNetUltraPerformance, nullptr,
-     "UseUltraPerformanceModel"},
-    {"Legacy", a2f::kNetV2, nullptr, "UseOldModel"}};
-
-const char* OptionTip(const ModelOption& option) {
-  if (option.tip) return option.tip;
-  if (option.tip_key)
-    for (const Param& param : kParams)
-      if (!strcmp(param.key, option.tip_key)) return param.tip;
-  return "";
-}
+// Disabled, the default model (Tune), the fallback, then the others as
+// FaceModels() orders them.
+const std::vector<ModelOption> kFaceOptions = [] {
+  std::vector<ModelOption> options = {
+      {"Disabled", kFaceDisabled,
+       "Use the game's own facial animation and lip-sync. BFA stops "
+       "generating animations and unloads both inference sessions after "
+       "current work returns. Your Audio2Emotion selection is remembered for "
+       "when you enable Audio2Face again; it only supplies inputs to "
+       "Audio2Face."}};
+  const auto add = [&](const ModelInfo& info) {
+    options.push_back({info.name, info.network, info.tip});
+  };
+  const ModelInfo& standard = ModelFor(Tune().SelectedModel());
+  add(standard);
+  if (&standard != &FallbackFaceModel()) add(FallbackFaceModel());
+  for (const ModelInfo& info : FaceModels())
+    if (info.selected && &info != &standard) add(info);
+  return options;
+}();
 
 // Whether an Audio2Emotion row's model is installed.
 bool EmotionOptionAvailable(const ModelOption& option) {
@@ -946,7 +938,7 @@ bool RenderModelChoice(const char* label, std::span<const ModelOption> options,
   const ModelOption* current = &options.front();
   for (const ModelOption& option : options)
     if (option.id == selected) current = &option;
-  const auto help = [](const ModelOption& option) { return OptionTip(option); };
+  const auto help = [](const ModelOption& option) { return option.tip; };
   const auto installed = [&](const ModelOption& option) {
     return !emotion || EmotionOptionAvailable(option);
   };
@@ -1013,7 +1005,7 @@ bool RenderModelChoice(const char* label, std::span<const ModelOption> options,
 bool RenderEmotionControl(const char* key, const char* label, float width = 0) {
   for (size_t i = 0; i < kNumParams; ++i) {
     const Param& p = kParams[i];
-    if (p.profile >= 0 || strcmp(p.key, key)) continue;
+    if (p.profile != kProfileShared || strcmp(p.key, key)) continue;
     if (width && ig.SetNextItemWidth) ig.SetNextItemWidth(width);
     char id[128];
     snprintf(id, sizeof id, "%s##%zu", label, i);
@@ -1029,6 +1021,32 @@ bool RenderEmotionControl(const char* key, const char* label, float width = 0) {
   return false;
 }
 
+// A model's graph fusion checkbox, under its processing device: inert on
+// CPU, where it has no effect.
+bool RenderGraphFusion(const char* key, bool cpu) {
+  for (size_t i = 0; i < kNumParams; ++i) {
+    const Param& p = kParams[i];
+    if (p.profile != kProfileShared || strcmp(p.key, key)) continue;
+    char id[128];
+    snprintf(id, sizeof id, "%s##%s", p.label, key);
+    if (cpu && !ig.BeginDisabled) {
+      ig.Text("%s (GPU only)", p.label);
+      Tip(&p, p.tip, kHoverDisabled);
+      return false;
+    }
+    if (cpu) ig.BeginDisabled(true);
+    ScopedLock guard(settings_lock);
+    const bool changed = ig.Checkbox(id, p.flag) && !cpu;
+    const bool on = *p.flag;
+    guard.Unlock();
+    if (cpu) ig.EndDisabled();
+    Tip(&p, p.tip, kHoverDisabled);
+    if (changed) Log("setting %s = %d", p.key, on);
+    return changed;
+  }
+  return false;
+}
+
 bool RenderModels(const Tune& tune) {
   Section("Animation models");
   HelpText(
@@ -1039,6 +1057,7 @@ bool RenderModels(const Tune& tune) {
                                    tune.FaceChoice(), false, -1, true);
   Space(12);
   changed |= RenderProcessingDevice(tune);
+  changed |= RenderGraphFusion("GraphFusion", SnapshotTune().force_cpu);
 
   Section("Emotion & sentiment");
   HelpText(
@@ -1073,6 +1092,8 @@ bool RenderModels(const Tune& tune) {
       "Adds scene and dialogue emotions alongside the selected voice model.");
   Space(12);
   changed |= RenderProcessingDevice(SnapshotTune(), true);
+  changed |= RenderGraphFusion("EmotionGraphFusion",
+                               !SnapshotTune().EmotionUsesGpu());
   const Tune current = SnapshotTune();
   if (!current.enabled)
     HelpText(
@@ -1134,12 +1155,13 @@ void RenderMenu() {
   else if (tune.enabled &&
            (st.switching_model || tune.SelectedModel() != st.network ||
             (tune.force_cpu != !st.want_gpu) ||
-            (!tune.force_cpu && tune.gpu_adapter != st.gpu_adapter)))
+            (!tune.force_cpu && (tune.gpu_adapter != st.gpu_adapter ||
+                                 tune.face_graph_fusion != st.graph_fusion))))
     Notice(kYellow,
            "Switching model; new dialogue uses it when loading finishes.");
   if (details) {
     ig.Text("Sentiment Analysis: %s", st.sentiment_info.c_str());
-    for (int sex = 0; sex < 2; ++sex)
+    for (size_t sex = 0; sex < std::size(config.expressive_faces); ++sex)
       ig.Text("Expressive Facial Animation - %s Edition: %s",
               sex ? "Female" : "Male",
               config.expressive_faces[sex] ? "Installed mod detected"
@@ -1155,33 +1177,24 @@ void RenderMenu() {
       "separate; the Player profile applies to either sex. NPC overrides "
       "can replace profile values.");
   Group cur = Group::kAuto;
-  static int selected_profile = 0;
+  static int selected_profile = kProfileMale;
   bool profiles_shown = false;
   bool changed = RenderModels(tune);
   tune = SnapshotTune();
   int profile = -2;  // no parameter's: the first one opens a group
   for (size_t i : MenuOrder()) {
     const Param& p = kParams[i];
-    // Dropdowns replace these legacy persisted checkboxes.
-    if (!strcmp(p.key, "Enabled") || !strcmp(p.key, "UseOldModel") ||
-        !strcmp(p.key, "UsePerformanceModel") ||
-        !strcmp(p.key, "UseUltraPerformanceModel") ||
-        !strcmp(p.key, "SentimentAnalysis") ||
-        !strcmp(p.key, "UsePerformanceEmotion") || !strcmp(p.key, "ForceCPU") ||
-        !strcmp(p.key, "SentimentMultiplier") ||
-        !strcmp(p.key, "VanillaEmotions") || !p.menu)
-      continue;
-    if (p.profile >= 0) {
+    if (!p.menu || p.own_control) continue;
+    if (p.profile != kProfileShared) {
       if (!profiles_shown) {
         profiles_shown = true;
         Section("Character profile");
-        static const char* const names[] = {"Male NPCs", "Female NPCs",
-                                            "Player"};
-        for (int tab = 0; tab < 3; ++tab) {
+        for (int tab = 0; tab < kNumProfiles; ++tab) {
           if (tab) ig.SameLine(0, -1);
-          if (ig.Button(names[tab], ImVec2{0, 0})) selected_profile = tab;
+          if (ig.Button(kProfiles[tab].tab, ImVec2{0, 0}))
+            selected_profile = tab;
         }
-        ig.Text("Editing: %s", names[selected_profile]);
+        ig.Text("Editing: %s", kProfiles[selected_profile].tab);
         HelpText(
             "Editing the selected profile. Each profile keeps its "
             "settings. Player settings apply to either sex.");
@@ -1202,12 +1215,9 @@ void RenderMenu() {
       if (p.flag)
         Log("setting %s = %d", p.key, *p.flag);
       else
-        Log("setting %s%s = %g",
-            p.profile < 0    ? ""
-            : p.profile == 2 ? "Player "
-            : p.profile      ? "Female "
-                             : "Male ",
-            p.key, *p.value);
+        Log("setting %s%s%s = %g",
+            p.profile == kProfileShared ? "" : kProfiles[p.profile].section,
+            p.profile == kProfileShared ? "" : " ", p.key, *p.value);
     }
     guard.Unlock();
     Tip(&p, ParamTip(p), kHoverDisabled);
@@ -1227,8 +1237,9 @@ void RenderMenu() {
   }
   Tip(kDefaults,
       "Resets shared settings and ALL three profiles, including hidden "
-      "profiles. Resets race choices too. Keeps model, CPU/GPU selection and "
-      "logging. NPC overrides are managed separately.");
+      "profiles. Resets race choices too. Keeps the Audio2Face and "
+      "Audio2Emotion models, their processing devices and graph fusion, "
+      "and logging. NPC overrides are managed separately.");
   Space();
   if (ig.Button(kClear, ImVec2{0, 0})) {
     ClearLines();

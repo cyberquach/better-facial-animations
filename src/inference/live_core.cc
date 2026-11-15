@@ -57,11 +57,12 @@ namespace {
 // Audio2Face-3D v2.3 Mark: audio gain and the implicit emotion vector (SDK
 // model config).
 constexpr float kInputStrength = 1.3f;
-constexpr float kImplicit[kNumImplicit] = {
+constexpr float kImplicit[] = {
     0.031689223f,  -0.023175493f, -0.0046390453f, -0.011679624f,
     0.0044094822f, -0.039738461f, -0.013413748f,  0.013034184f,
     0.0074624573f, -0.026291862f, -0.057227135f,  -0.02242188f,
     0.0015903788f, 0.03309321f,   -0.030960485f,  0.017880375f};
+static_assert(std::size(kImplicit) == kNumImplicit);
 }  // namespace
 
 // ---------------- audio ----------------
@@ -266,14 +267,14 @@ bool DecodeAudio(const uint8_t* data, size_t n, std::vector<float>& pcm,
 namespace {
 // emotion_map.MAP in network order (amazement anger cheekiness disgust fear
 // grief joy outofbreath pain sadness) per Skyrim emotion type.
-constexpr float kMap[8][kNumMod] = {{},
-                                    {0, 1},
-                                    {0, 0, 0, 1},
-                                    {0, 0, 0, 0, 1},
-                                    {0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
-                                    {0, 0, 0, 0, 0, 0, 1},
-                                    {1},
-                                    {0.3f, 0, 0.3f}};
+constexpr float kMap[][kNumMod] = {{},
+                                   {0, 1},
+                                   {0, 0, 0, 1},
+                                   {0, 0, 0, 0, 1},
+                                   {0, 0, 0, 0, 0, 0, 0, 0, 0, 1},
+                                   {0, 0, 0, 0, 0, 0, 1},
+                                   {1},
+                                   {0.3f, 0, 0.3f}};
 // numpy default (linear).
 double Percentile(std::vector<double> v, double q) {
   std::sort(v.begin(), v.end());
@@ -327,9 +328,9 @@ bool AnalyzeSentiment(EmotionNet& net, const float* pcm, size_t n,
   // The network's classes (anger, disgust, fear, happiness, neutral,
   // sadness) onto the explicit emotions (Anger, Disgust, Fear, Joy, none,
   // Sadness).
-  constexpr int mapping[kNumVoiceEmo] = {1, 3, 4, 6, -1, 9};
-  const int frames =
-      static_cast<int>((n * kFps + kSampleRate - 1) / kSampleRate);
+  constexpr int mapping[] = {1, 3, 4, 6, -1, 9};
+  static_assert(std::size(mapping) == kNumVoiceEmo);
+  const int frames = EmotionFrames(n);
   // Readings: one per stride and one past the last frame.
   const int count = (frames - 1) / stride + 2;
   std::vector<std::vector<double>> readings(kNumMod,
@@ -400,7 +401,8 @@ void EmotionTrack(const float* pcm, size_t n, int frames,
                     ? std::clamp(static_cast<double>(emotion.channels[c]), 0.0,
                                  kMaxEmotion)
                     : 0.0;
-  } else if (emotion.type >= 1 && emotion.type <= 7) {
+  } else if (emotion.type >= 1 &&
+             emotion.type < static_cast<int>(std::size(kMap))) {
     for (int c = 0; c < kNumMod; ++c)
       game[c] =
           kMap[emotion.type][c] * std::clamp(emotion.value / 100.0, 0.0, 1.0);
@@ -440,8 +442,7 @@ bool Generate(Net& net, const float* pcm, size_t n, const Emotion& emotion,
     err = "empty audio";
     return false;
   }
-  const int num_frames = static_cast<int>(
-      (static_cast<int64_t>(n) * kFps + kSampleRate - 1) / kSampleRate);
+  const int num_frames = EmotionFrames(n);
   std::vector<float> track;
   EmotionTrack(pcm, n, num_frames, emotion, track);
   for (int t = 0; t < num_frames; ++t)
@@ -461,7 +462,7 @@ bool Generate(Net& net, const float* pcm, size_t n, const Emotion& emotion,
   const uint32_t dim = k + kNumTongue + kNumJaw;
   out.direct_dim = dim;
   out.direct.assign(static_cast<size_t>(num_frames) * dim, 0.f);
-  out.eyes.resize(static_cast<size_t>(num_frames) * 4);
+  out.eyes.resize(static_cast<size_t>(num_frames) * kNumEyeAngles);
   for (int f0 = 0; f0 < num_frames; f0 += batch) {
     int b = std::min(batch, num_frames - f0);
     std::fill(x.begin(), x.end(), 0.f);
@@ -498,9 +499,9 @@ bool Generate(Net& net, const float* pcm, size_t n, const Emotion& emotion,
       }
       for (int j = kNumPca; j < kNumPca + kNumTongue + kNumJaw; ++j)
         o[k + j - kNumPca] = yt[j] - rest[j];
-      for (int c = 0; c < 4; ++c)
-        out.eyes[static_cast<size_t>(f0 + i) * 4 + c] =
-            yt[kNumOut - 4 + c] - rest[kNumOut - 4 + c];
+      for (int c = 0; c < kNumEyeAngles; ++c)
+        out.eyes[static_cast<size_t>(f0 + i) * kNumEyeAngles + c] =
+            yt[kNumOut - kNumEyeAngles + c] - rest[kNumOut - kNumEyeAngles + c];
     }
   }
   return true;
@@ -519,8 +520,7 @@ bool Generate3(Net& net, const float* pcm, size_t n, const Emotion& emotion,
     return false;
   }
   // the emotion at kFps, as v2.3 takes it; each 60 fps frame takes its own
-  const int emo_frames = static_cast<int>(
-      (static_cast<int64_t>(n) * kFps + kSampleRate - 1) / kSampleRate);
+  const int emo_frames = EmotionFrames(n);
   std::vector<float> track;
   EmotionTrack(pcm, n, emo_frames, emotion, track);
   for (int t = 0; t < emo_frames; ++t)
@@ -545,7 +545,7 @@ bool Generate3(Net& net, const float* pcm, size_t n, const Emotion& emotion,
   const uint32_t k = face.k, dim = k + kNumTongue + kNumJaw;
   out.direct_dim = dim;
   out.direct.assign(static_cast<size_t>(num_frames) * dim, 0.f);
-  out.eyes.resize(static_cast<size_t>(num_frames) * 4);
+  out.eyes.resize(static_cast<size_t>(num_frames) * kNumEyeAngles);
   const float *rest_tongue = face.rest + kLatent3,
               *rest_jaw = face.rest + 2 * kLatent3;
   for (int i = 0; i < windows; ++i) {
@@ -587,8 +587,8 @@ bool Generate3(Net& net, const float* pcm, size_t n, const Emotion& emotion,
       }
       for (int c = 0; c < kNumJaw; ++c)
         o[k + kNumTongue + c] = g[c] - rest_jaw[c];
-      for (int c = 0; c < 4; ++c)
-        out.eyes[static_cast<size_t>(f) * 4 + c] =
+      for (int c = 0; c < kNumEyeAngles; ++c)
+        out.eyes[static_cast<size_t>(f) * kNumEyeAngles + c] =
             g[kNumJaw + c] - rest_jaw[kNumJaw + c];
     }
   }

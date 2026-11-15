@@ -38,14 +38,18 @@ const float* BaseVerts(uint8_t* shape, uint32_t& nv);
 
 // An unlisted follower shape (no base vertices: its head part is not among
 // the NPC's, so the engine neither morphs nor rebuilds it) stands on the
-// vertices it had before the plugin first wrote to it. UnlistedRest reads
-// them (nv x 3; null when the shape's vertices cannot be read),
-// NoteUnlistedWrite records a write to any face shape, and ResetUnlisted puts
-// the node's unlisted shapes back as an engine rebuild does the others.
+// vertices it had when first seen, before the plugin wrote to it, for as long
+// as it is the same shape (RestStore). UnlistedRest reads them (nv x 3; null
+// when the shape's vertices cannot be read), NoteUnlistedWrite records a
+// write to any face shape, and ResetUnlisted puts each of the node's unlisted
+// shapes the plugin wrote since its last reset back, over any other writer's
+// write, as an engine rebuild does the others.
 std::shared_ptr<const std::vector<float>> UnlistedRest(uint8_t* shape,
                                                        uint32_t nv);
-void NoteUnlistedWrite(uint8_t* shape, const float* xyz, uint32_t nv);
+void NoteUnlistedWrite(uint8_t* shape, uint32_t nv);
 void ResetUnlisted(uint8_t* node);
+// Forgets every rest (a new world: none of its shapes are the old ones).
+void ForgetUnlistedRests();
 
 // The name ("" if it has none) of a child of the face node that carries base
 // and morph vertices but is not a BSDynamicTriShape, or null. The engine's
@@ -78,7 +82,9 @@ class ScopedStaticParts {
 // The node's head mapping and its state (failed: not mappable). On first
 // sight reads the shapes and their morphs here, where the engine has the
 // node, and queues the build.
-// Recomputed before using a mapping, including for a previously failed head.
+// HeadKey reads every base vertex and morph of the head: the caller computes
+// it again whenever the shapes' pointers or sampled base vertices change,
+// including for a previously failed head.
 // female: the head's sex, which tells the face it is mapped onto when the
 // model has one per sex.
 std::string HeadKey(uint8_t* node, bool female,

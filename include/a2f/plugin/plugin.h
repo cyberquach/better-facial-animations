@@ -9,8 +9,10 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <map>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -25,17 +27,6 @@ extern const char kVersion[];  // from the VERSION file
 enum class State { kPending, kReady, kFailed };
 
 // ---------------- settings ----------------
-// A network's files and footprint (see a2f::kNetV2 and the other network
-// identifiers).
-struct ModelInfo {
-  int network;
-  const wchar_t* model_file;
-  const wchar_t* mapping_file;
-  int mapping_network;  // direct::Model::network of mapping_file
-  double vram_mb;
-};
-const ModelInfo& ModelFor(int network);
-
 // Audio2Face menu choice: kFaceDisabled or an a2f::kNet* network.
 constexpr int kFaceDisabled = 0;
 // Audio2Emotion menu choice.
@@ -50,6 +41,7 @@ struct Config {  // fixed after load
   bool sentiment_available = false;  // optional model found at settings load
   bool gpu = true;
   int gpu_adapter = 0;              // startup selection
+  bool graph_fusion = false;        // startup selection, Audio2Face
   bool independent_device = false;  // fixed GPU route; change INI and restart
   bool force_bundled_agility = false;  // INI-only, independent mode, restart required
   int network = a2f::kNetV3;        // the model at startup, see ModelFor
@@ -86,6 +78,23 @@ struct FaceTune {
   float gaze_settle = 3;
   a2f::GazeMoods gaze_odds = a2f::kGazePlayerOdds;
 };
+// Whose face a setting is for: Param::profile, the ini section's suffix and
+// the menu's tab. Gaze settings have no player profile.
+enum Profile : int {
+  kProfileShared = -1,
+  kProfileMale,
+  kProfileFemale,
+  kProfilePlayer,
+  kNumProfiles
+};
+struct ProfileInfo {
+  const char* section;  // the ini section's suffix
+  const char* tab;
+};
+inline constexpr ProfileInfo kProfiles[] = {
+    {"Male", "Male NPCs"}, {"Female", "Female NPCs"}, {"Player", "Player"}};
+static_assert(std::size(kProfiles) == kNumProfiles);
+
 struct Tune {  // menu; defaults as dist/BetterFacialAnimations.ini
   bool enabled = true;
   bool player = true;
@@ -104,22 +113,14 @@ struct Tune {  // menu; defaults as dist/BetterFacialAnimations.ini
   bool gaze_line_of_sight = true;
   bool gaze_avoid_camera = true;
   bool gaze_turn_head = true;
-  // The dropdown preserves the legacy INI choices; neither set is V3. The
-  // worker applies the selection and force_cpu live (SwitchModel).
+  // At most one is set (SelectModel); none is V3. Performance is the default.
+  // The worker applies the selection and force_cpu live (SwitchModel).
   bool old_model = false;
-  bool performance_model = false;
+  bool performance_model = true;
   bool ultra_performance_model = false;
-  int SelectedModel() const {
-    return performance_model         ? a2f::kNetPerformance
-           : ultra_performance_model ? a2f::kNetUltraPerformance
-           : old_model               ? a2f::kNetV2
-                                     : a2f::kNetV3;
-  }
-  void SelectModel(int network) {
-    performance_model = network == a2f::kNetPerformance;
-    ultra_performance_model = network == a2f::kNetUltraPerformance;
-    old_model = network == a2f::kNetV2;
-  }
+  // By FaceModels(): the first whose switch is set, else the fallback.
+  int SelectedModel() const;
+  void SelectModel(int network);
   // The menu's current choices (see SelectFaceOption, SelectEmotionOption).
   int FaceChoice() const { return enabled ? SelectedModel() : kFaceDisabled; }
   int SelectedEmotion() const {
@@ -132,6 +133,10 @@ struct Tune {  // menu; defaults as dist/BetterFacialAnimations.ini
   int emotion_device =
       0;  // CPU (-1) or DXGI GPU index; independent of Audio2Face
   bool EmotionUsesGpu() const { return emotion_device >= 0; }
+  // DirectML graph fusion per model (GPU only): faster for more VRAM. On
+  // before 7.0; the worker applies changes live.
+  bool face_graph_fusion = false;
+  bool emotion_graph_fusion = false;
   bool logging = true;
   FaceTune male, female, player_face;
   const FaceTune& ForActor(bool is_female, bool is_player) const {
@@ -140,6 +145,11 @@ struct Tune {  // menu; defaults as dist/BetterFacialAnimations.ini
   const FaceTune& ForSex(bool is_female) const {
     return is_female ? female : male;
   }
+  FaceTune& ForProfile(int profile) {
+    return profile == kProfilePlayer   ? player_face
+           : profile == kProfileFemale ? female
+                                       : male;
+  }
 };
 extern Config& config;
 Tune SnapshotTune();  // coherent copy for playback and workers
@@ -147,6 +157,28 @@ void SetProcessingDevice(bool cpu, int adapter);
 void SetEmotionDevice(int device);
 a2f::GpuAdapterList SnapshotGpuAdapters();
 void RequestGpuAdapters();  // discovery runs on the inference worker
+// An Audio2Face network (see a2f::kNetV2 and the other identifiers): its
+// files and footprint, its name in the menu and, except for the fallback, the
+// switch that selects it with that switch's ini key, label and description.
+// Everything that lists the models reads FaceModels().
+struct ModelInfo {
+  int network;
+  const wchar_t* model_file;
+  const wchar_t* mapping_file;
+  int mapping_network;  // direct::Model::network of mapping_file
+  double vram_mb, fused_vram_mb;  // graph fusion off, on (a2f::kNetVramMb)
+  const char* name;
+  bool Tune::* selected = nullptr;  // nullptr: the fallback
+  const char* ini_key = nullptr;
+  const char* label = nullptr;
+  const char* tip = nullptr;
+};
+// In priority order where several switches are set; the fallback is last.
+std::span<const ModelInfo> FaceModels();
+// Selected when no switch is set (V3); not the default (Tune).
+const ModelInfo& FallbackFaceModel();
+const ModelInfo& ModelFor(int network);  // the fallback's for an unknown one
+
 extern SRWLOCK
     settings_lock;  // guards all Param pointers; readers use SnapshotTune()
 
@@ -188,7 +220,7 @@ struct Param {
   const char* tip;
   Sec sec;
   bool* flag;
-  int profile = -1;    // -1: shared, 0: male NPC, 1: female NPC, 2: player
+  int profile = kProfileShared;  // a Profile
   bool stored = true;  // in the ini
   Needs needs = kNone;
   Group group = Group::kAuto;
@@ -196,6 +228,9 @@ struct Param {
   // Typed access to a profile field, independent of the global tune's layout.
   float* (*face_value)(FaceTune&, size_t) = nullptr;
   size_t face_index = 0;  // array element, when applicable
+  // The settings page draws this one itself (the model dropdowns, the device
+  // and the emotion sources), so its list of controls leaves it out.
+  bool own_control = false;
   float* FaceValue(FaceTune& face) const {
     return face_value ? face_value(face, face_index) : nullptr;
   }
@@ -279,6 +314,7 @@ struct ModelState {
   std::wstring file;
   std::shared_ptr<const direct::Model> mapping;
   int gpu_adapter = 0;
+  bool graph_fusion = false;
 };
 std::shared_ptr<const ModelState> SnapshotModel();
 
@@ -304,6 +340,7 @@ struct Stats {
   int network = a2f::kNetV3;
   bool want_gpu = true;
   int gpu_adapter = 0;
+  bool graph_fusion = false;
   bool switching_model = false;
   std::string model_error;
   bool net_gpu = false;  // the loaded session is the GPU one

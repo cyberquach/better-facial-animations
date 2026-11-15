@@ -25,6 +25,67 @@ int main() {
   auto write = [&](const char* section, const char* key, const char* value) {
     CHECK(WritePrivateProfileStringA(section, key, value, ini));
   };
+  // The dist INI states the built-in defaults: a manual install starts as a
+  // missing INI, or an installer's commented-out key, does.
+  const auto stored = [](const Param& p) -> float {
+    return p.flag ? *p.flag : p.value ? *p.value : 0;
+  };
+  LoadIni();
+  std::vector<float> built_in;
+  for (const Param& p : kParams) built_in.push_back(stored(p));
+  CHECK(CopyFileA(
+      (std::string(old) + "\\dist\\BetterFacialAnimations.ini").c_str(), ini,
+      TRUE));
+  LoadIni();
+  for (size_t i = 0; i < kParams.size(); ++i) {
+    if (!kParams[i].stored || stored(kParams[i]) == built_in[i]) continue;
+    fprintf(stderr, "dist INI %s differs\n", kParams[i].key);
+    CHECK(false);
+  }
+  CHECK(DeleteFileA(ini));
+  // Performance is the default. A model chosen in an INI is kept whole, the
+  // user's over the installer's: a switch it leaves out is off.
+  LoadIni();
+  CHECK(SnapshotTune().SelectedModel() == a2f::kNetPerformance);
+  write("General", "IniVersion", "10");
+  LoadIni();
+  CHECK(SnapshotTune().SelectedModel() == a2f::kNetPerformance);
+  write("General", "UsePerformanceModel", "0");
+  LoadIni();
+  CHECK(SnapshotTune().SelectedModel() == a2f::kNetV3);
+  write("General", "UsePerformanceModel", nullptr);
+  write("General", "UseOldModel", "1");
+  for (const char* version : {"10", "9"}) {
+    write("General", "IniVersion", version);
+    LoadIni();
+    CHECK(SnapshotTune().SelectedModel() == a2f::kNetV2);
+  }
+  CHECK(DeleteFileA(ini));
+  write("General", "IniVersion", "9");
+  LoadIni();
+  CHECK(SnapshotTune().SelectedModel() == a2f::kNetPerformance);
+  CHECK(DeleteFileA(ini));
+  const char* fragment =
+      "Data\\SKSE\\Plugins\\BetterFacialAnimations\\Installer\\FaceModel.ini";
+  CHECK(
+      CreateDirectoryA("Data\\SKSE\\Plugins\\BetterFacialAnimations", nullptr));
+  CHECK(CreateDirectoryA(
+      "Data\\SKSE\\Plugins\\BetterFacialAnimations\\Installer", nullptr));
+  for (const ModelInfo& info : FaceModels())
+    if (info.ini_key)
+      CHECK(WritePrivateProfileStringA("General", info.ini_key, "0", fragment));
+  write("General", "IniVersion", "10");
+  LoadIni();
+  CHECK(SnapshotTune().SelectedModel() == a2f::kNetV3);
+  CHECK(WritePrivateProfileStringA("General", "UsePerformanceModel", "1",
+                                   fragment));
+  write("General", "UseOldModel", "1");
+  LoadIni();
+  CHECK(SnapshotTune().SelectedModel() == a2f::kNetV2);
+  CHECK(DeleteFileA(ini) && DeleteFileA(fragment));
+  CHECK(RemoveDirectoryA(
+      "Data\\SKSE\\Plugins\\BetterFacialAnimations\\Installer"));
+  CHECK(RemoveDirectoryA("Data\\SKSE\\Plugins\\BetterFacialAnimations"));
   // CPU uses the legacy flag and remembers a GPU choice across
   // save/reload/reset.
   LoadIni();
@@ -222,9 +283,11 @@ int main() {
         male);
   auto player =
       Request("profile_test", 1, 50, false, false, t, 0, world_epoch, true);
-  CHECK(player != male && player != female && queue.size() == 3);
-  CHECK(queue[2].emotion.gain == t.player_face.voice_emotion);
-  CHECK(queue[2].emotion.swell == t.player_face.voice_swell);
+  // the player's line is dialogue, so it is queued first
+  CHECK(player != male && player != female && queue.size() == 3 &&
+        queue[0].entry == player);
+  CHECK(queue[0].emotion.gain == t.player_face.voice_emotion);
+  CHECK(queue[0].emotion.swell == t.player_face.voice_swell);
   CHECK(Request("profile_test", 1, 50, true, false, t, 0, world_epoch, true) ==
         player);  // same old-model geometry and independent player emotion
   // A cap alone separates cached and queued work, for all three profiles.
@@ -241,9 +304,16 @@ int main() {
       Request("cap_test", 3, 100, false, false, caps, 0, world_epoch, true);
   CHECK(capped_male != capped_female && capped_male != capped_player &&
         capped_female != capped_player);
-  CHECK(queue[3].emotion.maximum[a2f::kJoy] == .25f);
-  CHECK(queue[4].emotion.maximum[a2f::kJoy] == .5f);
-  CHECK(queue[5].emotion.maximum[a2f::kJoy] == .75f);
+  const auto queued = [](const auto& entry) -> const Job& {
+    for (const Job& j : queue)
+      if (j.entry == entry) return j;
+    CHECK(false);
+    return queue.front();
+  };
+  CHECK(queue.size() == 6);
+  CHECK(queued(capped_male).emotion.maximum[a2f::kJoy] == .25f);
+  CHECK(queued(capped_female).emotion.maximum[a2f::kJoy] == .5f);
+  CHECK(queued(capped_player).emotion.maximum[a2f::kJoy] == .75f);
   CHECK(Request("cap_test", 3, 100, true, false, caps, 0, world_epoch, true) ==
         capped_player);
   caps.male.max_emotion[a2f::kJoy] = .251f;
@@ -297,9 +367,8 @@ int main() {
   CHECK(SnapshotTune().female.max_emotion == a2f::kDefaultEmotionCaps);
   CHECK(SnapshotTune().player_face.max_emotion == a2f::kDefaultEmotionCaps);
   config.sentiment_available = true;
-  CHECK(queue[0].emotion.sentiment_multiplier == t.sentiment_multiplier);
-  CHECK(queue[1].emotion.sentiment_multiplier == t.sentiment_multiplier);
-  CHECK(queue[2].emotion.sentiment_multiplier == t.sentiment_multiplier);
+  for (const auto& entry : {male, female, player})
+    CHECK(queued(entry).emotion.sentiment_multiplier == t.sentiment_multiplier);
   t.male.voice_emotion = 0;
   auto sentiment_only =
       Request("profile_test", 1, 50, false, false, t, 0, world_epoch);
@@ -440,7 +509,7 @@ int main() {
   LoadIni();
   CHECK(SnapshotTune().SelectedModel() == a2f::kNetPerformance);
   SaveIni();
-  // V3 is the absence of all three keys; UseV3Model is ignored and never
+  // V3 is all three switches off; UseV3Model is ignored and never
   // stored. Performance wins over Old.
   CHECK(GetPrivateProfileIntA("General", "UseV3Model", -1, ini) == -1);
   write("General", "UsePerformanceModel", "1");

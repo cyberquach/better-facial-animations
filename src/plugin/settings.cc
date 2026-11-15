@@ -58,14 +58,64 @@ std::vector<RaceSetting>::iterator FindRace(uint32_t id) {
       races.begin(), races.end(), id,
       [](const RaceSetting& race, uint32_t value) { return race.id < value; });
 }
+// Every Audio2Face model, once: the menu, the ini switches, the selection
+// and the files all come from here.
+constexpr ModelInfo kFaceModels[] = {
+    {a2f::kNetPerformance, L"performance.onnx", L"A2FDirect3.bin", a2f::kNetV3,
+     a2f::kNetVramMbPerformance, a2f::kNetVramMbPerformanceFused, "Performance",
+     &Tune::performance_model, "UsePerformanceModel", "Performance model",
+     "22-million-parameter student trained to reproduce V3's answers on "
+     "the training dialogue, with memory within each line. Designed for "
+     "familiar dialogue; unfamiliar or generated dialogue may be less "
+     "consistent. It does not perfectly reproduce V3. Runs at 30 fps "
+     "without speech-driven eye movement. GPU or CPU; about 185 MB of "
+     "VRAM on GPU. Switches live; playing lines retain their animation."},
+    {a2f::kNetUltraPerformance, L"ultra-performance.onnx", L"A2FDirect3.bin",
+     a2f::kNetV3, a2f::kNetVramMbUltraPerformance,
+     a2f::kNetVramMbUltraPerformance, "Ultra Performance",
+     &Tune::ultra_performance_model, "UseUltraPerformanceModel",
+     "Ultra Performance model",
+     "The original 80,729-parameter Performance model, renamed. Lowest "
+     "processing cost, with reduced detail and less consistent lip sync. "
+     "Trained on V3's answers for familiar dialogue; unfamiliar dialogue "
+     "may be less reliable. Runs at 30 fps without speech-driven eye "
+     "movement. GPU or CPU; only a few MB of VRAM on GPU. Switches "
+     "live, and playing lines retain their animation."},
+    {a2f::kNetV2, L"network_fp16.onnx", L"A2FDirect.bin", a2f::kNetV2,
+     a2f::kNetVramMb, a2f::kNetVramMb, "Legacy", &Tune::old_model,
+     "UseOldModel", "Old model",
+     "Audio2Face v2.3. Less expressive than V3 and the slowest to run: "
+     "roughly half V3's speed in RTX 4070 GPU tests. Speed varies by "
+     "system and dialogue. Lower VRAM use than V3, "
+     "at about 100 MB of VRAM on GPU. Uses one shared facial "
+     "identity at 30 fps. Switches live; already playing lines finish "
+     "with their current animation."},
+    {a2f::kNetV3, L"a2f3_fp16.onnx", L"A2FDirect3.bin", a2f::kNetV3,
+     a2f::kNetVramMb3, a2f::kNetVramMb3Fused, "V3", nullptr, nullptr, nullptr,
+     "Audio2Face v3.0. The most expressive model, with detailed lip syncing "
+     "at 60 fps. Roughly 2x as fast as the Old "
+     "model in RTX 4070 GPU tests; speed varies by system and dialogue. "
+     "About 270 MB of VRAM on GPU. Switches live; already playing lines "
+     "finish with their current animation."},
+};
+// Exactly one without a switch, the fallback, and it is last.
+static_assert([] {
+  for (const ModelInfo& info : kFaceModels)
+    if (!info.selected != (&info == &std::rbegin(kFaceModels)[0])) return false;
+  return true;
+}());
 }  // namespace
 SRWLOCK settings_lock = SRWLOCK_INIT;
 
 extern const std::vector<Param> kParams = [] {
+  const auto Own = [](Param p) {
+    p.own_control = true;
+    return p;
+  };
   std::vector<Param> params = {
-      {"Enabled", nullptr, 0, 0, "Enable facial animations",
-       "Untick for the game's own lip-sync, instantly (A/B).", Sec::kGeneral,
-       &tune.enabled},
+      Own({"Enabled", nullptr, 0, 0, "Enable facial animations",
+           "Untick for the game's own lip-sync, instantly (A/B).",
+           Sec::kGeneral, &tune.enabled}),
       {"PlayerFacialAnimations", nullptr, 0, 0, "Player facial animations",
        "Automatically detect DBReV or DBVO2 for player dialogue. "
        "DBVO2 prototype for Skyrim. Untick to keep the voice mod's own "
@@ -75,108 +125,129 @@ extern const std::vector<Param> kParams = [] {
        "Only animate the player and NPC in an active dialogue window with one "
        "another.",
        Sec::kGeneral, &tune.potato_mode},
-      {"VanillaEmotions", nullptr, 0, 0, "Vanilla / scene emotion inputs",
-       "Pass authored scene and dialogue-mod emotions to the facial model. "
-       "On by default. Sentiment Analysis works independently. "
-       "Applies during BFA speech.",
-       Sec::kGeneral, &tune.vanilla_emotions, -1, true, Param::kNone,
-       Group::kSources},
-      {"SentimentAnalysis", nullptr, 0, 0, "Sentiment Analysis",
-       "Enable the selected Audio2Emotion model to add voice-driven emotion "
-       "alongside authored scene emotion. Full typically adds about 600 MB "
-       "of GPU memory; Performance uses smaller experimental weights. "
-       "Performance is enabled by default. Disabling unloads it after current "
-       "inference. "
-       "Force CPU uses system memory and additional CPU processing.",
-       Sec::kGeneral, &tune.sentiment_analysis, -1, true, Param::kSentiment,
-       Group::kSources},
-      {"UsePerformanceEmotion", nullptr, 0, 0, "Skyrim-trained emotion model",
-       "Experimental distilled Audio2Emotion model for Skyrim facial "
-       "animation.",
-       Sec::kModel, &tune.performance_sentiment},
-      {"SentimentMultiplier", &tune.sentiment_multiplier, 0, 2,
-       "Sentiment addition multiplier",
-       "Scales sentiment added to the model inputs: 0 = none, 0.5 = half, "
-       "1 = normal, 2 = double. Requires Sentiment Analysis. Final emotion "
-       "limits apply. 0 skips sentiment inference. Applies next line.",
-       Sec::kGeneral, nullptr, -1, true, Param::kSentiment, Group::kSources},
+      Own({"VanillaEmotions", nullptr, 0, 0, "Vanilla / scene emotion inputs",
+           "Pass authored scene and dialogue-mod emotions to the facial model. "
+           "On by default. Sentiment Analysis works independently. "
+           "Applies during BFA speech.",
+           Sec::kGeneral, &tune.vanilla_emotions, kProfileShared, true,
+           Param::kNone, Group::kSources}),
+      Own({"SentimentAnalysis", nullptr, 0, 0, "Sentiment Analysis",
+           "Enable the selected Audio2Emotion model to add voice-driven "
+           "emotion "
+           "alongside authored scene emotion. On GPU, Full uses about 745 MB "
+           "of VRAM and Performance about 31 MB. "
+           "Performance is enabled by default. Disabling unloads it after "
+           "current "
+           "inference. "
+           "Force CPU uses system memory and additional CPU processing.",
+           Sec::kGeneral, &tune.sentiment_analysis, kProfileShared, true,
+           Param::kSentiment, Group::kSources}),
+      Own({"UsePerformanceEmotion", nullptr, 0, 0,
+           "Skyrim-trained emotion model",
+           "Experimental distilled Audio2Emotion model for Skyrim facial "
+           "animation.",
+           Sec::kModel, &tune.performance_sentiment}),
+      Own({"SentimentMultiplier", &tune.sentiment_multiplier, 0, 2,
+           "Sentiment addition multiplier",
+           "Scales sentiment added to the model inputs: 0 = none, 0.5 = half, "
+           "1 = normal, 2 = double. Requires Sentiment Analysis. Final emotion "
+           "limits apply. 0 skips sentiment inference. Applies next line.",
+           Sec::kGeneral, nullptr, kProfileShared, true, Param::kSentiment,
+           Group::kSources}),
       {"Prefetch", nullptr, 0, 0, "Prepare dialogue in advance",
        "Generate a line when its dialogue response is created, before it is "
        "spoken.",
        Sec::kGeneral, &tune.prefetch},
-      {"UsePerformanceModel", nullptr, 0, 0, "Performance model",
-       "4-million-parameter student trained to reproduce V3's answers on "
-       "the training dialogue, with memory within each line. Designed for "
-       "familiar dialogue; unfamiliar or generated dialogue may be less "
-       "consistent. It does not perfectly reproduce V3. Runs at 30 fps "
-       "without speech-driven eye movement. GPU or CPU; measured about "
-       "122 MiB GPU memory on RTX 4070 under Wine, including driver "
-       "overhead. Usage varies by system. Switches live; playing lines "
-       "retain their animation.",
-       Sec::kModel, &tune.performance_model},
-      {"UseUltraPerformanceModel", nullptr, 0, 0, "Ultra Performance model",
-       "The original 80,729-parameter Performance model, renamed. Lowest "
-       "processing cost, with reduced detail and less consistent lip sync. "
-       "Trained on V3's answers for familiar dialogue; unfamiliar dialogue "
-       "may be less reliable. Runs at 30 fps without speech-driven eye "
-       "movement. GPU or CPU; switches live, and playing lines retain "
-       "their animation.",
-       Sec::kModel, &tune.ultra_performance_model},
-      {"UseOldModel", nullptr, 0, 0, "Old model",
-       "Audio2Face v2.3. Less expressive than V3 and the slowest to run: "
-       "roughly half V3's speed in RTX 4070 GPU tests. Speed varies by "
-       "system and dialogue. Lower VRAM use than V3, "
-       "at about 100 MB of VRAM on GPU. Uses one shared facial "
-       "identity at 30 fps. Switches live; already playing lines finish "
-       "with their current animation.",
-       Sec::kModel, &tune.old_model},
-      {"ForceCPU", nullptr, 0, 0, "Force CPU",
-       "Run the selected model on CPU. V3 and Old "
-       "run much slower on CPU; long lines can start late.\n"
-       "Applies live after the current inference call finishes.",
-       Sec::kModel, &tune.force_cpu},
-      {"DisableTongue", nullptr, 0, 0, "Disable tongue motion",
-       "Restore the tongue behavior from before this feature. Applies "
-       "immediately.",
-       Sec::kDirect, &tune.disable_tongue},
-      {"ConversationGaze", nullptr, 0, 0, "Enable improved eye gaze",
-       "The master switch for everything under Gaze. Unticked, the game's "
-       "own steady gaze and head tracking are back exactly as without it. "
-       "Ticked: the NPC you are talking to looks at you with speech-driven "
-       "eye motion, and may look away in the pauses of a line, for the "
-       "silence alone or in thought. How often is set per male and female "
-       "profile below, and per NPC under Overrides. Applies immediately; "
-       "SE/AE only.",
-       Sec::kDirect, &tune.conversation_gaze, -1, true, Param::kNone,
-       Group::kGaze},
-      {"GazeStrength", &tune.gaze_strength, 0, 2, "Eye motion strength",
-       "Strength of the small speech-driven eye motion while they look at "
-       "you; 0 for none. Looking away is set separately below.",
-       Sec::kDirect, nullptr, -1, true, Param::kNone, Group::kGaze},
-      // With ConversationGaze: 0 keeps the eye motion alone, as before 6.1.
-      {"GazeBehavior", nullptr, 0, 0, "Look away at pauses",
-       "Unticked, they only ever look at you.", Sec::kGaze,
-       &tune.gaze_behavior, -1, true, Param::kNone, Group::kAuto, false},
-      {"GazeTurnHead", nullptr, 0, 0, "Turn head toward objects",
-       "Looking at an object well to the side turns the head, through the "
-       "game's own head tracking. Untick to move the eyes only.",
-       Sec::kGaze, &tune.gaze_turn_head},
-      {"GazeLineOfSight", nullptr, 0, 0, "Only look at what they can see",
-       "Objects and people behind a wall or other obstacle are not looked "
-       "at.",
-       Sec::kGaze, &tune.gaze_line_of_sight, -1, true, Param::kNone,
-       Group::kAuto, false},
-      {"GazeAvoidCamera", nullptr, 0, 0, "Never look into the camera",
-       "Outside first person, looks keep clear of the camera.", Sec::kGaze,
-       &tune.gaze_avoid_camera, -1, true, Param::kNone, Group::kAuto, false},
   };
+  for (const ModelInfo& info : kFaceModels)
+    if (info.selected)
+      params.push_back(Own({info.ini_key, nullptr, 0, 0, info.label, info.tip,
+                            Sec::kModel, &(tune.*info.selected)}));
+  params.insert(
+      params.end(),
+      {
+          Own({"ForceCPU", nullptr, 0, 0, "Force CPU",
+               "Run the selected model on CPU. V3 and Old "
+               "run much slower on CPU; long lines can start late.\n"
+               "Applies live after the current inference call finishes.",
+               Sec::kModel, &tune.force_cpu}),
+          // Drawn under each model's processing device (menu.cc).
+          Own({"GraphFusion", nullptr, 0, 0,
+               "Use graph fusion for this model",
+               "Audio2Face on GPU: DirectML merges the model's steps into "
+               "fewer, larger GPU operations, as every version before 7.0 "
+               "did. Slightly faster, but keeps extra copies of the model "
+               "in VRAM.\n"
+               "Measured on an RTX 5070 Ti: V3 about 5% faster for about "
+               "140 MB more VRAM (270 -> 410 MB); Performance about 13% "
+               "faster for about 130 MB more (185 -> 315 MB); Ultra "
+               "Performance about 30% faster for about 1 MB more; Legacy "
+               "unchanged. Every model already generates several times "
+               "faster than speech, so the speed difference is rarely "
+               "noticeable. Off by default; tick it for the speed and VRAM "
+               "use of earlier versions.\n"
+               "No effect on CPU. Applies live after the current inference "
+               "call finishes.",
+               Sec::kModel, &tune.face_graph_fusion}),
+          Own({"EmotionGraphFusion", nullptr, 0, 0,
+               "Use graph fusion for this model",
+               "Audio2Emotion on GPU: DirectML merges the model's steps "
+               "into fewer, larger GPU operations, as every version before "
+               "7.0 did. Slightly faster, but keeps extra copies of the "
+               "model in VRAM.\n"
+               "Measured on an RTX 5070 Ti: Full about 1% faster for about "
+               "600 MB more VRAM (745 -> 1,340 MB); Performance about 8% "
+               "faster for about 20 MB more (31 -> 52 MB). Results are "
+               "identical either way. Off by default; tick it for the speed "
+               "and VRAM use of earlier versions.\n"
+               "No effect on CPU. Applies live after the current inference "
+               "call finishes, without reloading Audio2Face.",
+               Sec::kModel, &tune.emotion_graph_fusion}),
+          {"DisableTongue", nullptr, 0, 0, "Disable tongue motion",
+           "Restore the tongue behavior from before this feature. Applies "
+           "immediately.",
+           Sec::kDirect, &tune.disable_tongue},
+          {"ConversationGaze", nullptr, 0, 0, "Enable improved eye gaze",
+           "The master switch for everything under Gaze. Unticked, the game's "
+           "own steady gaze and head tracking are back exactly as without it. "
+           "Ticked: the NPC you are talking to looks at you with speech-driven "
+           "eye motion, and may look away in the pauses of a line, for the "
+           "silence alone or in thought. How often is set per male and female "
+           "profile below, and per NPC under Overrides. Applies immediately; "
+           "SE/AE only.",
+           Sec::kDirect, &tune.conversation_gaze, kProfileShared, true,
+           Param::kNone, Group::kGaze},
+          {"GazeStrength", &tune.gaze_strength, 0, 2, "Eye motion strength",
+           "Strength of the small speech-driven eye motion while they look at "
+           "you; 0 for none. Looking away is set separately below.",
+           Sec::kDirect, nullptr, kProfileShared, true, Param::kNone,
+           Group::kGaze},
+          // With ConversationGaze: 0 keeps the eye motion alone, as before 6.1.
+          {"GazeBehavior", nullptr, 0, 0, "Look away at pauses",
+           "Unticked, they only ever look at you.", Sec::kGaze,
+           &tune.gaze_behavior, kProfileShared, true, Param::kNone,
+           Group::kAuto, false},
+          {"GazeTurnHead", nullptr, 0, 0, "Turn head toward objects",
+           "Looking at an object well to the side turns the head, through the "
+           "game's own head tracking. Untick to move the eyes only.",
+           Sec::kGaze, &tune.gaze_turn_head},
+          {"GazeLineOfSight", nullptr, 0, 0, "Only look at what they can see",
+           "Objects and people behind a wall or other obstacle are not looked "
+           "at.",
+           Sec::kGaze, &tune.gaze_line_of_sight, kProfileShared, true,
+           Param::kNone, Group::kAuto, false},
+          {"GazeAvoidCamera", nullptr, 0, 0, "Never look into the camera",
+           "Outside first person, looks keep clear of the camera.", Sec::kGaze,
+           &tune.gaze_avoid_camera, kProfileShared, true, Param::kNone,
+           Group::kAuto, false},
+      });
   // Per male/female profile and per NPC; the player is never the partner.
   static const struct {
     const char* key;
     const char* label;
     const char* tip;
     bool menu;
-  } kGazeOdds[a2f::kNumGazeMoods] = {
+  } kGazeOdds[] = {
       {"GazeNeutral", "Neutral: holds your eye",
        "Chance that a pause in a neutral line leaves them looking at you: "
        "0 = never, 1 = always. Otherwise they look at something past you, "
@@ -199,8 +270,9 @@ extern const std::vector<Param> kParams = [] {
       {"GazeDisgusted", "Disgusted: holds your eye",
        "Chance per pause while disgusted.", false},
   };
-  for (int profile = 0; profile < 2; ++profile) {
-    FaceTune& face = profile ? tune.female : tune.male;
+  static_assert(std::size(kGazeOdds) == a2f::kNumGazeMoods);
+  for (int profile : {kProfileMale, kProfileFemale}) {
+    FaceTune& face = tune.ForProfile(profile);
     auto gaze_param = [&](Param p, float* (*access)(FaceTune&, size_t),
                           size_t index, bool menu) {
       p.face_value = access;
@@ -242,10 +314,8 @@ extern const std::vector<Param> kParams = [] {
            "Lip and mouth skin movement. Default strength: 1.0; %g with "
            "this sex's Expressive Facial Animation edition detected.",
            kExpressiveMouthScale);
-  for (int profile = 0; profile < 3; ++profile) {
-    FaceTune& face = profile == 2 ? tune.player_face
-                     : profile    ? tune.female
-                                  : tune.male;
+  for (int profile = 0; profile < kNumProfiles; ++profile) {
+    FaceTune& face = tune.ForProfile(profile);
     auto face_param = [&](Param p, float* (*access)(FaceTune&, size_t),
                           size_t index = 0) {
       p.face_value = access;
@@ -260,9 +330,9 @@ extern const std::vector<Param> kParams = [] {
                   "Positive = mouth shapes earlier.", Sec::kPlayback, nullptr},
                  [](FaceTune& f, size_t) { return &f.time_offset; }),
              face_param({"BlendIn", nullptr, 0, 0.5f, "Blend-in (s)",
-                         "Crossfade from vanilla lip-sync when a line is ready "
-                         "after it "
-                         "started.",
+                         "Crossfade into a line ready after it started, or "
+                         "begun while the face still shows a pose. From "
+                         "rest a line is shown at once.",
                          Sec::kPlayback, nullptr},
                         [](FaceTune& f, size_t) { return &f.blend_in; }),
              face_param({"DirectBrows", nullptr, 0, 3, "Brows",
@@ -322,20 +392,21 @@ extern const std::vector<Param> kParams = [] {
                   "Multiply authored scene emotion before it enters the model. "
                   "1 = unchanged; 0 = none. Requires Vanilla / scene emotion "
                   "inputs enabled. Applies next line.",
-                  Sec::kEmotion, nullptr, -1, true, Param::kScene},
+                  Sec::kEmotion, nullptr, kProfileShared, true, Param::kScene},
                  [](FaceTune& f, size_t) { return &f.voice_emotion; }),
-             face_param({"VoiceSwell", nullptr, 0, 2,
-                         "Scene emotion boost from voice volume",
-                         "Boost authored scene emotion where the voice is "
-                         "loud. 0 = steady. Applies from the next line.",
-                         Sec::kEmotion, nullptr, -1, true, Param::kScene},
-                        [](FaceTune& f, size_t) { return &f.voice_swell; }),
+             face_param(
+                 {"VoiceSwell", nullptr, 0, 2,
+                  "Scene emotion boost from voice volume",
+                  "Boost authored scene emotion where the voice is "
+                  "loud. 0 = steady. Applies from the next line.",
+                  Sec::kEmotion, nullptr, kProfileShared, true, Param::kScene},
+                 [](FaceTune& f, size_t) { return &f.voice_swell; }),
              face_param(
                  {"FaceFadeIn", nullptr, 0, 3,
                   "Fade into generated expressions (s)",
                   "When a line starts: how long the game's own expressions "
                   "take to fade out, leaving the face to Audio2Face.",
-                  Sec::kEmotion, nullptr, -1, true, Param::kNone,
+                  Sec::kEmotion, nullptr, kProfileShared, true, Param::kNone,
                   Group::kTransitions},
                  [](FaceTune& f, size_t) { return &f.face_in; }),
              face_param(
@@ -343,22 +414,24 @@ extern const std::vector<Param> kParams = [] {
                   "Restore game expressions after speech (s)",
                   "After a line: how long the game's own expressions take to "
                   "fade back in.",
-                  Sec::kEmotion, nullptr, -1, true, Param::kNone,
+                  Sec::kEmotion, nullptr, kProfileShared, true, Param::kNone,
                   Group::kTransitions},
                  [](FaceTune& f, size_t) { return &f.face_out; }),
          }) {
       params.push_back(p);
     }
-    static const char* const kKeys[a2f::kNumMod] = {
+    static const char* const kKeys[] = {
         "MaxAmazement", "MaxAnger",  "MaxCheekiness", "MaxDisgust",
         "MaxFear",      "MaxGrief",  "MaxJoy",        "MaxOutOfBreath",
         "MaxPain",      "MaxSadness"};
-    static const char* const kLabels[a2f::kNumMod] = {
+    static_assert(std::size(kKeys) == a2f::kNumMod);
+    static const char* const kLabels[] = {
         "Maximum surprise input",   "Maximum anger input",
         "Maximum cheekiness input", "Maximum disgust input",
         "Maximum fear input",       "Maximum grief input",
         "Maximum happiness input",  "Maximum breathlessness input",
         "Maximum pain input",       "Maximum sadness input"};
+    static_assert(std::size(kLabels) == a2f::kNumMod);
     for (int c = 0; c < a2f::kNumMod; ++c) {
       const bool unused =
           c == a2f::kGrief || c == a2f::kOutOfBreath || c == a2f::kPain;
@@ -386,20 +459,21 @@ extern const std::vector<Param> kParams = [] {
   return params;
 }();
 
+std::span<const ModelInfo> FaceModels() { return kFaceModels; }
+const ModelInfo& FallbackFaceModel() { return std::rbegin(kFaceModels)[0]; }
 const ModelInfo& ModelFor(int network) {
-  static constexpr ModelInfo kModels[] = {
-      {a2f::kNetV3, L"a2f3_fp16.onnx", L"A2FDirect3.bin", a2f::kNetV3,
-       a2f::kNetVramMb3},
-      {a2f::kNetV2, L"network_fp16.onnx", L"A2FDirect.bin", a2f::kNetV2,
-       a2f::kNetVramMb},
-      {a2f::kNetPerformance, L"performance.onnx", L"A2FDirect3.bin",
-       a2f::kNetV3, a2f::kNetVramMbPerformance},
-      {a2f::kNetUltraPerformance, L"ultra-performance.onnx", L"A2FDirect3.bin",
-       a2f::kNetV3, a2f::kNetVramMbUltraPerformance},
-  };
-  for (const ModelInfo& info : kModels)
+  for (const ModelInfo& info : kFaceModels)
     if (info.network == network) return info;
-  return kModels[0];
+  return FallbackFaceModel();
+}
+int Tune::SelectedModel() const {
+  for (const ModelInfo& info : kFaceModels)
+    if (info.selected && this->*info.selected) return info.network;
+  return FallbackFaceModel().network;
+}
+void Tune::SelectModel(int network) {
+  for (const ModelInfo& info : kFaceModels)
+    if (info.selected) this->*info.selected = info.network == network;
 }
 extern const size_t kNumParams = std::size(kParams);
 
@@ -431,7 +505,8 @@ bool ReadIni(CSimpleIniA& ini, bool* missing = nullptr) {
       "GraphicsRoute",   "Startup",      "FaceModel",       "EmotionModel",
       "VanillaEmotions", "ActiveOnly",   "PlayerAnimation", "PrepareEarly",
       "Tongue",          "Gaze",         "Logging",         "Khajiit",
-      "Argonian",        "EmotionDevice"};
+      "Argonian",        "EmotionDevice", "FaceGraphFusion",
+      "EmotionGraphFusion"};
   for (const char* choice : kChoices) {
     const std::string path =
         std::string(
@@ -503,9 +578,9 @@ std::string Section(const Param& p) {
   static const char* const kNames[] = {
       "General", "General", "Playback", "LocalAnimationStrength",
       "Emotion", "Debug",   "Gaze"};
+  static_assert(std::size(kNames) == static_cast<size_t>(Sec::kGaze) + 1);
   std::string section = kNames[static_cast<int>(p.sec)];
-  if (p.profile >= 0)
-    section += p.profile == 2 ? "Player" : p.profile ? "Female" : "Male";
+  if (p.profile != kProfileShared) section += kProfiles[p.profile].section;
   return section;
 }
 
@@ -679,10 +754,11 @@ bool NpcAllowed(uint8_t* actor) {
 }
 
 bool NpcParamSupported(const Param& param) {
-  return (param.profile == 0 && param.face_value) ||
-         (param.profile == -1 && (param.sec == Sec::kDirect ||
-                                  !strcmp(param.key, "SentimentMultiplier") ||
-                                  !strcmp(param.key, "SentimentAnalysis")));
+  return (param.profile == kProfileMale && param.face_value) ||
+         (param.profile == kProfileShared &&
+          (param.sec == Sec::kDirect ||
+           !strcmp(param.key, "SentimentMultiplier") ||
+           !strcmp(param.key, "SentimentAnalysis")));
 }
 
 Tune NpcSharedTune(Tune result, uint8_t* actor) {
@@ -728,7 +804,7 @@ FaceTune NpcFaceTune(const Tune& defaults, uint8_t* actor, bool female,
   if (id == npc_ids.end()) return face;
   const auto& values = npcs.at(id->second).values;
   for (const Param& param : kParams) {
-    if (param.profile != 0) continue;
+    if (param.profile != kProfileMale) continue;
     float* target = param.FaceValue(face);
     if (!target) continue;
     const auto value = values.find(param.key);
@@ -835,7 +911,7 @@ void SetEmotionDevice(int device) {
 
 void ResetTune() {
   ScopedLock guard(settings_lock);
-  // a diagnostic switch and the model, not tuning values
+  // a diagnostic switch, the models and their devices, not tuning values
   const Tune old = tune;
   tune = Tune();
   tune.logging = old.logging;
@@ -846,6 +922,8 @@ void ResetTune() {
   tune.force_cpu = old.force_cpu;
   tune.gpu_adapter = old.gpu_adapter;
   tune.emotion_device = old.emotion_device;
+  tune.face_graph_fusion = old.face_graph_fusion;
+  tune.emotion_graph_fusion = old.emotion_graph_fusion;
   for (RaceSetting& race : races) race.enabled = race.default_enabled;
 }
 
@@ -887,9 +965,7 @@ void LoadIni() {
   config.cache_lines = std::max(
       8, static_cast<int>(ini.GetLongValue("General", "CacheLines", 300)));
   config.log_lines = ini.GetLongValue("Debug", "LogLines", 400);
-  // UseOldModel was Network=2 (3: v3.0) in earlier 3.0 builds, and ForceCPU
-  // GPU=0
-  tune.old_model = ini.GetLongValue("General", "Network", 3) == 2;
+  // ForceCPU was GPU=0 in earlier 3.0 builds.
   tune.force_cpu = ini.GetLongValue("General", "GPU", 1) == 0;
   tune.gpu_adapter = std::max(0L, ini.GetLongValue("General", "GpuAdapter", 0));
   // Explicit route, as in 4.0. No Auto probe or GPU-to-GPU fallback. This
@@ -921,13 +997,14 @@ void LoadIni() {
         !strcmp(p.key, "UpperLip")   ? direct::kUpperLipCalibration
         : !strcmp(p.key, "LowerLip") ? direct::kLowerLipCalibration
                                      : 1.f;
-    const bool old_lip =
-        version < 5 && p.profile >= 0 && p.profile < 2 && calibration != 1.f;
+    const bool sex_profile =
+        p.profile == kProfileMale || p.profile == kProfileFemale;
+    const bool old_lip = version < 5 && sex_profile && calibration != 1.f;
     // Missing keys use new defaults; only stored legacy values are converted.
     snprintf(d, sizeof d, "%g", *p.value * (old_lip ? calibration : 1.f));
-    if (version < 4 && p.profile >= 0 && p.profile < 2) {
+    if (version < 4 && sex_profile) {
       Param legacy = p;
-      legacy.profile = -1;
+      legacy.profile = kProfileShared;
       const std::string legacy_value =
           ini.GetValue(Section(legacy).c_str(), p.key, d);
       snprintf(d, sizeof d, "%s", legacy_value.c_str());
@@ -940,16 +1017,35 @@ void LoadIni() {
           old_lip ? std::clamp(value, 0.f, 3.f) / calibration : value, p.lo,
           p.hi);
   }
-  if (version < 10) {
-    CSimpleIniA user;
-    user.SetUnicode();
-    // Preserve old user or installer choices; new fragments have the Ultra key.
-    if (ReadIniFile(user, kIni) &&
-        !user.GetValue("General", "UseUltraPerformanceModel") &&
-        user.GetLongValue(
-            "General", "UsePerformanceModel",
-            !ini.GetValue("General", "UseUltraPerformanceModel") &&
-                tune.performance_model) != 0) {
+  // The model is chosen whole by the last INI that names one, the user's over
+  // the installer's: a switch it leaves out is off, so that neither the other
+  // INI nor the default outranks its choice. Naming none keeps the default.
+  const auto chooses = [](const CSimpleIniA& file) {
+    if (file.GetValue("General", "Network")) return true;
+    for (const ModelInfo& info : kFaceModels)
+      if (info.ini_key && file.GetValue("General", info.ini_key)) return true;
+    return false;
+  };
+  CSimpleIniA user;
+  user.SetUnicode();
+  const CSimpleIniA* chosen = nullptr;
+  if (ReadIniFile(user, kIni) && chooses(user))
+    chosen = &user;
+  else if (chooses(ini))
+    chosen = &ini;
+  if (chosen) {
+    // UseOldModel was Network=2 (3: V3) in earlier 3.0 builds.
+    const bool network2 = chosen->GetLongValue("General", "Network", 3) == 2;
+    for (const ModelInfo& info : kFaceModels)
+      if (info.selected)
+        tune.*info.selected =
+            chosen->GetLongValue(
+                "General", info.ini_key,
+                info.selected == &Tune::old_model && network2) != 0;
+    // Before version 10, Performance was the model now Ultra Performance.
+    if (version < 10 &&
+        !chosen->GetValue("General", "UseUltraPerformanceModel") &&
+        tune.performance_model) {
       tune.performance_model = false;
       tune.ultra_performance_model = true;
     }
@@ -964,6 +1060,7 @@ void LoadIni() {
   config.network = tune.SelectedModel();
   config.gpu = !tune.force_cpu;
   config.gpu_adapter = tune.gpu_adapter;
+  config.graph_fusion = tune.face_graph_fusion;
   config.model = ModelFor(config.network).model_file;
   config.direct = ModelFor(config.network).mapping_file;
   if (version < 3) tune.logging = true;

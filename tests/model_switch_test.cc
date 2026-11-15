@@ -14,6 +14,7 @@ namespace a2f {
 int alive = 0, destroyed = 0, created = 0;
 bool fail_gpu = false;
 int adapter_seen = -1;
+bool fusion_seen = true;
 struct SwitchNet : Net {
   int version;
   explicit SwitchNet(int v) : version(v) {
@@ -33,7 +34,7 @@ struct SwitchNet : Net {
 std::unique_ptr<Net> SwitchCreate(int version, bool gpu, std::string& err,
                                   std::string& info) {
   if (gpu && fail_gpu) {
-    err = "test GPU failure";
+    err = "test GPU failure 8007000E";  // E_OUTOFMEMORY
     return {};
   }
   info = std::to_string(version) + (gpu ? " GPU" : " CPU");
@@ -43,24 +44,28 @@ std::unique_ptr<Net> Switch2(const std::wstring&, const std::wstring&,
                              const OrtOptions& o, std::string& e,
                              std::string& i) {
   adapter_seen = o.gpu_adapter;
+  fusion_seen = o.graph_fusion;
   return SwitchCreate(2, o.gpu, e, i);
 }
 std::unique_ptr<Net> Switch3(const std::wstring&, const std::wstring&,
                              const OrtOptions& o, std::string& e,
                              std::string& i) {
   adapter_seen = o.gpu_adapter;
+  fusion_seen = o.graph_fusion;
   return SwitchCreate(3, o.gpu, e, i);
 }
 std::unique_ptr<Net> Switch4(const std::wstring&, const std::wstring&,
                              const OrtOptions& o, std::string& e,
                              std::string& i) {
   adapter_seen = o.gpu_adapter;
+  fusion_seen = o.graph_fusion;
   return SwitchCreate(4, o.gpu, e, i);
 }
 std::unique_ptr<Net> Switch5(const std::wstring&, const std::wstring&,
                              const OrtOptions& o, std::string& e,
                              std::string& i) {
   adapter_seen = o.gpu_adapter;
+  fusion_seen = o.graph_fusion;
   return SwitchCreate(5, o.gpu, e, i);
 }
 }  // namespace a2f
@@ -255,7 +260,50 @@ int main() {
   SetProcessingDevice(false, 0);
   WorkerStep(keeper, false);
   CHECK(keeper.on_gpu() && a2f::adapter_seen == 0);
-  // Selecting an emotion device never rebuilds or replaces the facial model.
+  // Graph fusion is off by default and reaches ORT; toggling it rebuilds
+  // the GPU session live. On CPU it has no effect and rebuilds nothing.
+  CHECK(!SnapshotTune().face_graph_fusion && !a2f::fusion_seen);
+  CHECK(!SnapshotTune().emotion_graph_fusion && !sentiment_graph_fusion);
+  const auto set_flag = [](const char* key, bool on) {
+    ScopedLock guard(settings_lock);
+    for (const Param& p : kParams)
+      if (!strcmp(p.key, key)) *p.flag = on;
+  };
+  int fusion_creates = a2f::created;
+  set_flag("GraphFusion", true);
+  WorkerStep(keeper, false);
+  CHECK(a2f::created == fusion_creates + 1 && keeper.on_gpu());
+  CHECK(a2f::fusion_seen && SnapshotModel()->graph_fusion);
+  SetProcessingDevice(true, 0);
+  WorkerStep(keeper, false);
+  fusion_creates = a2f::created;
+  set_flag("GraphFusion", false);
+  WorkerStep(keeper, false);
+  CHECK(a2f::created == fusion_creates && !keeper.on_gpu());
+  SetProcessingDevice(false, 0);
+  WorkerStep(keeper, false);
+  CHECK(keeper.on_gpu() && !a2f::fusion_seen && !SnapshotModel()->graph_fusion);
+  // Running out of memory names the VRAM for the fusion setting in effect.
+  const auto hint = [](double mb) {
+    char text[32];
+    snprintf(text, sizeof text, "about %.0f MB", mb);
+    return !stats.net_error.empty() &&
+           stats.net_error[0].find(text) != std::string::npos;
+  };
+  a2f::fail_gpu = true;
+  Select(a2f::kNetPerformance);
+  for (bool fused : {true, false}) {
+    set_flag("GraphFusion", fused);
+    WorkerStep(keeper, false);
+    CHECK(!keeper.loaded() && hint(fused ? a2f::kNetVramMbPerformanceFused
+                                         : a2f::kNetVramMbPerformance));
+  }
+  a2f::fail_gpu = false;
+  RequestGpuRetry();
+  WorkerStep(keeper, false);
+  CHECK(keeper.on_gpu() && stats.net_error.empty());
+  // Selecting an emotion device or its graph fusion never rebuilds or
+  // replaces the facial model.
   const auto face_selection = SnapshotModel();
   const int face_creates = a2f::created;
   for (int device : {kCpuDevice, 2, 0}) {
@@ -263,6 +311,12 @@ int main() {
     WorkerStep(keeper, false);
     CHECK(a2f::created == face_creates && keeper.on_gpu());
     CHECK(SnapshotModel() == face_selection && sentiment_device == device);
+  }
+  for (bool on : {true, false}) {
+    set_flag("EmotionGraphFusion", on);
+    WorkerStep(keeper, false);
+    CHECK(a2f::created == face_creates && SnapshotModel() == face_selection);
+    CHECK(sentiment_graph_fusion == on);
   }
   keeper.Unload();
   CHECK(a2f::alive == 0);

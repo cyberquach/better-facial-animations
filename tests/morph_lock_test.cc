@@ -3,6 +3,9 @@
 // lock from before the engine's ApplyMorphs (which resets the vertices) until
 // its own deltas are in. A release in between let the render thread copy a
 // frame without the pose: a random one-frame flicker on speaking faces.
+// A node the plugin wrote to keeps that span on its next reset, and a reset
+// that did not reach the shapes (a hook behind skipped the engine) gets
+// nothing added and is asked for again.
 // A static (non-dynamic) head part that carries base and morph vertices is
 // hidden from the engine's ApplyMorphs (no extra data during the call): its
 // morph kernel locks that part's dynamic data without checking that the part
@@ -40,7 +43,7 @@ bool plain_morphs = false;
 int depth[kShapes]{}, lock_calls = 0, orig_calls = 0, lookups = 0;
 int orig_depth[kShapes]{}, lookup_depth = 99;
 bool orig_done = false, in_hook = false, released_in_gap = false,
-     face_owned_in_orig = false;
+     face_owned_in_orig = false, released = false, skip_reset = false;
 uint32_t face_count_in_orig = 0;
 int plain_extras_in_orig = -1;
 
@@ -52,6 +55,8 @@ int Index(uint8_t* s) {
 }
 float* Lock(uint8_t* s) {
   const int i = Index(s);
+  // a shape locked or written again after the hook let one go
+  if (in_hook && released) released_in_gap = true;
   ++depth[i];
   ++lock_calls;
   return buffers[i].data();
@@ -59,13 +64,13 @@ float* Lock(uint8_t* s) {
 void Unlock(uint8_t* s) {
   const int i = Index(s);
   CHECK(depth[i] > 0);
-  // a release after the reset and before the deltas pass is the flicker
-  if (--depth[i] == 0 && in_hook && orig_done && !lookups)
-    released_in_gap = true;
+  // the hook's final release: no lock or write may follow it in the call
+  if (--depth[i] == 0 && in_hook && orig_done) released = true;
 }
 void Update(uint8_t* s, const float* xyz, bool) {
   const int i = Index(s);
   CHECK(depth[i] > 0);
+  if (in_hook && released) released_in_gap = true;
   for (int v = 0; v < 2; ++v) std::copy_n(xyz + v * 3, 3, buffers[i].data() + v * 4);
 }
 // The engine's ApplyMorphs: resets each shape under its own lock (which
@@ -78,7 +83,7 @@ uint64_t Morph(uint8_t* n, uint8_t force) {
   face_owned_in_orig = Field<uint32_t>(f, 0x220) == GetCurrentThreadId();
   face_count_in_orig = Field<uint32_t>(f, 0x224);
   for (int i = 0; i < kShapes; ++i) orig_depth[i] = depth[i];
-  if (n == node.data())
+  if (n == node.data() && !skip_reset)
     for (int i = 0; i < kShapes; ++i) {
       const int before = depth[i];
       float* data = Lock(shapes[i].data());
@@ -95,8 +100,7 @@ uint64_t Morph(uint8_t* n, uint8_t force) {
 void* MorphData(uint8_t* s) {
   return s == plain.data() && plain_morphs ? plain_fod.data() : nullptr;
 }
-// AddDirect retains the line's actor through this; it runs after the
-// original and must still be under the locks.
+// The hook retains the face's actor through this, before taking any lock.
 bool Lookup(const uint32_t& h, uint8_t** out) {
   CHECK(h == 42);
   ++lookups;
@@ -145,7 +149,7 @@ void Reset() {
   for (int i = 0; i < kShapes; ++i) depth[i] = orig_depth[i] = 0;
   lock_calls = orig_calls = lookups = 0;
   lookup_depth = 99;
-  orig_done = released_in_gap = face_owned_in_orig = false;
+  orig_done = released_in_gap = face_owned_in_orig = released = false;
   face_count_in_orig = 0;
   Field<uint16_t>(node.data(), 0x160) = 1;
 }
@@ -179,8 +183,10 @@ void PlayedFace() {
   CHECK(face_owned_in_orig && face_count_in_orig == 1);
   // the engine's own locking nested: 2 of ours, 2 of its
   CHECK(lock_calls == 2 * kShapes);
-  // the deltas pass ran while the locks were still held
-  CHECK(lookups == 1 && lookup_depth == 1);
+  // the actor is resolved before any lock (its reference must not be
+  // released under the face's lock); no shape is locked or written after
+  // the hook's final release
+  CHECK(lookups == 1 && lookup_depth == 0);
   CHECK(!released_in_gap);
   CHECK(!(Field<uint16_t>(node.data(), 0x160) & 1));
 }
@@ -206,6 +212,42 @@ void NotReady() {
   ready = true;
   playing.clear();
   Count();
+}
+// A node the plugin wrote to and then handed back (nothing plays it now)
+// keeps the span on its next reset, so its shapes go back together; then
+// the ledger forgets it.
+void WrittenNodeKeepsSpan() {
+  for (int i = 0; i < kShapes; ++i) {
+    buffers[i] = {1, 2, 4, 99, 4, 5, 6, 98};
+    written.Wrote(node.data(), shapes[i].data(), buffers[i].data(), 2,
+                  WriteLedger::Hash(buffers[i].data(), 2));
+  }
+  Run(node.data());
+  for (int i = 0; i < kShapes; ++i) CHECK(orig_depth[i] == 1);
+  CHECK(face_owned_in_orig && lock_calls == 2 * kShapes && !released_in_gap);
+  CHECK(!written.Pending(node.data()));
+  CHECK(!(Field<uint16_t>(node.data(), 0x160) & 1));
+  // the next reset is the engine's alone
+  Run(node.data());
+  CHECK(!face_owned_in_orig && lock_calls == kShapes);
+}
+// A reset that leaves the plugin's last write in place (a hook behind this
+// one skipped the engine) is not one: nothing is added and it is asked for
+// again, with the span kept.
+void SkippedResetAskedAgain() {
+  buffers[0] = {1, 2, 4, 99, 4, 5, 6, 98};
+  written.Wrote(node.data(), shapes[0].data(), buffers[0].data(), 2,
+                WriteLedger::Hash(buffers[0].data(), 2));
+  skip_reset = true;
+  Run(node.data());
+  skip_reset = false;
+  for (int i = 0; i < kShapes; ++i) CHECK(orig_depth[i] == 1);
+  CHECK(written.Pending(node.data()));
+  CHECK(Field<uint16_t>(node.data(), 0x160) & 1);
+  CHECK(Field<uint8_t>(fg.data(), 0x218) == 1);
+  Field<uint8_t>(fg.data(), 0x218) = 0;
+  Run(node.data());
+  CHECK(!written.Pending(node.data()));
 }
 // The static child gains base vertices, then morph data.
 void StaticMorphPartHiddenFromEngine() {
@@ -254,6 +296,8 @@ int main() {
   OtherFaceWhilePlaying();
   NothingPlaying();
   NotReady();
+  WrittenNodeKeepsSpan();
+  SkippedResetAskedAgain();
   StaticMorphPartHiddenFromEngine();
   puts("ok: face and shape locks span the morph reset and the deltas");
 }

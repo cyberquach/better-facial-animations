@@ -1,6 +1,7 @@
 // Reused searches and local accumulation must preserve follower deformation.
 #include <cassert>
 #include <cstdio>
+#include <tuple>
 
 #include "../src/animation/direct.cc"
 
@@ -78,7 +79,9 @@ int main() {
   // A moustache card's root belongs to the upper lip even if its hanging tip
   // is close to the lower lip. A tip its TRI opens less than half way stays
   // rigid with the root; one opened further spans the mouth and stretches as
-  // authored. The separate goatee card must still move with the jaw.
+  // authored. The separate goatee card must still move with the jaw. (The
+  // vertices on a lip take that lip; with two skin vertices a side, the
+  // other lip's are among the four nearest and weigh a five-hundredth.)
   for (float tip : {.3f, .6f}) {
     const std::vector<float> skin = {-1, 0, 1, 1, 0, 1, -1, .1f, 1, 1, .1f, 1,
                                      -1, 0, 0, 1, 0, 0, -1, .1f, 0, 1, .1f, 0};
@@ -105,9 +108,10 @@ int main() {
         movement += mapped.w[i * kFollow + j] *
                     opening[mapped.idx[i * kFollow + j] * 3 + 2];
       const float expected = i < 2 ? 0.f : i > 2 ? -1.f : tip < .5f ? 0.f : -tip;
-      assert(std::fabs(movement - expected) < 1e-6f);
+      assert(std::fabs(movement - expected) < (i == 2 ? 1e-6f : 5e-3f));
     }
-    // Missing or malformed topology keeps the ordinary vertex mapping.
+    // Without usable topology a vertex clear of the skin follows the jaw
+    // when its own TRI opens it.
     for (auto indices :
          {std::vector<uint16_t>{}, std::vector<uint16_t>{0, 1, 99}}) {
       cards.triangles = indices;
@@ -193,7 +197,9 @@ int main() {
   }
   // A card rooted on still skin and authored to open at its tip stretches as
   // authored when it lies off the upper lip (a jaw line strand); the same
-  // card over the upper lip (a moustache strand) stays rigid.
+  // card over the upper lip (a moustache strand) stays rigid. The tip hangs
+  // clear of the skin; lying on skin that opens as it does, it would follow
+  // that skin in either card.
   for (const bool moustache : {false, true}) {
     const std::vector<float> skin = {
         -.3f, 0, 1, .3f, 0, 1, -.3f, .1f, 1,  .3f, .1f, 1,
@@ -208,7 +214,7 @@ int main() {
     ShapeIn strand;
     strand.part = Part::kHead;
     strand.nv = 3;
-    strand.verts = {-.2f, 0, 1, .2f, 0, 1, 0, 0, .05f};
+    strand.verts = {-.2f, 0, 1, .2f, 0, 1, 0, .9f, .05f};
     strand.morphs.resize(kNumMorphs);
     strand.morphs[kBigAah] = {0, 0, 0, 0, 0, 0, 0, 0, -.3f};
     strand.triangles = {0, 1, 2};
@@ -227,15 +233,21 @@ int main() {
   // A moustache card resting on the lower lip ignores a TRI that opens its
   // tip part of the way. With one vertex of four on the lip (a fringe) it
   // stays rigid with its root; with three of four on the jaw (a strand draped
-  // past the mouth corner) those vertices move with the skin under them.
+  // past the mouth corner) those vertices move with the skin under them. A
+  // fringe is as rigid when its TRI opens the tip in full, as the lip under
+  // it does: following that lip, it would curtain the open mouth. Beside the
+  // mouth, on a cheek that opens as that TRI says, the tip goes with the cheek.
+  for (const bool cheek : {false, true})
+  for (const float tip : {-.7f, -1.f})
   for (const bool draped : {false, true}) {
     const std::vector<float> skin = {-1, 0,   1,  1,  0,   1,  -1, .1f, 1,
                                      1,  .1f, 1,  -1, 0,   0,  1,  0,   0,
                                      -1, .1f, 0,  1,  .1f, 0,  -1, 0,   -1,
                                      1,  0,   -1, -1, .1f, -1, 1,  .1f, -1};
-    const std::vector<uint8_t> labels = {
+    std::vector<uint8_t> labels = {
         kUpperLip, kUpperLip, kUpperLip, kUpperLip, kLowerLip, kLowerLip,
         kLowerLip, kLowerLip, 0,         0,         0,         0};
+    if (cheek) std::fill_n(labels.begin() + 4, 4, 0);
     std::vector<float> opening(36);
     for (int i = 4; i < 12; ++i) opening[i * 3 + 2] = -1;
     ShapeIn strand;
@@ -245,8 +257,8 @@ int main() {
                     -1,   0, 0};
     if (draped) strand.verts[5] = -1;
     strand.morphs.resize(kNumMorphs);
-    strand.morphs[kBigAah] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -.7f};
-    if (draped) strand.morphs[kBigAah][5] = strand.morphs[kBigAah][8] = -.7f;
+    strand.morphs[kBigAah] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, tip};
+    if (draped) strand.morphs[kBigAah][5] = strand.morphs[kBigAah][8] = tip;
     strand.triangles = {0, 1, 2, 1, 2, 3};
     std::vector<KdTree> trees;
     Head::Shape mapped;
@@ -257,9 +269,106 @@ int main() {
       for (int j = 0; j < kFollow; ++j)
         movement += mapped.w[i * kFollow + j] *
                     opening[mapped.idx[i * kFollow + j] * 3 + 2];
-      assert(std::fabs(movement - (draped && i ? -1.f : 0.f)) < 1e-5f);
+      // The two on the upper lip take that lip; in so sparse a skin the lower
+      // lip's vertices are among their four nearest and weigh a few hundredths.
+      // Unlabelled, the ring the tip rests on is also among the root's four.
+      const bool carried = cheek && tip == -1 && i == 3;
+      assert(std::fabs(movement - ((draped && i) || carried ? -1.f : 0.f)) <
+             ((i < 2 && !(draped && i)) || (cheek && !draped && i == 3)
+                  ? .05f
+                  : 1e-5f));
     }
   }
+  // A card rooted on still skin whose lower edge lies on an upper lip that
+  // rises as the jaw opens, and whose TRI raises that edge with it: the edge
+  // stays on the lip. Rising counts as no opening for the skin as for the
+  // hair; with the lip's rise counted against the hair's clamped 0, the edge
+  // was held by the root and the lip rose through it.
+  {
+    std::vector<float> skin, opening;
+    std::vector<uint8_t> labels;
+    // still skin, the upper lip rising .2, the jaw opening .3, the lower lip
+    for (const auto [z, drop, label] : {std::tuple{2.f, 0.f, uint8_t{0}},
+                                        {1.f, -.2f, kUpperLip},
+                                        {0.f, .3f, uint8_t{0}},
+                                        {-3.f, 1.f, kLowerLip}})
+      for (const float x : {-.3f, .3f})
+        for (const float y : {0.f, .1f}) {
+          skin.insert(skin.end(), {x, y, z});
+          opening.insert(opening.end(), {0, 0, -drop});
+          labels.push_back(label);
+        }
+    ShapeIn card;
+    card.part = Part::kHead;
+    card.nv = 4;
+    card.verts = {-.2f, 0, 2, .2f, 0, 2, -.3f, .05f, 1, .3f, .05f, 1};
+    card.morphs.resize(kNumMorphs);
+    card.morphs[kBigAah] = {0, 0, 0, 0, 0, 0, 0, 0, .2f, 0, 0, .2f};
+    card.triangles = {0, 1, 2, 1, 2, 3};
+    std::vector<KdTree> trees;
+    Head::Shape mapped;
+    Follow(card, skin, 16, labels, -1.5f, std::vector<float>(48), 0, trees,
+           mapped, opening);
+    for (uint32_t i = 0; i < card.nv; ++i) {
+      float movement = 0;
+      for (int j = 0; j < kFollow; ++j)
+        movement += mapped.w[i * kFollow + j] *
+                    opening[mapped.idx[i * kFollow + j] * 3 + 2];
+      assert(std::fabs(movement - (i < 2 ? 0.f : .2f)) < 1e-5f);
+    }
+  }
+  // A beard lying on the cheek and the side of the jaw, where the opening of
+  // the skin falls off gradually: every vertex takes the opening of the skin
+  // under it, also where its own TRI was fitted to a head that opens a tenth
+  // further, and with or without topology. Attached by a threshold on its own
+  // opening to the skin that opens most, it drops further than the cheek it
+  // lies on and the cheek shows through.
+  for (const float stale : {0.f, .1f})
+    for (const bool topology : {true, false}) {
+      std::vector<float> skin, opening;
+      std::vector<uint8_t> labels;
+      auto fraction = [](float z) { return std::clamp((2 - z) / 6, 0.f, 1.f); };
+      for (int row = 0; row <= 12; ++row)
+        for (int column = 0; column <= 4; ++column) {
+          const float z = 2 - row * .5f;
+          skin.insert(skin.end(), {column * .5f, 0, z});
+          opening.insert(opening.end(), {0, 0, -2 * fraction(z)});
+          labels.push_back(0);
+        }
+      const uint32_t skin_count = static_cast<uint32_t>(labels.size());
+      ShapeIn beard;
+      beard.part = Part::kHead;
+      beard.morphs.resize(kNumMorphs);
+      for (int row = 0; row < 20; ++row)
+        for (int column = 0; column < 2; ++column) {
+          const float z = 1.25f - row * .25f;
+          beard.verts.insert(beard.verts.end(), {.75f + column * .5f, .1f, z});
+          beard.morphs[kBigAah].insert(beard.morphs[kBigAah].end(),
+                                       {0, 0, -2 * (fraction(z) + stale)});
+          if (!row || !topology) continue;
+          const uint16_t i = static_cast<uint16_t>(row * 2 + column);
+          beard.triangles.insert(
+              beard.triangles.end(),
+              {static_cast<uint16_t>(i - 2), static_cast<uint16_t>(i - 1 - column),
+               static_cast<uint16_t>(i + 1 - column * 2)});
+        }
+      beard.nv = static_cast<uint32_t>(beard.verts.size() / 3);
+      std::vector<KdTree> trees;
+      Head::Shape mapped;
+      Follow(beard, skin, skin_count, labels, 3, std::vector<float>(skin.size()),
+             0, trees, mapped, opening);
+      for (uint32_t i = 0; i < beard.nv; ++i) {
+        float movement = 0, weight = 0;
+        for (int j = 0; j < kFollow; ++j) {
+          movement += mapped.w[i * kFollow + j] *
+                      opening[mapped.idx[i * kFollow + j] * 3 + 2];
+          weight += mapped.w[i * kFollow + j];
+        }
+        assert(std::fabs(weight - 1) < 1e-5f);
+        assert(std::fabs(-movement / 2 - fraction(beard.verts[i * 3 + 2])) <
+               .06f);
+      }
+    }
   // Exercise the original scalar summation independently, including a zero
   // weight with an unusable index and vertices with no following at all.
   Head head;

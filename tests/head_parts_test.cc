@@ -36,11 +36,13 @@ void UpdateDynamic(uint8_t*, float* xyz, bool) {
   for (int i = 0; i < 2; ++i)
     for (int c = 0; c < 3; ++c) dynamic_vertices[i * 4 + c] = xyz[i * 3 + c];
 }
-void* MorphData(uint8_t*) { return has_morphs ? storage.data() : nullptr; }
+uint8_t* morph_data = storage.data();
+float morph_scale = 1;
+void* MorphData(uint8_t*) { return has_morphs ? morph_data : nullptr; }
 void ApplyMorph(void*, int type, int index, uint8_t*, float weight) {
   ++apply_count;
   for (int i : {0, 1, 2, 4, 5, 6})
-    dynamic_vertices[i] += weight * (type * 100 + index + 1);
+    dynamic_vertices[i] += weight * morph_scale * (type * 100 + index + 1);
 }
 }  // namespace
 namespace skse {
@@ -615,7 +617,7 @@ void UnlistedShapes() {
   // that back once.
   float moved[] = {1, 2, 2, 4, 5, 5};
   UpdateDynamic(shape.data(), moved, false);
-  NoteUnlistedWrite(shape.data(), moved, 2);
+  NoteUnlistedWrite(shape.data(), 2);
   assert(seen("UnlistedBeard") == 1);
   update_count = 0;
   ResetUnlisted(node.data());
@@ -806,7 +808,18 @@ int main() {
   assert(HeadKey(node.data(), false) != key);
   vertices[0] = 1;
   has_morphs = true;
-  assert(HeadKey(node.data(), false) != key);
+  const std::string with_morphs = HeadKey(node.data(), false);
+  assert(with_morphs != key);
+  // A reload moves the morph data; what the morphs do tells the head, and
+  // reading that leaves the shapes as they were.
+  const auto posed = dynamic_vertices;
+  morph_data = storage.data() + 1;
+  assert(HeadKey(node.data(), false) == with_morphs);
+  assert(dynamic_vertices == posed);
+  morph_scale = 2;
+  assert(HeadKey(node.data(), false) != with_morphs);
+  morph_scale = 1;
+  morph_data = storage.data();
   has_morphs = false;
   Field<uint16_t>(node.data(), (skse::IsVr() ? 0x14A : 0x122)) = 1;
   assert(HeadKey(node.data(), false) != key);

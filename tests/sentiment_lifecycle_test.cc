@@ -71,6 +71,7 @@ struct Voice : a2f::EmotionNet {
 }  // namespace
 int main() {
   using namespace bfa;
+  SetSelectedModel(a2f::kNetV3);  // the fixture's network (config.network)
   CHECK(SnapshotTune().sentiment_analysis &&
         SnapshotTune().performance_sentiment);
   // Exercise the explicit Disabled and Full lifecycle independently of
