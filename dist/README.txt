@@ -1,8 +1,8 @@
 Better Facial Animations @VERSION@ - real-time Audio2Face lip-sync for Skyrim
 
 Every voiced line spoken by an NPC with a FaceGen head (enabled races; creatures and animals without FaceGen heads are skipped)
-is run through NVIDIA Audio2Face-3D v3.0 on your GPU (women speak with its Claire face, men with Mark; v2.3 Mark for
-everyone with UseOldModel=1 in the ini), which deforms the face mesh directly: skin, lips,
+is run through a face model on your GPU: by default Performance, a student of NVIDIA Audio2Face-3D v3.0, or V3
+itself (women speak with its Claire face, men with Mark; v2.3 Mark for everyone with UseOldModel=1 in the ini), which deforms the face mesh directly: skin, lips,
 brows and eyelids, with the lower teeth and gums on Audio2Face's jaw. The tongue follows half the jaw movement with reduced, overlap-limited tongue cues from the game's speech track. The game's own emotion
 expressions (dialogue, mood, combat) fade out while a line plays, when Audio2Face alone shapes the face, and back
 in after it. Sentiment Analysis can add Audio2Emotion voice sentiment to the game's dialogue emotion.
@@ -15,14 +15,14 @@ value or an open dropdown option for resource use and tradeoffs. Full and Perfor
 support compatible AMD and NVIDIA GPUs through DirectML, or CPU via the separate
 Audio2Emotion processing device selector. Each model defaults to GPU 0 and saves
 its device choice independently.
-Full uses the original model for each spoken line; typically about 600 MB of extra VRAM
+Full uses the original model for each spoken line; about 745 MB of VRAM on GPU
 plus additional processing time. CPU uses system RAM and extra CPU processing.
-Performance is an experimental 21.6 MB student model trained to memorize Full's answers
-on the training dialogue. It does not reliably handle lines it was not trained on:
-results can be hit or miss, especially in obscure quest mods. Even training answers
-are approximate. The weight-file size is not a runtime VRAM estimate. Use Full when
-coverage of unfamiliar dialogue matters. See emotion_performance.json for checkpoint
-identity and measured export validation; no in-game quality acceptance is claimed.
+Performance is an experimental student model (about 31 MB of VRAM) trained to memorize
+Full's answers on the training dialogue. It does not reliably handle lines it was not
+trained on: results can be hit or miss, especially in obscure quest mods. Even training
+answers are approximate. Use Full when coverage of unfamiliar dialogue matters. See
+emotion_performance.json for checkpoint identity and measured export validation; no
+in-game quality acceptance is claimed.
 Both models only add voice-driven emotion alongside authored scene emotion. The
 Sentiment addition multiplier (0-2, default 1) scales that contribution; zero skips it.
 The combined inputs obey the profile's maximum emotion caps. Selecting Disabled
@@ -44,11 +44,11 @@ Requirements
   1.6.1179 (GOG), 1.7.99 or 1.7.104, matching SKSE, Address Library for SKSE Plugins.
   Or Skyrim VR 1.4.15 with SKSEVR (no Address Library needed; not yet looked at in a headset).
   Not the Epic Games Store version: SKSE does not support it.
-  V3/Old GPU inference needs DirectX 12 (~250 MB VRAM / ~100 MB respectively).
+  GPU inference needs DirectX 12; per-model VRAM is listed in GPU-SETUP.txt.
   Settings -> Animation models offers Audio2Face: Disabled, V3, Performance, Ultra Performance, Legacy.
   Audio2Emotion has its own Disabled, Full, Performance dropdown.
   Hover for tradeoffs. Model changes apply live; playing lines finish with their
-  original animation. Performance (4M Block AttnRes) runs on GPU, or CPU with ForceCPU=1:
+  original animation. Performance (22M Block AttnRes) runs on GPU, or CPU with ForceCPU=1:
   compact V3-trained motion with per-line memory, 30 fps, no speech-driven eye movement.
   It is trained to reproduce V3's answers on the training dialogue, prioritizing
   close reproduction of familiar lines over broad generalization. Unfamiliar
@@ -89,7 +89,7 @@ Requirements
   observed graphics wrapper; further attempts wait 2/4/8/16/30 seconds. Independent
   mode creates a lost device again, 3 retries at 2/4/8 seconds; a missing API or
   failed device creation waits for Try GPU again. Sentiment retries after 30 seconds.
-  No Auto probe or automatic independent/shared switch. GPU-first V3 is the normal preset.
+  No Auto probe or automatic independent/shared switch. GPU-first Performance is the normal preset.
   GPU errors never select CPU automatically. Choose Try GPU again for a new attempt,
   or select CPU for the relevant model. Selecting a GPU in either processing-device
   dropdown tries GPU in the same session, including after an earlier failure.
@@ -108,8 +108,8 @@ Requirements
   Installer defaults live in BetterFacialAnimations/Installer. Explicit values in
   BetterFacialAnimations.ini override them; menu saves preserve effective choices.
   Back up custom settings before reinstalling. Check MO2 Overwrite for a winning
-  INI; deploy changes in Vortex. Manual installation defaults to shared GPU, V3
-  and Performance emotion after game entry.
+  INI; deploy changes in Vortex. Manual installation defaults to shared GPU,
+  Performance facial animation and Performance emotion after game entry.
   GPU-SETUP.txt in this folder has the installer guide: Windows/driver and Proton
   requirements, exact CPU recovery INI edits, and how to try GPU from a working CPU session.
   No startup recovery marker is created or checked; old gpu-startup.pending files

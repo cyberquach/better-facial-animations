@@ -57,7 +57,17 @@ constexpr int kUltraPerformanceContextFrames = 17;
 constexpr int kUltraPerformanceWindowFrames =
     kPerformanceHopFrames + 2 * kUltraPerformanceContextFrames;
 constexpr int kPerformanceMemoryFrames = 256;
-constexpr int kPerformanceStateSize = 6 * 4 * kPerformanceMemoryFrames * 64;
+// The shipped dist/performance.onnx, as dist/performance-model.json has it
+// (tests/test_model_text.py): its width and parameter count, and its
+// key/value cache [layers, batch, heads, memory, width / heads].
+constexpr int kPerformanceWidth = 608;
+constexpr int kPerformanceParameters = 22'359'897;
+constexpr int kPerformanceLayers = 6;
+constexpr int kPerformanceHeads = 4;
+constexpr int kPerformanceHeadDim = kPerformanceWidth / kPerformanceHeads;
+constexpr int kPerformanceStateSize = kPerformanceLayers * kPerformanceHeads *
+                                      kPerformanceMemoryFrames *
+                                      kPerformanceHeadDim;
 // Owned by one GeneratePerformance call. Never shared between utterances,
 // actors or identities; unused leading cache slots are masked by frames.
 struct PerformanceState {
@@ -66,6 +76,9 @@ struct PerformanceState {
   int64_t frames = 0;
 };
 constexpr int kNumEyeAngles = 4;  // right X/Y, left X/Y
+// Both networks end a frame with the eyes.
+static_assert(kNumOut == kNumPca + kNumTongue + kNumJaw + kNumEyeAngles);
+static_assert(kJawEyes3 == kNumJaw + kNumEyeAngles);
 
 // Net::Version values.
 constexpr int kNetV2 = 2;
@@ -123,6 +136,11 @@ class Net {
 // Audio2Emotion v2.2: 3.75 seconds of 16 kHz audio -> six logits.
 constexpr int kVoiceWindow = 60000;
 constexpr int kNumVoiceEmo = 6;
+// The student's input (EmotionFeatures; tools/emotion_student.py MELS,
+// FRAMES): log-mels, mel-major, one frame every kVoiceMelStride samples.
+constexpr int kVoiceMels = 48;
+constexpr int kVoiceMelFrames = 188;
+constexpr int kVoiceMelStride = 320;
 class EmotionNet {
  public:
   virtual ~EmotionNet() = default;
@@ -243,6 +261,13 @@ struct Face3 {
 bool Generate3(Net& net, const float* pcm, size_t n, const Emotion& emotion,
                const Face3& face, Line& out, std::string& err,
                const std::function<bool()>& allowed = {});
+
+// The frames at kFps of a clip of n samples: its emotion and sentiment
+// tracks' rows.
+constexpr int EmotionFrames(size_t n) {
+  return static_cast<int>((static_cast<int64_t>(n) * kFps + kSampleRate - 1) /
+                          kSampleRate);
+}
 
 // The emotion alone: frames (at kFps) x kNumMod.
 void EmotionTrack(const float* pcm, size_t n, int frames,

@@ -65,6 +65,19 @@ uint64_t Morph(uint8_t* n, uint8_t force) {
   if (replace_keyframe) mods.values = replacement;
   return 123;
 }
+// The morph hook's gaze steps: the offset (no lock), then, under the face's
+// lock, the look morphs offset while the engine's pass runs. reset: set when
+// the pass had to reset the shapes for it.
+uint64_t GazePass(uint64_t epoch, bool& reset) {
+  uint8_t* face = FaceOf(node.data());
+  float offset[2] = {};
+  const bool looking = LookOffset(node.data(), face, epoch, offset);
+  std::optional<skse::ScopedFaceLock> guard;
+  if (looking) guard.emplace(Anim(face).lock);
+  GazeKeys keys;
+  if (looking && keys.Prepare(face, offset)) reset = true;
+  return keys.Morph(Morph, node.data(), 0);
+}
 void Toggle(const char* key, bool value) {
   for (const auto& p : kParams)
     if (!strcmp(p.key, key)) {
@@ -86,7 +99,7 @@ void Strength(float value) {
 void Draw(bool expected, float strength = 1) {
   bool reset = false;
   forced = -1;
-  CHECK(GazeMorphs(Morph, node.data(), 0, reset, world_epoch) == 123);
+  CHECK(GazePass(world_epoch, reset) == 123);
   CHECK(reset == expected && forced == int(expected));
   CHECK(modifiers[8] == 0 && modifiers[9] == 0.4f && modifiers[10] == 0 &&
         modifiers[11] == 0);
@@ -244,14 +257,14 @@ void AdmissionAndRestoration() {
   Draw(true);
   other_writer = true;
   bool reset = false;
-  GazeMorphs(Morph, node.data(), 0, reset, world_epoch);
+  GazePass(world_epoch, reset);
   CHECK(modifiers[9] == 0.8f && modifiers[8] == 0 && modifiers[10] == 0);
   other_writer = false;
   modifiers[9] = 0.4f;
   CHECK(mods.isUpdated);
   mods.isUpdated = false;
   replace_keyframe = true;
-  GazeMorphs(Morph, node.data(), 0, reset, world_epoch);
+  GazePass(world_epoch, reset);
   CHECK(mods.values == replacement);
   for (float value : replacement) CHECK(value == 0);
   replace_keyframe = false;
@@ -365,7 +378,7 @@ void AdmissionAndRestoration() {
     Draw(true);
   }
   reset = false;
-  GazeMorphs(Morph, node.data(), 0, reset, world_epoch + 1);
+  GazePass(world_epoch + 1, reset);
   CHECK(!reset && consumed[9] == 0.4f);
   Draw(true);
   loading_game = true;

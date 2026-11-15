@@ -942,6 +942,10 @@ void MorphSelection() {
     if (part == Part::kEyes) expected = 2;
     Check(ok && count == expected, "unique morph capture for shape role");
   }
+  // An entry left out of kMorphIds is a zero entry, not a compile error.
+  bool named = true;
+  for (const MorphId& id : kMorphIds) named = named && id.name && *id.name;
+  Check(named, "every morph is named");
   bool ok = true;
   for (int ph = 0; ph < kNumPhonemes; ++ph) {
     const auto& id = kMorphIds[kSpeechMorphs[ph]];

@@ -111,7 +111,33 @@
         "a played face's lock and every dynamic face shape's lock are held from before the engine's ApplyMorphs reset until the deltas pass has run (no release in the gap the render thread could copy)",
         "the engine's own per-shape locking nests under the hook's; non-dynamic children are never locked",
         "faces the plugin does not play, nothing playing and a not-ready plugin take no locks",
+        "a node the plugin wrote to keeps the span on its next reset; a reset that left the plugin's last write in place adds nothing and is requested again",
         "a static head part that has base and morph vertices is hidden from the engine's ApplyMorphs for the call (its kernel would lock null dynamic data) and restored after; the rest of that head, base vertices alone, dynamic parts and other heads still reach the engine"
+      ]
+    },
+    {
+      "id": "face-frame",
+      "test": "face_frame_test",
+      "sources": [
+        "tests/face_frame_test.cc"
+      ],
+      "plugin_objects": true,
+      "link": [],
+      "covers": [
+        "a render observer checks every shape whenever its lock depth returns to 0, and all shapes whenever all are unlocked, over the real animation update and morph hooks and an engine fake: each shows the engine's pose of its keyframes, or that plus one head's whole frame at one weight on every shape of the head",
+        "vanilla lips left in the keyframes plus the pose's weight make one mouth (at most one while a pose eases out), including the head mapped inside a morph call, a mid-line head key change, an unsafe frame, a skipped engine reset, another mod writing an unlisted shape, no-reset and forced second passes, the line-end and abrupt hand-backs, and a line ending while the speaker's next line is still generating",
+        "every plugin write to a shape is under its lock with no release since its reset in the same call (the 2026-11-03 span), with deltas actually written"
+      ]
+    },
+    {
+      "id": "write-ledger",
+      "test": "write_ledger_test",
+      "sources": [
+        "tests/write_ledger_test.cc"
+      ],
+      "covers": [
+        "a shape still holding the plugin's last write (same buffer, size and xyz) was not reset; any moved vertex, another buffer or size counts as reset",
+        "a node keeps its noted writes until its reset, other nodes keep theirs, and nodes never reset again are forgotten least recently written first"
       ]
     },
     {
@@ -271,7 +297,9 @@
       "covers": [
         "a provider line through the worker: the selected Audio2Emotion model (Performance or Full) is loaded and its reading fed to the facial network and logged on the line's animation",
         "the caller's channels and the sentiment multiplier combine with the model's reading; the animation reaches the provider's playing line and its Started event",
-        "Audio2Emotion Disabled or the selected model missing feeds nothing and runs no emotion model"
+        "Audio2Emotion Disabled or the selected model missing feeds nothing and runs no emotion model",
+        "Audio2Emotion switched off while a line's sentiment is read: the line is made without it and marked degraded",
+        "a clip that does not end on a frame has the voice's sentiment in its gaze beats' moods"
       ]
     },
     {
@@ -444,7 +472,8 @@
         "independent male/female sliders and persistence",
         "defaults and invalid values",
         "sex-specific generation and cache keys with old model",
-        "each network's mapping file and network in ModelFor"
+        "each network's mapping file and network in ModelFor",
+        "the player's line is queued before other lines"
       ]
     },
     {
@@ -473,6 +502,14 @@
       ]
     },
     {
+      "id": "model-text",
+      "python": "tests/test_model_text.py",
+      "covers": [
+        "the runtime's Performance width, parameter count and state shape are dist/performance-model.json's",
+        "README, packaged readme, ini, GPU setup, installer and settings text state that parameter count"
+      ]
+    },
+    {
       "id": "audio-fallback",
       "test": "audio_fallback_test",
       "sources": [
@@ -490,7 +527,9 @@
         "immediate morph handoff, late readiness, sound/lip completion and load cleanup (synthetic SE/AE/VR)",
         "end-of-line fade into the console (mfg/MFG Fix) keyframes read each frame; the neutral release unchanged with none set",
         "mapping before inference completes, retained mapping and pose transition, readiness through expression/morph flow",
-        "performance lines through Process: identity, 30 fps 73-channel output, retained mapping after a switch, mid-line switch cancellation"
+        "performance lines through Process: identity, 30 fps 73-channel output, retained mapping after a switch, mid-line switch cancellation",
+        "a face at rest shows a line from its first frame; a face still posed blends over BlendIn; a basis change starts from the line's own pose",
+        "a spoken line queued while a prefetch is generated stops it between runs, is generated first, and the prefetch is generated again after it"
       ]
     },
     {
@@ -544,6 +583,7 @@
         "after a look away the eyes rest on the player for the set time; the frequency scales looks away and 0 stops them",
         "a known camera is never rested on: looks away, a cut onto a held look, and the eyeline beside the player's head",
         "a sight ray stopping at the thing itself versus at an obstacle before it",
+        "beats met over half a second late (a line's beats come once it is generated) give their moods and move no eyes",
         "invalid positions, odds and views"
       ]
     },
@@ -754,7 +794,22 @@
       ],
       "covers": [
         "cached skin searches equal independently rebuilt searches for eyes, brows, beards and pinned parts",
-        "follower accumulation matches the scalar reference, including zero weights and neutral restoration"
+        "follower accumulation matches the scalar reference, including zero weights and neutral restoration",
+        "facial hair on the cheek and jaw line takes the opening of the skin under it, with or without topology"
+      ]
+    },
+    {
+      "id": "beard-clearance-measure",
+      "test": "beard_clearance_test",
+      "sources": [
+        "tests/beard_clearance_test.cc"
+      ],
+      "objects": [
+        "direct"
+      ],
+      "covers": [
+        "independent ray-cast measure of facial hair under the deformed skin: hair moving with the skin is clear, skin bulging through still hair is buried at the known depth",
+        "hidden hair, skin closing over skin and either triangle winding are not read as clipping; stretched edges are counted"
       ]
     },
     {
@@ -891,6 +946,15 @@
         "pinned installed HDPT registries and dynamic mesh names/shader flags",
         "18,581 excluded scalp-hair occurrences and 12,315 preserved facial-hair controls",
         "production capture/playback traversal, including inactive source variants"
+      ]
+    },
+    {
+      "id": "beard-clearance",
+      "python": "tools/beard_clearance.py",
+      "fixture_directory": true,
+      "covers": [
+        "SHA-pinned installed FaceGen heads (vanilla/Faithful Faces and People Of Skyrim Refined beards, scars, braids) over recorded v3 speech, with and without follower triangles",
+        "Independent bounds on visible hair under the skin and on stretched edges; the withdrawn threshold mapping must still be seen to clip"
       ]
     },
     {

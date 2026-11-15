@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -20,11 +21,13 @@ namespace a2f {
 int emotion_runs = 0;
 bool performance_seen = false;
 std::wstring path_seen;
+std::function<void()> on_emotion_run;  // called as a reading begins
 // Audio2Emotion that hears happiness (class 3 -> kJoy) in everything.
 class HappyEmotion : public EmotionNet {
  public:
   bool Run(const float*, float* logits, std::string&) override {
     ++emotion_runs;
+    if (on_emotion_run) on_emotion_run();
     std::fill_n(logits, kNumVoiceEmo, 0.f);
     logits[3] = 12;
     return true;
@@ -112,9 +115,10 @@ void SetValue(const char* key, float value) {
     if (!strcmp(p.key, key) && p.value) *p.value = value;
 }
 
-std::vector<uint8_t> Wave() {
+// extra: samples beyond the whole seconds.
+std::vector<uint8_t> Wave(int seconds = 1, int extra = 0) {
   constexpr int rate = 16000;
-  std::vector<int16_t> pcm(rate);  // one second
+  std::vector<int16_t> pcm(rate * seconds + extra);
   for (size_t i = 0; i < pcm.size(); ++i)
     pcm[i] = static_cast<int16_t>(
         8000 * std::sin(i * 6.283185307179586 * 220 / rate));
@@ -378,6 +382,39 @@ int main() {
   CHECK(missing.line->emotion_peak[a2f::kJoy] == 0 && !missing.entry->degraded);
   CHECK(api->EndUtterance(line.utterance_id, BFA_kAborted) == BFA_kResultOK);
   config.performance_sentiment_available = true;
+
+  // A clip that does not end on a frame: the voice's joy is in the moods of
+  // its gaze beats as it is in its animation.
+  {
+    auto odd_wav = Wave(1, 100);
+    BFA_Line odd{BFA_API_VERSION, sizeof(BFA_Line),        0, 0, kActorId,
+                 odd_wav.data(),  (uint32_t)odd_wav.size()};
+    const auto spoken = Speak(api, odd, keeper);
+    CHECK(spoken.line->emotion_peak[a2f::kJoy] > .9f);
+    CHECK(spoken.entry->beats && !spoken.entry->beats->empty() &&
+          spoken.entry->beats->front().moods[a2f::kGazeHappy] > .9f);
+    CHECK(api->EndUtterance(odd.utterance_id, BFA_kAborted) == BFA_kResultOK);
+  }
+
+  // Audio2Emotion switched off while a line's sentiment is read: the line is
+  // made without it, under the key that has it, and marked degraded, to be
+  // generated again once sentiment would be tried again.
+  {
+    auto cut_wav = Wave(7);
+    BFA_Line cut{BFA_API_VERSION, sizeof(BFA_Line),        0, 0, kActorId,
+                 cut_wav.data(),  (uint32_t)cut_wav.size()};
+    const int heard_before = a2f::emotion_runs;
+    a2f::on_emotion_run = [&] {
+      if (a2f::emotion_runs - heard_before == 3) SelectEmotionOption(0);
+    };
+    const auto made = Speak(api, cut, keeper);
+    a2f::on_emotion_run = {};
+    SelectEmotionOption(2);
+    CHECK(made.multiplier == 1 && a2f::emotion_runs - heard_before == 3);
+    CHECK(made.line->emotion_peak[a2f::kJoy] == 0);
+    CHECK(made.entry->degraded);
+    CHECK(api->EndUtterance(cut.utterance_id, BFA_kAborted) == BFA_kResultOK);
+  }
 
   puts("provider sentiment: the selected Audio2Emotion model's reading, the "
        "caller's channels and the multiplier reach the API line's animation; "

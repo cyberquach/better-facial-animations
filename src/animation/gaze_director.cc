@@ -64,6 +64,9 @@ constexpr float kCameraDegrees = 20, kCameraPlayerDegrees = 8;
 constexpr int kCameraTries = 8;
 constexpr float kLineEndSeconds = 0.45f;  // the gaze comes back to the listener
 constexpr float kMoodMemorySeconds = 2;   // after the line
+// A beat met this long after its moment gives its moods and no shift of
+// gaze: a line's beats come once it is generated, a face may join it late.
+constexpr float kBeatLateSeconds = 0.5f;
 
 // The speaker's horizontal frame toward the player.
 struct Frame {
@@ -440,6 +443,10 @@ GazeAim GazeDirector::Update(double now, const GazeLine* line,
              (*line->beats)[next_beat_].time <= line->time;
            ++next_beat_)
         beat = &(*line->beats)[next_beat_];
+      if (beat && line->time - beat->time > kBeatLateSeconds) {
+        moods_ = beat->moods;
+        beat = nullptr;
+      }
     }
   } else {
     line_ = 0;

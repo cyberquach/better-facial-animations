@@ -12,7 +12,7 @@
 
 namespace direct {
 
-const MorphId kMorphIds[kNumMorphs] = {
+const MorphId kMorphIds[] = {
     {2, 0, "BlinkLeft"},
     {2, 1, "BlinkRight"},
     {2, 6, "BrowUpLeft"},
@@ -58,13 +58,15 @@ namespace {
 
 // Mark's landmarks (tools/mark_export.py LANDMARKS) and the head morph each
 // pairs with; the smile is the expression's motion on one side of the face.
-constexpr Morph kLandmarkMorph[kNumLandmarks] = {
-    kBlinkLeft, kBlinkRight, kBrowUpLeft, kBrowUpRight,
-    kBigAah,    kOohQ,       kHappy,      kHappy};
+constexpr Morph kLandmarkMorph[] = {kBlinkLeft,   kBlinkRight, kBrowUpLeft,
+                                    kBrowUpRight, kBigAah,     kOohQ,
+                                    kHappy,       kHappy};
+static_assert(std::size(kLandmarkMorph) == kNumLandmarks);
 // Unique morph channels required by landmark calibration.
 constexpr Morph kCalibrationMorphs[] = {
     kBlinkLeft, kBlinkRight, kBrowUpLeft, kBrowUpRight, kBigAah, kOohQ, kHappy};
-constexpr int kLandmarkSide[kNumLandmarks] = {0, 0, 0, 0, 0, 0, -1, 1};
+constexpr int kLandmarkSide[] = {0, 0, 0, 0, 0, 0, -1, 1};
+static_assert(std::size(kLandmarkSide) == kNumLandmarks);
 constexpr int kLandmarkLips = 5;  // the pucker: centre of the lip box
 // skin vertex labels in the lip box (else kNoLip)
 enum Lip : uint8_t { kNoLip, kUpperLip, kLowerLip };
@@ -196,13 +198,16 @@ struct KdTree {
     Build(m + 1, e);
   }
   // best: a max-heap of (squared distance, point), at most k
+  // last: what a difference in the last coordinate counts for.
   void Search(uint32_t b, uint32_t e, const float* q, int k,
-              std::vector<std::pair<float, uint32_t>>& best) const {
+              std::vector<std::pair<float, uint32_t>>& best,
+              float last = 1) const {
     if (b >= e) return;
     uint32_t m = b + (e - b) / 2, i = order[m];
     float d2 = 0;
     for (int c = 0; c < dim; ++c) {
       float t = q[c] - pts[i * dim + c];
+      if (c == dim - 1) t *= last;
       d2 += t * t;
     }
     if (static_cast<int>(best.size()) < k) {
@@ -215,17 +220,19 @@ struct KdTree {
     }
     if (e - b == 1) return;
     float diff = q[axis[m]] - pts[i * dim + axis[m]];
+    if (axis[m] == dim - 1) diff *= last;
     bool left = diff < 0;
-    Search(left ? b : m + 1, left ? m : e, q, k, best);
+    Search(left ? b : m + 1, left ? m : e, q, k, best, last);
     if (static_cast<int>(best.size()) < k || diff * diff < best.front().first)
-      Search(left ? m + 1 : b, left ? e : m, q, k, best);
+      Search(left ? m + 1 : b, left ? e : m, q, k, best, last);
   }
   // The k nearest of q (dim floats): indices and distances, nearest first;
   // how many.
-  int Nearest(const float* q, int k, uint32_t* idx, float* dist) const {
+  int Nearest(const float* q, int k, uint32_t* idx, float* dist,
+              float last = 1) const {
     thread_local std::vector<std::pair<float, uint32_t>> best;
     best.clear();
-    Search(0, static_cast<uint32_t>(order.size()), q, k, best);
+    Search(0, static_cast<uint32_t>(order.size()), q, k, best, last);
     std::sort_heap(best.begin(), best.end());
     int n = static_cast<int>(best.size());
     for (int i = 0; i < n; ++i) {
@@ -582,6 +589,11 @@ void Follow(const ShapeIn& s, const std::vector<float>& skin, uint32_t snv,
   if (!eyes && skin_open.size() == skin.size())
     for (uint32_t i = 0; i < snv; ++i)
       jaw_drop = std::max(jaw_drop, -skin_open[i * 3 + 2]);
+  // The fraction of the jaw's opening skin vertex i takes (jaw_drop > 0): 0
+  // where it stays or rises, as for the hair's own (opening below).
+  const auto skin_opening = [&](uint32_t i) {
+    return std::clamp(-skin_open[i * 3 + 2] / jaw_drop, 0.f, 1.f);
+  };
   if (eyes) {
     std::vector<float> mag(s.nv, 0.f);
     bool blinks = s.morphs.size() > kBlinkRight &&
@@ -619,8 +631,8 @@ void Follow(const ShapeIn& s, const std::vector<float>& skin, uint32_t snv,
         if (lips[i] != kLowerLip) ids[0].push_back(i);
         if (lips[i] != kUpperLip) ids[1].push_back(i);
         if (jaw_drop > 0) {
-          const float fraction = -skin_open[i * 3 + 2] / jaw_drop;
-          if (lips[i] == kLowerLip || (fraction > .25f && lips[i] != kUpperLip))
+          if (lips[i] == kLowerLip ||
+              (skin_opening(i) > .25f && lips[i] != kUpperLip))
             ids[2].push_back(i);
         }
         continue;
@@ -633,13 +645,36 @@ void Follow(const ShapeIn& s, const std::vector<float>& skin, uint32_t snv,
       for (int lid = 0; lid < 2; ++lid)
         if (ids[side * 2 + lid].empty())
           ids[side * 2 + lid] = ids[side * 2 + 1 - lid];
-    for (int c = 0; c < 4; ++c) trees.emplace_back(skin.data(), ids[c]);
+    for (int c = 0; c < 3; ++c) trees.emplace_back(skin.data(), ids[c]);
+    if (!eyes && jaw_drop > 0) {
+      // the face's fourth: every skin vertex with the fraction of the jaw's
+      // opening it takes
+      std::vector<float> opening(static_cast<size_t>(snv) * 4);
+      std::vector<uint32_t> all(snv);
+      for (uint32_t i = 0; i < snv; ++i) {
+        all[i] = i;
+        std::copy_n(&skin[i * 3], 3, &opening[i * 4]);
+        opening[i * 4 + 3] = skin_opening(i);
+      }
+      trees.emplace_back(opening.data(), std::move(all), 4);
+    } else {
+      trees.emplace_back(skin.data(), ids[3]);
+    }
   }
+  // Facial hair with its own opening morph. A vertex lying on the skin follows
+  // the skin under it, sought among skin that opens as the vertex's own TRI
+  // does: on a cheek or the side of the jaw that is the nearest skin, at the
+  // lips it is the lip the TRI names. A difference of 1 / kOpening in opening
+  // counts as the distance to the skin, at least kNear0 jaw drops. Skin closer
+  // than kNear0 jaw drops is followed in full; hair further than kNear1 hangs
+  // clear of the skin and follows the jaw or the upper face, whichever its
+  // TRI opens it with.
+  constexpr float kNear0 = .25f, kNear1 = .75f, kOpening = 4;
+  // The skin under a vertex opens as its TRI says when within kAgree0 of it,
+  // and otherwise beyond kAgree1.
+  constexpr float kAgree0 = .12f, kAgree1 = .18f;
   bool authored =
-      s.part == Part::kHead && jaw_drop > 1e-4f && !s.triangles.empty() &&
-      s.triangles.size() % 3 == 0 &&
-      std::all_of(s.triangles.begin(), s.triangles.end(),
-                  [&](uint16_t index) { return index < s.nv; }) &&
+      s.part == Part::kHead && jaw_drop > 1e-4f &&
       s.morphs.size() > kBigAah && s.morphs[kBigAah].size() == s.verts.size() &&
       IsFinite(s.morphs[kBigAah]) && MaxAbs(s.morphs[kBigAah]) > 1e-4f &&
       !trees[0].order.empty() && !trees[1].order.empty() &&
@@ -672,14 +707,37 @@ void Follow(const ShapeIn& s, const std::vector<float>& skin, uint32_t snv,
     authored = Len(hi - lo) > .1f * jaw_drop &&
                (motion == 0 || error <= .25f * motion);
   }
+  // Per vertex: the distance to the skin; how far it lies on skin that opens
+  // as its TRI says (1: on it; 0: clear of the skin, or the skin under it
+  // opens otherwise); how much of the skin under it is the lower lip.
+  std::vector<float> clear(authored ? s.nv : 0), lying(clear.size(), 0.f),
+      on_lip(clear.size(), 0.f);
+  auto opening = [&](uint32_t i) {
+    return std::clamp(-s.morphs[kBigAah][i * 3 + 2] / jaw_drop, 0.f, 1.f);
+  };
+  // The count skin vertices under vertex i; how far their openings are from
+  // its own. Each is compared: before the seam of the lips a mixture of both
+  // opens as any TRI says.
+  auto under = [&](uint32_t i, int count, uint32_t* idx, double* w, int& n) {
+    const float q[4] = {v[i * 3], v[i * 3 + 1], v[i * 3 + 2], opening(i)};
+    float dist[kFollow];
+    n = trees[3].Nearest(q, count, idx, dist,
+                         kOpening * std::max(kNear0 * jaw_drop, clear[i]));
+    IdwWeights(dist, n, 0.05, w);
+    float apart = 0;
+    for (int j = 0; j < n; ++j)
+      apart +=
+          static_cast<float>(w[j]) * std::fabs(skin_opening(idx[j]) - q[3]);
+    return apart;
+  };
   for (uint32_t i = 0; i < s.nv; ++i) {
     if (follow[i] <= 0.02f) continue;
     V3 p = At(&v[i * 3]);
     int c = eyes           ? (p.x > mid ? 1 : 0) * 2 + (bz[i] > 0 ? 1 : 0)
             : p.z < lips_z ? 1
                            : 0;
-    // A moustache's hanging strands can be closer to the lower lip. Opening
-    // identity, when supported by the authored data, outranks that proximity.
+    // Hanging clear of the skin, a strand follows the jaw when its own TRI
+    // opens it, whichever lip it hangs nearer to.
     if (authored) c = -s.morphs[kBigAah][i * 3 + 2] > .12f * jaw_drop ? 2 : 0;
     // The lips' height is the pucker's centroid, which can sit well under the
     // seam. An unlisted shape lies on the skin: a vertex above that height on
@@ -699,10 +757,40 @@ void Follow(const ShapeIn& s, const std::vector<float>& skin, uint32_t snv,
           both = lower_distance < 1.5f * upper_distance;
       }
     }
-    if (trees[c].order.empty()) continue;
     uint32_t idx[kFollow];
     float dist[kFollow];
     double w[kFollow];
+    if (authored) {
+      uint32_t nearest;
+      float gap[2] = {INFINITY, INFINITY};
+      trees[0].Nearest(p, 1, &nearest, &gap[0]);
+      trees[1].Nearest(p, 1, &nearest, &gap[1]);
+      clear[i] = std::min(gap[0], gap[1]);
+      const float on = std::clamp(kNear1 - clear[i] / jaw_drop, 0.f,
+                                  kNear1 - kNear0) / (kNear1 - kNear0);
+      int n = 0;
+      if (on > 0) {
+        const float apart =
+            under(i, on < 1 ? kFollow / 2 : kFollow, idx, w, n);
+        lying[i] = on * std::clamp(kAgree1 - apart, 0.f, kAgree1 - kAgree0) /
+                   (kAgree1 - kAgree0);
+        for (int j = 0; j < n; ++j) {
+          out.idx[i * kFollow + j] = idx[j];
+          out.w[i * kFollow + j] = static_cast<float>(w[j] * on);
+          if (lips[idx[j]] == kLowerLip) on_lip[i] += static_cast<float>(w[j]);
+        }
+      }
+      if (on < 1) {
+        const int hung = trees[c].Nearest(p, kFollow - n, idx, dist);
+        IdwWeights(dist, hung, 0.05, w);
+        for (int j = 0; j < hung; ++j) {
+          out.idx[i * kFollow + n + j] = idx[j];
+          out.w[i * kFollow + n + j] = static_cast<float>(w[j] * (1 - on));
+        }
+      }
+      continue;
+    }
+    if (trees[c].order.empty()) continue;
     int n = trees[c].Nearest(p, both ? kFollow / 2 : kFollow, idx, dist);
     if (both) n += trees[1].Nearest(p, kFollow - n, idx + n, dist + n);
     IdwWeights(dist, n, 0.05, w);
@@ -727,7 +815,14 @@ void Follow(const ShapeIn& s, const std::vector<float>& skin, uint32_t snv,
   // those vertices follow the skin under them in full. Where less does (a
   // fringe over the lip), the card stays rigid and the lip opens away from
   // it: stretched to keep its tips there, a fringe curtains the open mouth.
-  if (!authored) return;
+  // In every card a vertex lying on skin that opens as its own TRI says (the
+  // upper lip under a moustache, the cheek under a jaw-line card or beside
+  // the mouth) stays with that skin, which would otherwise move through a
+  // card held by its root. Only a fringe's vertices on the lower lip do not.
+  if (!authored || s.triangles.empty() || s.triangles.size() % 3 != 0 ||
+      !std::all_of(s.triangles.begin(), s.triangles.end(),
+                   [&](uint16_t index) { return index < s.nv; }))
+    return;
   std::vector<float> rest(s.nv, 0.f);
   std::vector<uint32_t> parent(s.nv);
   for (uint32_t i = 0; i < s.nv; ++i) parent[i] = i;
@@ -773,9 +868,6 @@ void Follow(const ShapeIn& s, const std::vector<float>& skin, uint32_t snv,
     IdwWeights(distance, n, .05, weights);
     float tip = 0;
     for (uint32_t i : card) tip = std::max(tip, -s.morphs[kBigAah][i * 3 + 2]);
-    // Jaw-rooted cards: skin closer than kNear0 jaw drops is followed in
-    // full, skin further than kNear1 not at all.
-    constexpr float kNear0 = .25f, kNear1 = .75f;
     // A strand lies further off the lip than a chin card off the chin.
     constexpr float kRest0 = .5f, kRest1 = 1.f;
     bool moustache = false;
@@ -807,9 +899,14 @@ void Follow(const ShapeIn& s, const std::vector<float>& skin, uint32_t snv,
         tip >= (std::max(fraction, 0.f) + .12f) * jaw_drop)
       spanning = true;
     for (uint32_t i : card) {
-      std::fill_n(&out.w[i * kFollow], kFollow, 0.f);
+      // The lower lip opens away from a fringe.
+      const float stay = fringe ? lying[i] * (1 - on_lip[i]) : lying[i];
+      if (stay >= .98f) continue;
+      constexpr int kHalf = kFollow / 2;
+      uint32_t held[kFollow] = {};
+      float held_w[kFollow] = {};
+      bool blended = false;
       if (spanning || draped || side != 0) {
-        constexpr int kHalf = kFollow / 2;
         uint32_t jaw[kHalf];
         float jaw_distance[kHalf];
         double jaw_weights[kHalf], root_weights[kHalf];
@@ -820,6 +917,7 @@ void Follow(const ShapeIn& s, const std::vector<float>& skin, uint32_t snv,
         for (int j = 0; j < jaws; ++j)
           skin_drop -= static_cast<float>(jaw_weights[j]) *
                        skin_open[jaw[j] * 3 + 2];
+        // Jaw-rooted cards: by how near the jaw skin is.
         const float t =
             !jaws ? 0.f
             : draped ? rest[i]
@@ -833,22 +931,44 @@ void Follow(const ShapeIn& s, const std::vector<float>& skin, uint32_t snv,
           const int roots = std::min(n, kHalf);
           IdwWeights(distance, roots, .05, root_weights);
           for (int j = 0; j < roots; ++j) {
-            out.idx[i * kFollow + j] = indices[j];
-            out.w[i * kFollow + j] =
-                static_cast<float>(root_weights[j] * (1 - t));
+            held[j] = indices[j];
+            held_w[j] = static_cast<float>(root_weights[j] * (1 - t));
           }
           for (int j = 0; j < jaws; ++j) {
-            out.idx[i * kFollow + kHalf + j] = jaw[j];
-            out.w[i * kFollow + kHalf + j] =
-                static_cast<float>(jaw_weights[j] * t);
+            held[kHalf + j] = jaw[j];
+            held_w[kHalf + j] = static_cast<float>(jaw_weights[j] * t);
           }
-          continue;
+          blended = true;
         }
       }
-      for (int j = 0; j < n; ++j) {
-        out.idx[i * kFollow + j] = indices[j];
-        out.w[i * kFollow + j] = static_cast<float>(weights[j]);
+      for (int j = 0; !blended && j < n; ++j) {
+        held[j] = indices[j];
+        held_w[j] = static_cast<float>(weights[j]);
       }
+      if (stay > .02f) {
+        // Partly on such skin: the two strongest of the card's and the two
+        // nearest of the skin under it.
+        for (int j = 0; j < kHalf; ++j)
+          for (int k = j + 1; k < kFollow; ++k)
+            if (held_w[k] > held_w[j]) {
+              std::swap(held_w[j], held_w[k]);
+              std::swap(held[j], held[k]);
+            }
+        float sum = 0;
+        for (int j = 0; j < kHalf; ++j) sum += held_w[j];
+        uint32_t skin_under[kHalf];
+        double under_weights[kHalf];
+        int found = 0;
+        under(i, kHalf, skin_under, under_weights, found);
+        for (int j = 0; j < kHalf; ++j) {
+          held_w[j] = sum > 0 ? held_w[j] / sum * (1 - stay) : 0.f;
+          held[kHalf + j] = j < found ? skin_under[j] : 0;
+          held_w[kHalf + j] =
+              j < found ? static_cast<float>(under_weights[j] * stay) : 0.f;
+        }
+      }
+      std::copy_n(held, kFollow, &out.idx[i * kFollow]);
+      std::copy_n(held_w, kFollow, &out.w[i * kFollow]);
     }
   }
 }
@@ -1394,7 +1514,8 @@ Registration MouthRegistration(const Mark& mk, const ShapeIn& skin,
         p.z >= .5f * (eye_z + pucker.z))
       excluded[i] = 1;
   }
-  for (int i = 6; i < 8; ++i) {
+  for (int i = 0; i < kNumLandmarks; ++i) {
+    if (!kLandmarkSide[i]) continue;  // the smile's two sides
     const V3 corner = MotionCentroid(skin.verts, skin.morphs[kHappy], skin.nv,
                                      kLandmarkSide[i], r.mid, excluded);
     if (Len(corner) == 0 || (corner.x - r.mid) * kLandmarkSide[i] <= 0)
