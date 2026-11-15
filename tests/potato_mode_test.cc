@@ -55,6 +55,14 @@ struct FakeNet : a2f::Net {
   }
 };
 }  // namespace
+// The engine's ApplyMorphs behind the morph hook: nothing to rebuild here.
+uint64_t EngineMorphs(uint8_t*, uint8_t) { return 0; }
+// The morph hook on the node, as the engine calls it (the plugin is ready).
+void MorphPass(uint8_t* n, bool reset) {
+  const bool was = bfa::ready.exchange(true);
+  bfa::ApplyMorphsHook(n, reset);
+  bfa::ready = was;
+}
 extern "C" uint64_t TestAddress(uint64_t id) {
   if (id == kIdMenuTopicManager.Get()) return reinterpret_cast<uint64_t>(&mtm);
   if (id == kIdLookupReference.Get())
@@ -64,13 +72,16 @@ extern "C" uint64_t TestAddress(uint64_t id) {
     return reinterpret_cast<uint64_t>(&CreateHandle);
   if (id == kIdGenerateFromPath.Get())
     return reinterpret_cast<uint64_t>(&ResourceId);
+  if (id == kIdApplyMorphs.Get())
+    return reinterpret_cast<uint64_t>(&EngineMorphs);
   return 0;
 }
 int main() {
   bfa::testing::address = TestAddress;
   using namespace bfa;
   skse::SetRuntime(skse::Version(1, 6, 1170));
-  Tune t;
+  SetSelectedModel(a2f::kNetV3);  // the fixture's network (config.network)
+  Tune t = SnapshotTune();
   CHECK(!t.potato_mode);
   CHECK(t.player);
   for (const Param& p : kParams) CHECK(strcmp(p.key, "NativePlayerSpeech"));
@@ -211,7 +222,7 @@ int main() {
   std::array<uint8_t, 0x400> idle_fg{}, idle_node{};
   Field<uint8_t*>(idle_node.data(), (skse::IsVr() ? 0x178 : 0x150)) =
       idle_fg.data();
-  AddDirect(idle_node.data(), true);
+  MorphPass(idle_node.data(), true);
   CHECK(!idle_fg[0x218]);
   CHECK(!FaceNeedsUpdate(idle_fg.data()));
   // Direct-only handoff restores the engine's expressions with no extra pose.
@@ -230,7 +241,7 @@ int main() {
   CHECK(FaceNeedsUpdate(fg.data()));
   CHECK(!FaceNeedsUpdate(idle_fg.data()));
   Field<uint8_t*>(node.data(), (skse::IsVr() ? 0x178 : 0x150)) = fg.data();
-  AddDirect(node.data(), true);
+  MorphPass(node.data(), true);
   CHECK(faces.empty() && fg[0x218]);
   CHECK(!FaceNeedsUpdate(fg.data()));
   for (int i = 0; i < direct::kNumExpressions; ++i)
@@ -410,7 +421,7 @@ int main() {
     std::array<uint8_t, 0x400> player_node{};
     Field<uint8_t*>(player_node.data(), (skse::IsVr() ? 0x178 : 0x150)) =
         player_fg.data();
-    AddDirect(player_node.data(), true);
+    MorphPass(player_node.data(), true);
     CHECK(playing.count(player_fg.data()) == 1);
     CHECK(Field<LONG>(player, 0x28) == 1);
     // The expression update must retain the player's pending speech.

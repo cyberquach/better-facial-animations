@@ -1,4 +1,9 @@
-"""CPU-portable convolution/attention student with bounded persistent KV memory."""
+"""CPU-portable convolution/attention student with bounded persistent KV memory.
+
+ContextStudent(width): 6 attention blocks, 4 heads, FFN = 3 x width, four local
+blocks, 13 depth mixes, 73 outputs. The shipped dist/performance.onnx is width
+608 (dist/performance-model.json); 256 is the 6.0 model.
+"""
 import math
 import torch
 from torch import nn
@@ -9,6 +14,10 @@ LAYERS = 6
 HEADS = 4
 MEMORY = 256
 CONTEXT = 15
+
+
+def parameters(width):
+    return 60 * width * width + 296 * width + 89
 
 
 class LocalBlock(nn.Module):
@@ -85,10 +94,10 @@ class AttentionBlock(nn.Module):
 class DepthMix(nn.Module):
     """One input-dependent depth mixture; pseudo-query per sublayer."""
 
-    def __init__(self):
+    def __init__(self, width=WIDTH):
         super().__init__()
-        self.query = nn.Parameter(torch.randn(WIDTH) * .01)
-        self.scale = nn.Parameter(torch.ones(WIDTH))
+        self.query = nn.Parameter(torch.randn(width) * .01)
+        self.scale = nn.Parameter(torch.ones(width))
 
     def forward(self, values):
         v = torch.stack(values, 0)
@@ -104,21 +113,26 @@ class DepthMix(nn.Module):
 
 
 class ContextStudent(nn.Module):
-    def __init__(self):
+    def __init__(self, width=WIDTH):
         super().__init__()
+        if width % HEADS:
+            raise ValueError('Width must divide by the head count')
+        self.width = width
         self.identity = nn.Embedding(2, 8)
-        self.input = nn.Linear(98, WIDTH)
+        self.input = nn.Linear(98, width)
         self.local = nn.Sequential(
-            *(LocalBlock(WIDTH, d) for d in (1, 2, 4, 8))
+            *(LocalBlock(width, d) for d in (1, 2, 4, 8))
         )
-        self.blocks = nn.ModuleList(AttentionBlock() for _ in range(LAYERS))
-        self.norm = nn.LayerNorm(WIDTH)
-        self.head = nn.Linear(WIDTH, 73)
-        self.mix = nn.ModuleList(DepthMix() for _ in range(13))
+        self.blocks = nn.ModuleList(
+            AttentionBlock(width, HEADS, 3 * width) for _ in range(LAYERS)
+        )
+        self.norm = nn.LayerNorm(width)
+        self.head = nn.Linear(width, 73)
+        self.mix = nn.ModuleList(DepthMix(width) for _ in range(13))
 
     def empty_state(self, batch, device='cpu', dtype=torch.float32):
         return torch.empty(
-            (LAYERS, batch, HEADS, 0, WIDTH // HEADS),
+            (LAYERS, batch, HEADS, 0, self.width // HEADS),
             device=device, dtype=dtype
         )
 

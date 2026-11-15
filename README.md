@@ -13,7 +13,7 @@ An SKSE plugin for Skyrim SE and VR that generates facial animation from speech 
 
 ## Installation
 
-Install through your mod manager and launch through SKSE. The FOMOD selects the facial and emotion models, the processing device for each (**GPU 0–3** or **CPU**), and optional features; the defaults are shared GPU 0, V3 facial animation and Performance emotion. Manual installation copies `SKSE` into `Data` with the same defaults.
+Install through your mod manager and launch through SKSE. The FOMOD selects the facial and emotion models, the processing device for each (**GPU 0–3** or **CPU**), and optional features; the defaults are shared GPU 0, Performance facial animation and Performance emotion. Manual installation copies `SKSE` into `Data` with the same defaults.
 
 Installer choices are defaults; explicit values in `Data/SKSE/Plugins/BetterFacialAnimations.ini` win. A winning INI in MO2 Overwrite or another mod overrides new installer choices.
 
@@ -23,15 +23,15 @@ Inference starts after the first save load (or once a new game leaves the loadin
 
 **Audio2Face** (facial animation):
 
-- **V3**: full model, 60 fps with speech-driven eye movement; about 250 MB VRAM.
-- **Performance**: 4M-parameter student trained to reproduce V3 on the training dialogue; unfamiliar lines can be less reliable. 30 fps, GPU or CPU.
-- **Ultra Performance**: the original 80,729-parameter student, lowest cost and least detail. 30 fps, GPU or CPU.
+- **V3**: full model, 60 fps with speech-driven eye movement; about 270 MB VRAM.
+- **Performance** (default): 22M-parameter student trained to reproduce V3 on the training dialogue; unfamiliar lines can be less reliable. 30 fps, GPU or CPU, about 185 MB VRAM.
+- **Ultra Performance**: the original 80,729-parameter student, lowest cost and least detail. 30 fps, GPU or CPU, a few MB VRAM.
 - **Legacy**: Audio2Face v2.3, 30 fps, about 100 MB VRAM.
 - **Disabled**: vanilla animation.
 
 INI: `UsePerformanceModel=1`, `UseUltraPerformanceModel=1` or `UseOldModel=1`; all at 0 selects V3.
 
-**Audio2Emotion** (voice-driven emotion): **Performance** (default, 21.6 MB student, approximate outside its training dialogue), **Full** (with-sentiment archive only, about 600 MB more VRAM) or **Disabled**. INI: `SentimentAnalysis=0` disables, `UsePerformanceEmotion=0` selects Full.
+**Audio2Emotion** (voice-driven emotion): **Performance** (default, student model, approximate outside its training dialogue, about 31 MB VRAM), **Full** (with-sentiment archive only, about 745 MB VRAM) or **Disabled**. INI: `SentimentAnalysis=0` disables, `UsePerformanceEmotion=0` selects Full.
 
 Model and device changes apply live; playing lines finish with their original animation.
 

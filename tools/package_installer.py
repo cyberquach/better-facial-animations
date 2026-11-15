@@ -49,6 +49,8 @@ for flag, section, key, inverted in (
     ('Tongue', 'LocalAnimationStrength', 'DisableTongue', True),
     ('Gaze', 'LocalAnimationStrength', 'ConversationGaze', False),
     ('Logging', 'Debug', 'Logging', False),
+    ('FaceGraphFusion', 'General', 'GraphFusion', False),
+    ('EmotionGraphFusion', 'General', 'EmotionGraphFusion', False),
 ):
     CHOICES[flag] = {value: {section: {key: int((value == 'on') != inverted)}}
                      for value in ('', 'on')}
@@ -99,8 +101,8 @@ def assemble(out, version, full_emotion=True):
                           destination='SKSE\\Plugins\\BetterFacialAnimations\\Installer\\' + flag + '.ini',
                           priority='10')
     # Keep comments and fine controls; installer-owned keys must be absent so
-    # their fragments supply the initial value. Manual installations still use
-    # the original complete dist INI, with identical built-in defaults.
+    # their fragments supply the initial value. Manual installations use the
+    # complete dist INI, whose values are the built-in defaults (Tune).
     section = ''
     lines = ['; Installer choices are defaults; explicit values here win.\n']
     for line in (ROOT / 'dist/BetterFacialAnimations.ini').read_text().splitlines(keepends=True):

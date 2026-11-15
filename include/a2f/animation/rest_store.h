@@ -5,11 +5,10 @@
 #ifndef INCLUDE_A2F_ANIMATION_REST_STORE_H_
 #define INCLUDE_A2F_ANIMATION_REST_STORE_H_
 
+#include <algorithm>
 #include <atomic>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <iterator>
 #include <memory>
 #include <mutex>
 #include <unordered_map>
@@ -18,87 +17,102 @@
 
 namespace bfa {
 
-// Shapes are keyed by address and recognized by content: an entry holds only
-// while the shape still has the vertices last written through it, so
-// a new shape at a freed one's address starts over from its own vertices.
-// data: the shape's nv x 4 vertices; xyz: nv x 3.
+// A shape's identity is its address, its vertex count and its dynamic data
+// (data: the shape's nv x 4 vertices as LockDynamic returns them). The rest
+// (nv x 3) is taken from data when an identity is first seen and kept for
+// that identity's lifetime: whatever writes the shape later, the plugin or
+// another writer, never changes it. A new identity at the same address
+// starts over from its own vertices.
 class RestStore {
  public:
-  // The shape's rest positions (nv x 3), taken from data on first sight.
+  // The shape's rest positions.
   std::shared_ptr<const std::vector<float>> Rest(const void* shape,
                                                  const float* data,
                                                  uint32_t nv) {
     std::lock_guard<std::mutex> guard(lock_);
     Entry& e = entries_[shape];
-    if (!Holds(e, data, nv)) {
-      if (entries_.size() > kMaxShapes) Prune(shape);
+    if (!e.rest || e.data != data || e.nv != nv) {
       auto rest = std::make_shared<std::vector<float>>(size_t{nv} * 3);
       for (uint32_t i = 0; i < nv; ++i)
         for (int c = 0; c < 3; ++c) (*rest)[i * 3 + c] = data[i * 4 + c];
-      e.written = *rest;
-      e.rest = std::move(rest);
-      count_ = entries_.size();
+      e = Entry{std::move(rest), data, nv, false};
     }
-    return e.rest;
+    e.used = ++clock_;
+    auto rest = e.rest;
+    if (entries_.size() > kMaxShapes) Prune();
+    count_ = entries_.size();
+    return rest;
   }
 
-  // The shape now holds xyz. Unknown shapes are ignored.
-  void Wrote(const void* shape, const float* xyz, uint32_t nv) {
+  // The plugin wrote the shape (the identity Rest last saw at that address).
+  // Unknown shapes are ignored.
+  void Wrote(const void* shape, uint32_t nv) {
     if (!count_) return;
     std::lock_guard<std::mutex> guard(lock_);
     auto it = entries_.find(shape);
-    if (it == entries_.end() || it->second.written.size() != size_t{nv} * 3)
-      return;
-    it->second.written.assign(xyz, xyz + size_t{nv} * 3);
+    if (it == entries_.end() || it->second.nv != nv) return;
+    it->second.written = true;
+    it->second.used = ++clock_;
   }
 
-  // Whether the shape is away from its rest positions; xyz then holds them
-  // and the shape counts as holding them, so the caller must write xyz.
+  // Whether the plugin wrote this identity since it was last put back,
+  // whether or not another writer touched it since; xyz then holds the rest
+  // and the shape counts as at rest, so the caller must write xyz.
   bool Displaced(const void* shape, const float* data, uint32_t nv,
                  std::vector<float>& xyz) {
     if (!count_) return false;
     std::lock_guard<std::mutex> guard(lock_);
     auto it = entries_.find(shape);
-    if (it == entries_.end() || !Holds(it->second, data, nv) ||
-        !it->second.rest || it->second.written == *it->second.rest)
+    if (it == entries_.end() || !it->second.written ||
+        it->second.data != data || it->second.nv != nv)
       return false;
     xyz = *it->second.rest;
-    it->second.written = *it->second.rest;
+    it->second.written = false;
+    it->second.used = ++clock_;
     return true;
   }
 
   bool empty() const { return !count_; }
 
+  // Forgets every shape (a new world: none of its shapes are the old ones).
+  void Clear() {
+    std::lock_guard<std::mutex> guard(lock_);
+    entries_.clear();
+    count_ = 0;
+  }
+
  private:
   struct Entry {
     std::shared_ptr<const std::vector<float>> rest;
-    std::vector<float> written;
+    const float* data = nullptr;
+    uint32_t nv = 0;
+    bool written = false;
+    uint64_t used = 0;  // when last seen, put back or written (clock_)
   };
   static constexpr size_t kMaxShapes = 256;
-  // slack for the engine's copy of a write; far below any real difference
-  // between two shapes
-  static constexpr float kSame = 1e-4f;
+  // written shapes never put back (unloaded mid-pose) beyond this many go
+  static constexpr size_t kMaxWritten = 1024;
 
-  static bool Holds(const Entry& e, const float* data, uint32_t nv) {
-    if (e.written.empty() || e.written.size() != size_t{nv} * 3) return false;
-    for (uint32_t i = 0; i < nv; ++i)
-      for (int c = 0; c < 3; ++c)
-        if (!(std::fabs(e.written[i * 3 + c] - data[i * 4 + c]) <= kSame))
-          return false;
-    return true;
-  }
-
-  // Forgets shapes at rest; a displaced one may still need putting back.
-  void Prune(const void* keep) {
-    for (auto it = entries_.begin(); it != entries_.end();)
-      it = it->first != keep &&
-                   (!it->second.rest || it->second.written == *it->second.rest)
-               ? entries_.erase(it)
-               : std::next(it);
+  // Forgets the least recently used shapes at rest down to half the bound,
+  // so one between being put back and written again (most recently used)
+  // stays; a written one still needs putting back, unless far too many are.
+  void Prune() {
+    std::vector<std::pair<uint64_t, const void*>> idle, written;
+    for (const auto& [shape, e] : entries_)
+      (e.written ? written : idle).emplace_back(e.used, shape);
+    const auto drop = [this](auto& by_use, size_t keep) {
+      if (by_use.size() <= keep) return;
+      std::sort(by_use.begin(), by_use.end());
+      for (size_t i = 0; i < by_use.size() - keep; ++i)
+        entries_.erase(by_use[i].second);
+    };
+    drop(idle, kMaxShapes / 2);
+    drop(written, kMaxWritten);
   }
 
   std::mutex lock_;
   std::unordered_map<const void*, Entry> entries_;
+  uint64_t clock_ = 0;
   std::atomic<size_t> count_{0};
 };
 

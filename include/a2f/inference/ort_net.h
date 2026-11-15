@@ -26,6 +26,9 @@ struct OrtOptions {
   // The caller selects one route; failures never select a different provider.
   bool independent_device = false;
   bool force_bundled_agility = false;  // INI-only, independent mode, restart required
+  // GPU only. DirectML graph fusion (on before 7.0): a little faster, more
+  // VRAM (see CreateSession). Off by default.
+  bool graph_fusion = false;
 };
 
 // dll_dir: folder holding onnxruntime.dll / DirectML.dll. info receives a

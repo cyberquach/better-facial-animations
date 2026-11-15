@@ -41,12 +41,22 @@ bool Lookup(const uint32_t& handle, uint8_t** out) {
 }
 uint8_t* LookupForm(uint32_t id) { return id == 0x100 ? actor : nullptr; }
 }  // namespace
+// The engine's ApplyMorphs behind the morph hook: nothing to rebuild here.
+uint64_t EngineMorphs(uint8_t*, uint8_t) { return 0; }
+// The morph hook on the node, as the engine calls it (the plugin is ready).
+void MorphPass(uint8_t* n, bool reset) {
+  const bool was = bfa::ready.exchange(true);
+  bfa::ApplyMorphsHook(n, reset);
+  bfa::ready = was;
+}
 extern "C" uint64_t TestAddress(uint64_t id) {
   if (id == kIdDataHandler.Get()) return reinterpret_cast<uint64_t>(&handler);
   if (id == kIdLookupReference.Get())
     return reinterpret_cast<uint64_t>(&Lookup);
   if (id == kIdLookupFormById.Get())
     return reinterpret_cast<uint64_t>(&LookupForm);
+  if (id == kIdApplyMorphs.Get())
+    return reinterpret_cast<uint64_t>(&EngineMorphs);
   return 0;
 }
 int main() {
@@ -195,7 +205,7 @@ int main() {
     for (float v : values) CHECK(v == 0.65f);
     seed();
     Field<uint8_t*>(node.data(), (skse::IsVr() ? 0x178 : 0x150)) = fg;
-    AddDirect(node.data(), false);
+    MorphPass(node.data(), false);
     CHECK(faces.empty() && playing.empty() && fg[0x218]);
     CHECK(Field<LONG>(actor, 0x28) == 1);
     SetNpcBlocked(npc, false);

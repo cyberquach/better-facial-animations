@@ -45,7 +45,8 @@ constexpr int kNumExpressions = 16;
 constexpr bool PlaysExpression(int i) { return i != 7; }
 // Their scale per skin region: the mouth at half, where the expression
 // competes with the lip-sync (the mouth part takes kMouth's).
-constexpr float kExpressionScale[kNumSkinRegions] = {1, 1, 1, .5f};
+constexpr float kExpressionScale[] = {1, 1, 1, .5f};
+static_assert(std::size(kExpressionScale) == kNumSkinRegions);
 constexpr int kNumLandmarks = 8;
 
 // The engine morphs a head's shapes are read with (ShapeIn::morphs), by
@@ -83,9 +84,10 @@ enum Morph {
   kNumMorphs
 };
 // Engine phoneme order, sharing the mapping and classifier morphs above.
-constexpr Morph kSpeechMorphs[kNumPhonemes] = {
-    kAah, kBigAah, kBmp, kChJSh, kDst,  kEee, kEh, kFv,
-    kI,   kK,      kN,   kOh,    kOohQ, kR,   kTh, kW};
+constexpr Morph kSpeechMorphs[] = {kAah,  kBigAah, kBmp, kChJSh, kDst, kEee,
+                                   kEh,   kFv,     kI,   kK,     kN,   kOh,
+                                   kOohQ, kR,      kTh,  kW};
+static_assert(std::size(kSpeechMorphs) == kNumPhonemes);
 
 struct MorphId {
   uint8_t type, index;

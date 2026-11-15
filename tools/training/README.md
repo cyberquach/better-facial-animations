@@ -5,7 +5,8 @@ legacy Audio2Face Thin120 student. BFA 6.0 uses a different, stateful Block Attn
 face architecture defined in `tools/performance_student.py`. The Thin120 training
 and export commands below produce legacy candidates, not 6.0-compatible weights.
 
-Export an existing trusted 6.0 checkpoint with:
+Export a trusted Block AttnRes checkpoint with (the width is its config's; the
+shipped model is width 608, the 6.0 one 256):
 
 ```sh
 python tools/export_performance.py --checkpoint checkpoint.pt --sha256 CHECKPOINT_SHA256 --out work/face-export
@@ -153,7 +154,9 @@ To promote an emotion candidate, update `dist/emotion_performance.onnx`, its JSO
 and `tests/emotion_performance.fixtures` together. For the legacy face runtime, update
 `dist/performance.onnx`, `dist/performance-model.json`,
 `dist/performance-normalization.npz` and `include/a2f/inference/performance_stats.h`
-together. Run `./build.sh compat`, the native model/parity checks in
+together. The shipped `performance.onnx` stores its weights as float16
+(`tools/performance_fp16.py <float32.onnx> <out.onnx>`, needs `onnx`); its
+`tests/performance.fixtures` reference uses the same float16-rounded weights. Run `./build.sh compat`, the native model/parity checks in
 `tests/README.md`, and matched gameplay quality/performance checks before release.
 No training/export command modifies the shipped models automatically.
 

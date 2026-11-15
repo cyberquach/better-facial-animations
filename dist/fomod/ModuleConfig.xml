@@ -147,26 +147,26 @@ If a requirement is missing, the model does not load, vanilla lip-sync plays and
       <optionalFileGroups order="Explicit">
         <group name="Audio2Face — facial animation" type="SelectExactlyOne">
           <plugins order="Explicit">
-            <plugin name="V3 — full facial detail (recommended)">
-              <description>Most expressive model; detailed lip-sync at 60 fps. Approximately 250 MB GPU memory. Women use Claire; men use Mark. Faster than Legacy in local RTX 4070 tests; speed and memory vary with system and dialogue.</description>
+            <plugin name="Performance — V3-trained, experimental (recommended)">
+              <description>22M-parameter student trained to reproduce V3's answers on familiar dialogue, with per-line memory. Unfamiliar dialogue can be less reliable. 30 fps; no speech-driven eye movement. More computation than Ultra Performance. About 185 MB GPU memory. GPU or CPU; not yet verified on Steam Deck. Speaker coverage is selected separately.</description>
               <conditionFlags>
-                <flag name="FaceModel">quality</flag>
+                <flag name="FaceModel">performance</flag>
               </conditionFlags>
               <typeDescriptor>
                 <type name="Recommended" />
               </typeDescriptor>
             </plugin>
-            <plugin name="Performance — V3-trained, experimental">
-              <description>4M-parameter student trained to reproduce V3's answers on familiar dialogue, with per-line memory. Unfamiliar dialogue can be less reliable. 30 fps; no speech-driven eye movement. More computation than Ultra Performance. GPU or CPU; not yet verified on Steam Deck. Speaker coverage is selected separately.</description>
+            <plugin name="V3 — full facial detail">
+              <description>Most expressive model; detailed lip-sync at 60 fps. About 270 MB GPU memory. Women use Claire; men use Mark. Faster than Legacy in local RTX 4070 tests; speed and memory vary with system and dialogue.</description>
               <conditionFlags>
-                <flag name="FaceModel">performance</flag>
+                <flag name="FaceModel">quality</flag>
               </conditionFlags>
               <typeDescriptor>
                 <type name="Optional" />
               </typeDescriptor>
             </plugin>
             <plugin name="Ultra Performance — lowest computation, experimental">
-              <description>The original 80,729-parameter Performance model, retained under a new name. Lowest computation cost, with less facial detail and less accurate lip-sync, especially on unfamiliar dialogue. 30 fps; no speech-driven eye movement. GPU or CPU. Speaker coverage is selected separately.</description>
+              <description>The original 80,729-parameter Performance model, retained under a new name. Lowest computation cost, with less facial detail and less accurate lip-sync, especially on unfamiliar dialogue. 30 fps; no speech-driven eye movement. Only a few MB of GPU memory. GPU or CPU. Speaker coverage is selected separately.</description>
               <conditionFlags>
                 <flag name="FaceModel">ultra</flag>
               </conditionFlags>
@@ -175,7 +175,7 @@ If a requirement is missing, the model does not load, vanilla lip-sync plays and
               </typeDescriptor>
             </plugin>
             <plugin name="Legacy — Audio2Face v2.3">
-              <description>Older facial style at 30 fps with one shared identity. Approximately 100 MB GPU memory. Uses less memory than V3 but is slower in local RTX 4070 tests.</description>
+              <description>Older facial style at 30 fps with one shared identity. About 100 MB GPU memory. Uses less memory than V3 but is slower in local RTX 4070 tests.</description>
               <conditionFlags>
                 <flag name="FaceModel">old</flag>
               </conditionFlags>
@@ -196,8 +196,8 @@ If a requirement is missing, the model does not load, vanilla lip-sync plays and
         </group>
         <group name="Audio2Emotion — additional voice-driven emotion" type="SelectExactlyOne">
           <plugins order="Explicit">
-            <plugin name="Performance (~40 MB VRAM, recommended, experimental)">
-              <description>Estimated additional VRAM usage is about 40 MB on a shared GPU device. Actual usage varies by driver and device mode. Included in both downloads. Small model trained to approximate Full on Skyrim dialogue; unfamiliar quest-mod lines may be hit or miss. The model file is 21.6 MB on disk. Independent of vanilla emotion cues.</description>
+            <plugin name="Performance (~31 MB VRAM, recommended, experimental)">
+              <description>About 31 MB GPU memory. Included in both downloads. Small model trained to approximate Full on Skyrim dialogue; unfamiliar quest-mod lines may be hit or miss. The model file is 21.6 MB on disk. Independent of vanilla emotion cues.</description>
               <conditionFlags>
                 <flag name="EmotionModel">performance</flag>
               </conditionFlags>
@@ -206,7 +206,7 @@ If a requirement is missing, the model does not load, vanilla lip-sync plays and
               </typeDescriptor>
             </plugin>
             <plugin name="Full — broader dialogue coverage">
-              <description>Included only in the with-sentiment download. Original Audio2Emotion model; use for unfamiliar dialogue. Typically adds about 600 MB GPU memory and substantial generation time. CPU uses system memory and extra processing. Independent of vanilla emotion cues.</description>
+              <description>Included only in the with-sentiment download. Original Audio2Emotion model; use for unfamiliar dialogue. About 745 MB GPU memory and substantial generation time. CPU uses system memory and extra processing. Independent of vanilla emotion cues.</description>
               <conditionFlags>
                 <flag name="EmotionModel">full</flag>
               </conditionFlags>
@@ -218,6 +218,28 @@ If a requirement is missing, the model does not load, vanilla lip-sync plays and
               <description>Skip Audio2Emotion to reduce CPU/GPU work and memory use. Audio2Face lip-sync continues. Vanilla / scene emotion cues can remain enabled independently.</description>
               <conditionFlags>
                 <flag name="EmotionModel">disabled</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
+            </plugin>
+          </plugins>
+        </group>
+        <group name="Graph fusion — more speed for more VRAM (GPU only)" type="SelectAny">
+          <plugins order="Explicit">
+            <plugin name="Audio2Face: use graph fusion for this model">
+              <description>Off by default. Every version before 7.0 used it; tick to get that speed and VRAM use back. DirectML merges the model's steps into fewer, larger GPU operations: slightly faster, but extra copies of the model stay in VRAM. Measured on an RTX 5070 Ti: V3 about 5% faster for about 140 MB more VRAM (270 to 410 MB); Performance about 13% faster for about 130 MB more (185 to 315 MB); Ultra Performance about 30% faster for about 1 MB more; Legacy unchanged. Every model already generates several times faster than speech, so the speed difference is rarely noticeable. No effect on CPU. Also in the in-game menu under the Audio2Face processing device.</description>
+              <conditionFlags>
+                <flag name="FaceGraphFusion">on</flag>
+              </conditionFlags>
+              <typeDescriptor>
+                <type name="Optional" />
+              </typeDescriptor>
+            </plugin>
+            <plugin name="Audio2Emotion: use graph fusion for this model">
+              <description>Off by default. Every version before 7.0 used it; tick to get that speed and VRAM use back. DirectML merges the model's steps into fewer, larger GPU operations: slightly faster, but extra copies of the model stay in VRAM. Measured on an RTX 5070 Ti: Full about 1% faster for about 600 MB more VRAM (745 to 1,340 MB); Performance about 8% faster for about 20 MB more (31 to 52 MB). Results are identical either way. No effect on CPU or with Audio2Emotion disabled. Also in the in-game menu under the Audio2Emotion processing device.</description>
+              <conditionFlags>
+                <flag name="EmotionGraphFusion">on</flag>
               </conditionFlags>
               <typeDescriptor>
                 <type name="Optional" />

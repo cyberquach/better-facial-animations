@@ -129,10 +129,10 @@ bool PerformanceFeatures(const float* pcm, size_t n, std::vector<float>& mel,
   return true;
 }
 
-// Exact student frontend: normalize the complete padded 60000-sample window,
-// then 48 HTK log-mels at 20 ms stride, mel-major [48,188].
+// Exact student frontend: normalize the complete padded kVoiceWindow, then
+// HTK log-mels at 20 ms stride, mel-major [kVoiceMels, kVoiceMelFrames].
 void EmotionFeatures(const float* pcm, std::vector<float>& mel) {
-  static const auto bank = MakeMelBank<48>();
+  static const auto bank = MakeMelBank<kVoiceMels>();
   double mean = 0, variance = 0;
   for (int i = 0; i < kVoiceWindow; ++i) mean += pcm[i];
   mean /= kVoiceWindow;
@@ -144,12 +144,13 @@ void EmotionFeatures(const float* pcm, std::vector<float>& mel) {
   std::vector<float> normalized(kVoiceWindow);
   for (int i = 0; i < kVoiceWindow; ++i)
     normalized[i] = static_cast<float>((pcm[i] - mean) * scale);
-  mel.resize(48 * 188);
-  Spectrum<48> spectrum{};
-  for (int frame = 0; frame < 188; ++frame) {
-    LogMelSpectrum<48>(normalized.data(), normalized.size(), frame, bank,
-                       spectrum, 320);
-    for (int bin = 0; bin < 48; ++bin) mel[bin * 188 + frame] = spectrum[bin];
+  mel.resize(kVoiceMels * kVoiceMelFrames);
+  Spectrum<kVoiceMels> spectrum{};
+  for (int frame = 0; frame < kVoiceMelFrames; ++frame) {
+    LogMelSpectrum<kVoiceMels>(normalized.data(), normalized.size(), frame,
+                               bank, spectrum, kVoiceMelStride);
+    for (int bin = 0; bin < kVoiceMels; ++bin)
+      mel[bin * kVoiceMelFrames + frame] = spectrum[bin];
   }
 }
 
