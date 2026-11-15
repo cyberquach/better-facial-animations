@@ -40,6 +40,8 @@ def expected(flags):
         ('PrepareEarly', 'General', 'Prefetch'),
         ('Gaze', 'LocalAnimationStrength', 'ConversationGaze'),
         ('Logging', 'Debug', 'Logging'),
+        ('FaceGraphFusion', 'General', 'GraphFusion'),
+        ('EmotionGraphFusion', 'General', 'EmotionGraphFusion'),
     ):
         values[section, key] = flags.get(flag) == 'on'
     for flag, ids in (('Khajiit', ('013745', '088845')),
@@ -90,7 +92,7 @@ with tempfile.TemporaryDirectory() as directory:
                     if plugin.find('typeDescriptor/type').attrib['name'] == 'Recommended':
                         defaults.update(flags)
         assert defaults == {
-            'Startup': 'gpu0', 'FaceModel': 'quality',
+            'Startup': 'gpu0', 'FaceModel': 'performance',
             'EmotionDevice': 'gpu0',
             'EmotionModel': 'performance', 'VanillaEmotions': 'on',
             'PlayerAnimation': 'on', 'PrepareEarly': 'on', 'Tongue': 'on',
@@ -108,7 +110,7 @@ with tempfile.TemporaryDirectory() as directory:
         assert route_plugin.find('typeDescriptor/type').attrib['name'] == 'Optional'
         assert route_plugin.findtext("conditionFlags/flag[@name='GraphicsRoute']") == 'independent'
         patterns = config.findall('conditionalFileInstalls/patterns/pattern')
-        assert len(patterns) == (38 if full_emotion else 37)
+        assert len(patterns) == (42 if full_emotion else 41)
         lookup, ownership = {}, {}
         for pattern in patterns:
             dependencies = pattern.find('dependencies')
@@ -164,5 +166,17 @@ with tempfile.TemporaryDirectory() as directory:
         assert any('without SKSE Menu Framework' in text for text in descriptions)
         assert all('uncheck Force CPU' not in text for text in descriptions)
         assert 'Full — broader dialogue coverage' in (out / 'fomod/ModuleConfig.xml').read_text() if full_emotion else 'Full — broader dialogue coverage' not in (out / 'fomod/ModuleConfig.xml').read_text()
-assert total == 640000
+# The plugin reads the choices the installer writes, and each face model's
+# switch is one the installer sets (src/plugin/settings.cc is the source).
+import re
+settings = (ROOT / 'src/plugin/settings.cc').read_text()
+read = re.search(r'kChoices\[\] = \{(.*?)\};', settings, re.S).group(1)
+assert set(re.findall(r'"(\w+)"', read)) == set(installer.CHOICES)
+models = re.search(r'kFaceModels\[\] = \{(.*?)\n\};', settings, re.S).group(1)
+switches = set(re.findall(r'&Tune::\w+,\s*"(\w+)"', models))
+assert len(switches) == models.count('&Tune::') > 0
+for choice in installer.CHOICES['FaceModel'].values():
+    assert set(choice['General']) == switches | {'Enabled'}, choice
+assert len(installer.CHOICES['FaceModel']) == len(switches) + 2
+assert total == 2560000
 print(f'{total} installer combinations, disjoint defaults, both package variants and concise help: pass')

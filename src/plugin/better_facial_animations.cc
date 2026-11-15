@@ -19,6 +19,7 @@
 #include <initializer_list>
 #include <iterator>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -31,6 +32,7 @@
 #include "a2f/animation/gaze_director.h"
 #include "a2f/animation/head_cache.h"
 #include "a2f/animation/pose.h"
+#include "a2f/animation/write_ledger.h"
 #include "a2f/inference/live_core.h"
 #include "a2f/inference/net_keeper.h"
 #include "a2f/inference/ort_net.h"
@@ -112,7 +114,7 @@ std::shared_ptr<const ModelState> SnapshotModel() {
   return std::make_shared<const ModelState>(ModelState{
       config.network, config.gpu, config.model,
       std::shared_ptr<const direct::Model>(&model, [](const direct::Model*) {}),
-      config.gpu_adapter});
+      config.gpu_adapter, config.graph_fusion});
 }
 
 namespace {
@@ -136,9 +138,13 @@ struct Entry {
   // Where the line's gaze may shift (a2f/animation/gaze_director.h).
   std::shared_ptr<const std::vector<a2f::GazeBeat>> beats;
   uint64_t last_use = 0;
-  // Generated without voice sentiment while that was unavailable: generated
-  // again once the worker would try sentiment again (sentiment_retry_at).
+  // Generated without the voice sentiment its key has, while that was
+  // unavailable or switched off while it was read: generated again once the worker
+  // would try sentiment again (sentiment_retry_at).
   bool degraded = false;
+  // Read from a loose WAV, which a TTS mod may rewrite under the same name
+  // (Mantella): once spoken, it is generated again the next time it is.
+  bool loose = false, spoken = false;
   bool performance_sentiment = false;
   struct Requester {
     uint32_t handle;
@@ -151,6 +157,9 @@ struct Entry {
   std::shared_ptr<const ModelState> model_state;
   // provider lines (BFA_API.h) told when it is generated or fails
   std::vector<PlayerSpeechPtr> watchers;
+  // log (Now()): when the line was asked for, the worker took it up and it
+  // was generated; 0: not yet
+  double asked_at = 0, begun_at = 0, ready_at = 0;
 };
 struct Job {
   std::string cache_key, path;
@@ -163,6 +172,15 @@ struct Job {
   std::shared_ptr<const std::vector<uint8_t>> audio;
 };
 enum FaceUpdate { kNoUpdate = 0, kFaceChanged = 1, kKeepUpdating = 2 };
+// log: why a face still shows vanilla while its line is spoken
+enum WaitWhy {
+  kWaitLine,    // the line is not generated yet
+  kWaitHead,    // the line is there, the head is not mapped (yet)
+  kWaitFailed,  // the line failed
+  kWaitWhys
+};
+constexpr const char* kWaitNames[kWaitWhys] = {"not generated yet",
+                                               "head not mapped", "line failed"};
 constexpr int kDirectTail = 3;  // forced resets after the last Direct frame
 struct Playing {
   std::shared_ptr<Entry> entry;
@@ -181,6 +199,13 @@ struct Playing {
   a2f::SpeechClock speech_clock;
   float ready_at = -1;
   bool lip_seen = false, logged = false;
+  // log, until its first frame is shown: when its speech began and the last
+  // update (Now()), the last reason it waited (-1: it never did) and the wall
+  // seconds the face showed vanilla by WaitWhy, in all and while its clock
+  // ran (its sound heard)
+  double begun = 0, wait_mark = 0;
+  int wait_why = -1;
+  float waited[kWaitWhys] = {}, waited_heard[kWaitWhys] = {};
   // Direct: the frame (fractional, -1 none) for the morph hook, and whether
   // the line was ready late (it is caught up with over BlendIn)
   float direct_frame = -1;
@@ -198,18 +223,111 @@ struct Playing {
   int engine_expr = -1;
   float engine_expr_v = 0, shown = 0;
 };
+// Lock held, until the face first shows the line: the time since the last
+// update was vanilla, for why.
+void NoteWait(Playing& p, double now, float t, int why) {
+  const float dt = static_cast<float>(std::clamp(now - p.wait_mark, 0., 0.25));
+  p.wait_mark = now;
+  p.wait_why = why;
+  p.waited[why] += dt;
+  if (t > 0) p.waited_heard[why] += dt;
+}
+float WaitedHeard(const Playing& p) {
+  float sum = 0;
+  for (float v : p.waited_heard) sum += v;
+  return sum;
+}
+
+// log: how soon faces showed their lines since the model was chosen. Lock
+// held.
+struct FirstVisible {
+  std::vector<float> heard;  // per line shown: the vanilla heard first, s
+  float by_why[kWaitWhys] = {};
+  int late = 0;   // blended in from vanilla
+  int never = 0;  // heard with vanilla, never shown
+};
+FirstVisible& first_visible = *new FirstVisible;
+constexpr size_t kFirstVisibleEvery = 20;  // lines between summaries
+
+// Lock held: a line first shown (shown) or left without being shown.
+void NoteFirstVisible(const Playing& p, bool shown, bool late) {
+  const float heard = WaitedHeard(p);
+  if (!shown && !(heard > 0)) return;  // never heard, or off for it
+  FirstVisible& f = first_visible;
+  if (shown) {
+    f.heard.push_back(heard);
+    f.late += late;
+  } else {
+    ++f.never;
+  }
+  for (int w = 0; w < kWaitWhys; ++w) f.by_why[w] += p.waited_heard[w];
+  const size_t n = f.heard.size() + f.never;
+  if (n % kFirstVisibleEvery || !SnapshotTune().logging) return;
+  std::vector<float> v = f.heard;
+  std::sort(v.begin(), v.end());
+  const auto at = [&](double q) {
+    return v.empty() ? 0.f : v[std::min(v.size() - 1, size_t(q * v.size()))];
+  };
+  // a frame's worth or less counts as none
+  const size_t none = std::count_if(v.begin(), v.end(),
+                                    [](float x) { return x < 0.02f; });
+  std::string causes;
+  for (int w = 0; w < kWaitWhys; ++w) {
+    char b[64];
+    snprintf(b, sizeof b, "%s %s %.2f s", w ? "," : "", kWaitNames[w],
+             f.by_why[w]);
+    causes += b;
+  }
+  Log("first-visible summary (model %d), %zu lines: %zu shown with no vanilla "
+      "heard, %zu after some; vanilla heard median %.2f s, p90 %.2f, max "
+      "%.2f; %d blended in late; %d never shown; vanilla heard by cause:%s",
+      SnapshotModel()->network, n, none, v.size() - none, at(0.5), at(0.9),
+      v.empty() ? 0.f : v.back(), f.late, f.never, causes.c_str());
+}
+
 // A provider interface line (BFA_API.h): it owns the face while it plays.
 bool ProviderLine(const Playing& p) {
   return p.external && p.external->handle != 0;
 }
-// Final phonemes are cached by the engine when the source LIP sample is
-// unchanged. Restore our last suppression before that update, including on
-// line end/disable, so neither tongue capture nor vanilla reads our zeros.
+// A face's animation data (fg) as the engine's type.
+RE::BSFaceGenAnimationData& Anim(uint8_t* fg) {
+  return *reinterpret_cast<RE::BSFaceGenAnimationData*>(fg);
+}
+// A face node's animation data (fg), or null.
+uint8_t* FaceOf(uint8_t* node) {
+  return reinterpret_cast<uint8_t*>(reinterpret_cast<RE::BSFaceGenNiNode*>(node)
+                                        ->GetRuntimeData()
+                                        .animationData.get());
+}
+// A face node's flags; bit 0: the next morph pass resets the meshes.
+auto& NodeFlags(uint8_t* node) {
+  return reinterpret_cast<RE::BSFaceGenNiNode*>(node)->GetRuntimeData().flags;
+}
+
+// Engine modifiers the face mesh takes over (brows, squints); the blinks
+// (0, 1) stay with the engine.
+constexpr int kModZeroed[] = {2, 3, 4, 5, 6, 7, 12, 13};
+constexpr size_t kNumModZeroed = std::size(kModZeroed);
+inline float Mix(float engine, float ours, float mix) {
+  return mix >= 1.f ? ours : engine + (ours - engine) * mix;
+}
+
+// What PlayFrame wrote over in the final keyframes, and the engine's values
+// it replaced. The phonemes go back before the engine's next update
+// (Restore): it re-copies a source LIP sample only when that changes, so
+// neither tongue capture nor vanilla may read the plugin's zeros. The
+// modifiers the engine recomputes each update; they go back only with a
+// frame given back to the engine (RestoreModifiers). Neither goes into
+// replaced storage or over another writer's values.
 struct PhonemeRestore {
   float* values = nullptr;
   uint32_t count = 0;
   float source[direct::kNumPhonemes] = {};
   float written[direct::kNumPhonemes] = {};
+  float* modifiers = nullptr;
+  uint32_t modifier_count = 0;
+  float modifier_source[kNumModZeroed] = {};
+  float modifier_written[kNumModZeroed] = {};
 
   void Capture(skse::KeyframeMultiple& phon, float mix, float* tongue) {
     *this = {};
@@ -237,8 +355,33 @@ struct PhonemeRestore {
     phon.isUpdated = true;
     return true;
   }
+
+  // After Capture: blends the modifiers the mesh takes over toward zero.
+  void CaptureModifiers(skse::KeyframeMultiple& mod, float mix) {
+    if (!mod.values || mod.count < 14) return;
+    modifiers = mod.values;
+    modifier_count = mod.count;
+    for (size_t i = 0; i < kNumModZeroed; ++i) {
+      float& value = mod.values[kModZeroed[i]];
+      modifier_source[i] = value;
+      value = modifier_written[i] = Mix(value, 0.f, mix);
+    }
+    mod.isUpdated = true;
+  }
+
+  void RestoreModifiers(skse::KeyframeMultiple& mod) {
+    bool ours = modifiers && mod.values == modifiers &&
+                mod.count == modifier_count;
+    for (size_t i = 0; ours && i < kNumModZeroed; ++i)
+      ours = mod.values[kModZeroed[i]] == modifier_written[i];
+    modifiers = nullptr;
+    if (!ours) return;
+    for (size_t i = 0; i < kNumModZeroed; ++i)
+      mod.values[kModZeroed[i]] = modifier_source[i];
+    mod.isUpdated = true;
+  }
 };
-// A face the plugin animates (Expressions, AddDirect): anyone speaking a
+// A face the plugin animates (Expressions, ApplyMorphsHook): anyone speaking a
 // line and the player's conversation partner, for a while after
 // (kFaceGrace). It holds the head's mapping onto Mark.
 struct Face {
@@ -267,6 +410,12 @@ struct Face {
   State head_state = State::kPending;
   std::shared_ptr<const direct::Head> head;
   std::string head_key;  // geometry, morph identity and sex used by head
+  uint64_t head_print = 0;  // ShapePrint head_key was computed for; 0: none
+  // The head this update's keyframe decisions (Apply, Expressions) left the
+  // face to: the morph hook adds that head's deltas and no other's. Null:
+  // the keyframes are the engine's. Set after the decisions (RecordOwner),
+  // cleared before the next update and wherever the keyframes go back.
+  std::shared_ptr<const direct::Head> owned;
   // whose face it is and its handle, to tell when the actor joins a scene
   // (FaceActor); null: not known. The pointer is only used while a
   // ScopedReference of the handle holds it.
@@ -348,6 +497,9 @@ void Count() {
   num_faces = static_cast<int>(faces.size());
 }
 
+// What the plugin wrote to each face shape since the shape's reset.
+WriteLedger& written = *new WriteLedger;
+
 // The world is replaced (loading: a load begins, else it is over or a new
 // game starts): forgets the lines and faces without touching the old world's
 // (nothing is restored). Cached audio and head mappings are copies and stay.
@@ -358,6 +510,8 @@ void ResetPlayback(bool loading) {
   playing.clear();
   ProviderReset();
   faces.clear();
+  written.Clear();
+  ForgetUnlistedRests();
   partner_fg = nullptr;
   partner_ref = nullptr;
   partner_handle = 0;
@@ -486,14 +640,6 @@ bool VoiceStem(const char* voice, std::string& stem) {
   if (dot != std::string::npos && (sl == std::string::npos || dot > sl))
     stem.resize(dot);
   return !stem.empty();
-}
-
-// Confirmed silent, missing or unusable audio releases the speech pose.
-// Pending inference still prepares the head and eases out the previous pose.
-bool FailedSpeech(uint8_t* fg) {
-  ScopedLock guard(lock, ScopedLock::kShared);
-  auto it = playing.find(fg);
-  return it != playing.end() && it->second.entry->state == State::kFailed;
 }
 
 // Whether the actor (its base an NPC) is female.
@@ -730,6 +876,66 @@ bool JobAllowed(const Job& j) {
   return EntryAllowed(*j.entry, SnapshotTune());
 }
 
+// Lock held: how soon a line is generated. The player's and the dialogue
+// partner's lines go first, then everyone's; of those, a line being spoken
+// goes before one prepared ahead.
+int Rank(const Entry& entry) {
+  const uint32_t partner = PartnerHandle();
+  const bool dialogue = std::any_of(
+      entry.requesters.begin(), entry.requesters.end(),
+      [&](const Entry::Requester& requester) {
+        return requester.player || (partner && requester.handle == partner);
+      });
+  return 2 * dialogue + entry.spoken;
+}
+
+// Lock held: queues a job after the ones that go as soon as it does, or
+// (first) before them.
+void Enqueue(Job j, bool first = false) {
+  const int rank = Rank(*j.entry);
+  auto it = queue.begin();
+  while (it != queue.end() &&
+         (first ? Rank(*it->entry) > rank : Rank(*it->entry) >= rank))
+    ++it;
+  queue.insert(it, std::move(j));
+  WakeConditionVariable(&queue_cv);
+}
+
+// Lock held: the next job to generate, the first of the highest rank (ranks
+// change as dialogue does).
+size_t NextJob() {
+  size_t next = 0;
+  int best = -1;
+  for (size_t i = 0; i < queue.size(); ++i)
+    if (const int rank = Rank(*queue[i].entry); rank > best) {
+      best = rank;
+      next = i;
+    }
+  return next;
+}
+
+// Lock held: a job waiting that goes before the line generated now, which
+// then stops and is generated again after it. Only a line being spoken
+// stops one being spoken.
+bool Outranked(const Entry& running, const Tune& tune) {
+  const int rank = Rank(running);
+  return std::any_of(queue.begin(), queue.end(), [&](const Job& q) {
+    return Rank(*q.entry) > rank && (q.entry->spoken || !running.spoken) &&
+           EntryAllowed(*q.entry, tune);
+  });
+}
+
+// Worker only: its thread runs above the game's while it generates a line
+// that goes first (Rank), below it otherwise.
+void WorkerPriority(bool high) {
+  static thread_local int set = THREAD_PRIORITY_BELOW_NORMAL;
+  const int want =
+      high ? THREAD_PRIORITY_ABOVE_NORMAL : THREAD_PRIORITY_BELOW_NORMAL;
+  if (want == set) return;
+  set = want;
+  SetThreadPriority(GetCurrentThread(), want);
+}
+
 // Lock held, after the entry's state is final: its provider lines are told
 // of a failure (success shows as kStarted once the line is on the face).
 void NotifyWatchers(Entry& e) {
@@ -833,28 +1039,16 @@ std::shared_ptr<Entry> Request(
   if (e && e->degraded && e->state != State::kPending &&
       Now() >= sentiment_retry_at)
     e.reset();  // a playing line keeps its own reference
-  if (!e) {
+  if (e && e->loose && e->spoken && e->state != State::kPending) e.reset();
+  const bool fresh = !e;
+  if (fresh) {
     e = std::make_shared<Entry>();
     e->epoch = epoch;
     e->performance_sentiment = tune.performance_sentiment;
     e->model_state = selection;
-    Job j{key, stem, em, female, e, std::move(audio)};
-    if (urgent) {
-      queue.push_front(j);
-    } else {
-      queue.push_back(j);
-    }
-    WakeConditionVariable(&queue_cv);
-  } else if (urgent && e->state == State::kPending) {
-    // prefetched but not started: move to the front
-    for (auto it = queue.begin(); it != queue.end(); ++it)
-      if (it->cache_key == key) {
-        Job j = *it;
-        queue.erase(it);
-        queue.push_front(j);
-        break;
-      }
+    e->asked_at = Now();
   }
+  const int rank = Rank(*e);
   if (e->state == State::kPending &&
       std::none_of(e->requesters.begin(), e->requesters.end(),
                    [&](const Entry::Requester& requester) {
@@ -862,6 +1056,19 @@ std::shared_ptr<Entry> Request(
                             requester.player == player;
                    })) {
     e->requesters.push_back({speaker, player});
+  }
+  if (urgent) e->spoken = true;
+  if (fresh) {
+    Enqueue(Job{key, stem, em, female, e, std::move(audio)});
+  } else if (e->state == State::kPending && Rank(*e) > rank) {
+    // waiting, and now goes sooner (spoken, or by the dialogue partner)
+    for (auto it = queue.begin(); it != queue.end(); ++it)
+      if (it->entry == e) {
+        Job j = std::move(*it);
+        queue.erase(it);
+        Enqueue(std::move(j));
+        break;
+      }
   }
   e->last_use = ++use_clock;
   return e;
@@ -955,6 +1162,7 @@ std::unique_ptr<a2f::Net> CreateNet(bool gpu, std::string& err,
   a2f::OrtOptions o;
   o.gpu = gpu;
   o.gpu_adapter = selection->gpu_adapter;
+  o.graph_fusion = selection->graph_fusion;
   o.batch = config.batch;
   o.independent_device = config.independent_device;
   o.force_bundled_agility = config.force_bundled_agility;
@@ -1030,7 +1238,9 @@ void PublishNet(const a2f::NetKeeper& keeper) {
     // DXGI only (adapter and VRAM budget); no Direct3D device is created.
     why = a2f::DiagnoseNet(selection->gpu, keeper.error(),
                            selection->gpu ? a2f::QueryGpu() : a2f::GpuState{},
-                           ModelFor(selection->network).vram_mb);
+                           selection->graph_fusion
+                               ? ModelFor(selection->network).fused_vram_mb
+                               : ModelFor(selection->network).vram_mb);
     for (const auto& line : why) skse::Report("%s", line.c_str());
     // the system as it is at the first failure (the report at startup is
     // from the main menu)
@@ -1051,6 +1261,7 @@ void PublishNet(const a2f::NetKeeper& keeper) {
   stats.network = keeper.loaded() ? keeper.version() : selection->network;
   stats.want_gpu = selection->gpu;
   stats.gpu_adapter = selection->gpu_adapter;
+  stats.graph_fusion = selection->graph_fusion;
   stats.net_info = keeper.info();
   stats.net_error = why;
   stats.net_detail = keeper.error();
@@ -1064,6 +1275,7 @@ std::unique_ptr<a2f::EmotionNet> sentiment_net;
 bool sentiment_gpu = false;
 bool sentiment_performance = false;
 int sentiment_device = 0;
+bool sentiment_graph_fusion = false;
 
 void SentimentStatus(const std::string& message) {
   ScopedLock guard(lock);
@@ -1086,7 +1298,9 @@ void UnloadSentiment() {
 // Worker only: changing emotion settings must not rebuild the facial session.
 void ConfigureSentiment(const Tune& tune) {
   if (sentiment_performance == tune.performance_sentiment &&
-      sentiment_device == tune.emotion_device)
+      sentiment_device == tune.emotion_device &&
+      (!tune.EmotionUsesGpu() ||
+       sentiment_graph_fusion == tune.emotion_graph_fusion))
     return;
   UnloadSentiment();
   if (sentiment_device != tune.emotion_device) {
@@ -1095,26 +1309,31 @@ void ConfigureSentiment(const Tune& tune) {
   }
   sentiment_performance = tune.performance_sentiment;
   sentiment_device = tune.emotion_device;
+  sentiment_graph_fusion = tune.emotion_graph_fusion;
 }
 
 enum class Sentiment {
   kReady,        // in emotion.sentiment (empty: none wanted)
-  kCancelled,    // the line is no longer wanted
+  kCancelled,    // the line or its sentiment is no longer wanted
   kUnavailable,  // the model failed or is in its retry wait: dialogue only
 };
 
 // The line's voice sentiment. Unavailable leaves dialogue usable: the line
 // is generated without it and marked degraded (Entry). A cancelled line
 // keeps a healthy session for the next one.
+// job_allowed: whether the line is still to be generated now (default:
+// JobAllowed).
 Sentiment PrepareSentiment(const Job& job, const std::vector<float>& pcm,
-                           a2f::Emotion& emotion) {
+                           a2f::Emotion& emotion,
+                           const std::function<bool()>& job_allowed = {}) {
   // 0 without the model (Request)
   if (emotion.sentiment_multiplier <= 0) {
     emotion.sentiment.clear();
     return Sentiment::kReady;
   }
   const auto allowed = [&] {
-    return JobAllowed(job) && SnapshotTune().sentiment_analysis;
+    return (job_allowed ? job_allowed() : JobAllowed(job)) &&
+           SnapshotTune().sentiment_analysis;
   };
   if (!allowed()) return Sentiment::kCancelled;
   const Tune tune = SnapshotTune();
@@ -1127,6 +1346,7 @@ Sentiment PrepareSentiment(const Job& job, const std::vector<float>& pcm,
     a2f::OrtOptions options;
     options.gpu = tune.EmotionUsesGpu();
     options.gpu_adapter = std::max(0, tune.emotion_device);
+    options.graph_fusion = tune.emotion_graph_fusion;
     options.independent_device = config.independent_device;
     options.force_bundled_agility = config.force_bundled_agility;
     a2f::diagnostics::Attempt diagnostic(
@@ -1180,13 +1400,31 @@ Sentiment PrepareSentiment(const Job& job, const std::vector<float>& pcm,
 
 // Generates one queued line and stores the result in the cache.
 void Process(const Job& j, a2f::NetKeeper& keeper) {
-  const auto allowed = [&] { return JobAllowed(j); };
+  // A line that goes first (Rank) stops this one between runs of the
+  // networks; it is generated again after that line.
+  bool outranked = false;
+  const auto allowed = [&] {
+    bool ok, first;
+    {
+      ScopedLock guard(lock, ScopedLock::kShared);
+      const Tune tune = SnapshotTune();
+      ok = EntryAllowed(*j.entry, tune);
+      first = Rank(*j.entry) > 0;
+      if (ok && Outranked(*j.entry, tune)) outranked = true, ok = false;
+    }
+    WorkerPriority(first);
+    return ok;
+  };
   if (!allowed()) {
     ScopedLock guard(lock);
-    CancelJob(j);
+    if (outranked)
+      Enqueue(j, true);
+    else
+      CancelJob(j);
     return;
   }
   static std::atomic<int> logged;
+  const double picked = Now();
   std::vector<uint8_t> bytes;
   const std::vector<uint8_t>* source = &bytes;
   std::string err, file;
@@ -1203,6 +1441,9 @@ void Process(const Job& j, a2f::NetKeeper& keeper) {
   std::shared_ptr<a2f::Line> line;
   std::shared_ptr<const std::vector<a2f::GazeBeat>> beats;
   double t = Now(), audio_sec = 0;
+  // log, ms from t: decoding, the voice's sentiment (its session made too),
+  // the face session's (keeper.Run until the generator starts)
+  double decode_ms = 0, sentiment_ms = 0, session_ms = 0;
   bool inference_attempted = false;
   int generated_network = j.entry->model_state->network;
   bool no_net = false;  // not this line's fault: generate it again next time
@@ -1212,18 +1453,38 @@ void Process(const Job& j, a2f::NetKeeper& keeper) {
     err = "no voice file";
   } else {
     std::vector<float> pcm;
-    if (a2f::DecodeAudio(source->data(), source->size(), pcm, err)) {
+    const bool decoded =
+        a2f::DecodeAudio(source->data(), source->size(), pcm, err);
+    decode_ms = (Now() - t) * 1e3;
+    if (decoded) {
       audio_sec = pcm.size() / static_cast<double>(a2f::kSampleRate);
       silent = !a2f::HasAudibleAudio(pcm.data(), pcm.size());
+      // A line played outside the game (Mantella's fast response) is muted
+      // in it; its audible copy beside it, if it is as long, is animated.
+      std::vector<uint8_t> copy;
+      std::vector<float> audible;
+      std::string copy_err;
+      if (silent && !j.audio && ReadGameFile(j.path + ".bfa.wav", copy) &&
+          a2f::DecodeAudio(copy.data(), copy.size(), audible, copy_err) &&
+          audible.size() == pcm.size() &&
+          a2f::HasAudibleAudio(audible.data(), audible.size())) {
+        pcm.swap(audible);
+        file = j.path + ".bfa.wav";
+        silent = false;
+      }
       if (silent) {
         err = "silent or unusable audio; keeping vanilla facial animation";
       } else {
         a2f::Emotion emotion = j.emotion;
-        sentiment = PrepareSentiment(j, pcm, emotion);
+        const double reading = Now();
+        sentiment = PrepareSentiment(j, pcm, emotion, allowed);
+        sentiment_ms = (Now() - reading) * 1e3;
         line = std::make_shared<a2f::Line>();
         inference_attempted = true;
+        const double running = Now();
         if (!keeper.Run(
                 [&](a2f::Net& net, std::string& e) {
+                  session_ms = (Now() - running) * 1e3;
                   generated_network = net.Version();
                   const direct::Mark& face =
                       j.entry->model_state->mapping->Face(j.female);
@@ -1257,10 +1518,8 @@ void Process(const Job& j, a2f::NetKeeper& keeper) {
         // The emotion at kFps, whatever rate the model ran at.
         if (line) {
           std::vector<float> track;
-          const int frames = static_cast<int>(pcm.size() * a2f::kFps /
-                                              a2f::kSampleRate);
-          if (frames > 0)
-            a2f::EmotionTrack(pcm.data(), pcm.size(), frames, emotion, track);
+          a2f::EmotionTrack(pcm.data(), pcm.size(),
+                            a2f::EmotionFrames(pcm.size()), emotion, track);
           auto found = std::make_shared<std::vector<a2f::GazeBeat>>();
           a2f::FindGazeBeats(pcm.data(), pcm.size(), track, *found);
           beats = std::move(found);
@@ -1274,6 +1533,17 @@ void Process(const Job& j, a2f::NetKeeper& keeper) {
     CancelJob(j);
     return;
   }
+  if (outranked && !line) {
+    // A line that goes first stopped it: from its start once more, before
+    // the lines that wait at its rank.
+    j.entry->begun_at = 0;
+    Enqueue(j, true);
+    guard.Unlock();
+    if (LogMore(logged))
+      Log("yield %s: stopped after %.0f ms for a line that goes first",
+          j.path.c_str(), ms);
+    return;
+  }
   auto it = cache.find(j.cache_key);
   if (it != cache.end() && it->second == j.entry) {
     it->second->state = line ? State::kReady : State::kFailed;
@@ -1283,6 +1553,7 @@ void Process(const Job& j, a2f::NetKeeper& keeper) {
     // replace them later. The active line retains its fallback entry.
     if (!line && (no_net || silent || file.empty())) cache.erase(it);
   }
+  if (line) j.entry->ready_at = Now();
   j.entry->failure_reason = no_net                ? BFA_kResultModelNotLoaded
                             : inference_attempted ? BFA_kResultInferenceFailed
                                                   : BFA_kResultAudioFailed;
@@ -1308,14 +1579,18 @@ void Process(const Job& j, a2f::NetKeeper& keeper) {
          ++i)
       cache.erase(v[i].second);
   }
-  j.entry->degraded = sentiment == Sentiment::kUnavailable;
+  j.entry->degraded = sentiment != Sentiment::kReady;
+  j.entry->loose = !j.audio && file.size() > 4 &&
+                   file.compare(file.size() - 4, 4, ".wav") == 0;
+  const double queued_ms = (j.entry->begun_at - j.entry->asked_at) * 1e3;
   guard.Unlock();
   if (LogMore(logged)) {
     if (line) {
       // what the network was given: every emotion with a mean of 0.02 up
-      static const char* const kNames[a2f::kNumMod] = {
+      static const char* const kNames[] = {
           "amazement", "anger", "cheekiness",  "disgust", "fear",
           "grief",     "joy",   "outofbreath", "pain",    "sadness"};
+      static_assert(std::size(kNames) == a2f::kNumMod);
       std::string fed;
       for (int c = 0; c < a2f::kNumMod; ++c)
         if (line->emotion_mean[c] >= 0.02f) {
@@ -1333,6 +1608,13 @@ void Process(const Job& j, a2f::NetKeeper& keeper) {
                                                          : "Mark 3.0",
           j.emotion.type, j.emotion.value, audio_sec, line->frames, ms,
           fed.empty() ? " no emotion" : fed.c_str());
+      // What the line waited for. The model's share includes the
+      // performance network's mel features.
+      Log("gen %s: %.0f ms queued, read %.0f, decode %.0f, sentiment %.0f, "
+          "face session %.0f, model %.0f",
+          file.c_str(), queued_ms, (t - picked) * 1e3, decode_ms, sentiment_ms,
+          session_ms,
+          std::max(0., ms - decode_ms - sentiment_ms - session_ms));
     } else {
       Log("skip %s: %s", j.path.c_str(), err.c_str());
     }
@@ -1349,7 +1631,11 @@ void SwitchModel(a2f::NetKeeper& keeper, const Tune& tune) {
   const bool gpu = !tune.force_cpu;
   const bool retry = gpu_retry_requested.exchange(false);
   const bool adapter_changed = old->gpu_adapter != tune.gpu_adapter;
-  if (old->network == network && old->gpu == gpu && !adapter_changed && !retry)
+  // Graph fusion only changes a GPU session; CPU keeps it for the next one.
+  const bool fusion_changed =
+      gpu && old->graph_fusion != tune.face_graph_fusion;
+  if (old->network == network && old->gpu == gpu && !adapter_changed &&
+      !fusion_changed && !retry)
     return;
   if (retry && !gpu && old->network == network && !old->gpu &&
       !adapter_changed) {
@@ -1363,13 +1649,14 @@ void SwitchModel(a2f::NetKeeper& keeper, const Tune& tune) {
     stats.switching_model = true;
     stats.model_error.clear();
   }
-  skse::Report("model switch requested: %d -> %d, GPU=%d", old->network,
-               network, gpu);
+  skse::Report("model switch requested: %d -> %d, GPU=%d, graph fusion=%d",
+               old->network, network, gpu, tune.face_graph_fusion);
   const ModelInfo& files = ModelFor(network);
   auto next = std::make_shared<ModelState>();
   next->network = network;
   next->gpu = gpu;
   next->gpu_adapter = tune.gpu_adapter;
+  next->graph_fusion = tune.face_graph_fusion;
   next->file = files.model_file;
   next->mapping = old->mapping;
   if (old->mapping->network != files.mapping_network) {
@@ -1401,6 +1688,7 @@ void SwitchModel(a2f::NetKeeper& keeper, const Tune& tune) {
     std::atomic_store(&active_model, std::shared_ptr<const ModelState>(next));
     // Per-model timings must not mix across switches.
     stats = Stats{};
+    first_visible = FirstVisible{};
     stats.switching_model = true;
   }
   PublishNet(keeper);  // clear stale diagnostics before the first new attempt
@@ -1458,10 +1746,13 @@ DWORD WorkerStep(a2f::NetKeeper& keeper, bool wait = true) {
     if (wait) SleepConditionVariableSRW(&queue_cv, &lock, timeout, 0);
     return timeout;
   }
-  Job j = queue.front();
-  queue.pop_front();
+  const auto next = queue.begin() + static_cast<std::ptrdiff_t>(NextJob());
+  Job j = std::move(*next);
+  queue.erase(next);
+  j.entry->begun_at = Now();
   worker_guard.Unlock();
   Process(j, keeper);
+  WorkerPriority(false);
   return 0;
 }
 
@@ -1482,6 +1773,7 @@ DWORD WINAPI Worker(void*) {
     stats.network = config.network;
     stats.want_gpu = config.gpu;
     stats.gpu_adapter = config.gpu_adapter;
+    stats.graph_fusion = config.graph_fusion;
   }
   ready = true;
   skse::Report("settings: GPU=%d, batch %d, model %ls", config.gpu,
@@ -1750,6 +2042,7 @@ uint32_t BeginSpeech(uint8_t* actor, const std::string& stem, uint32_t sound_id,
   p.player = IsPlayer(actor);
   p.external = std::move(external);
   p.voice = {sound_id, Now(), dur};
+  p.begun = p.wait_mark = p.voice.requested_at;
   if (p.external) {
     // The provider's line started when it said so. Its sound is not known
     // (the actor may still be playing the line before), so none is followed.
@@ -1884,25 +2177,13 @@ __declspec(noinline) uint8_t* ResponseHook(uint8_t* self, void* topic,
   return r;
 }
 
-// Engine modifiers the face mesh takes over (brows, squints); the blinks
-// (0, 1) stay with the engine.
-constexpr int kModZeroed[] = {2, 3, 4, 5, 6, 7, 12, 13};
-inline float Mix(float engine, float ours, float mix) {
-  return mix >= 1.f ? ours : engine + (ours - engine) * mix;
-}
-
 // The mesh carries the mouth, brows and eyes: zeroes the final phoneme and
 // modifier keyframes (but the blinks); mix < 1 blends from the engine's
 // values. The expressions are Expressions'.
 void PlayFrame(uint8_t* fg, float mix, float* tongue_phonemes,
                PhonemeRestore& preserved) {
-  auto& phon = (reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->phoneme3);
-  auto& mod = (reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->modifier3);
-  preserved.Capture(phon, mix, tongue_phonemes);
-  if (mod.values && mod.count >= 14) {
-    for (int e : kModZeroed) mod.values[e] = Mix(mod.values[e], 0.f, mix);
-    mod.isUpdated = true;
-  }
+  preserved.Capture(Anim(fg).phoneme3, mix, tongue_phonemes);
+  preserved.CaptureModifiers(Anim(fg).modifier3, mix);
 }
 
 std::atomic<int> logged_plays, logged_ends;
@@ -1929,9 +2210,11 @@ void SweepPlaying(uint8_t* keep) {
 
 // Logs the end of a line: what it played, or why it never did.
 void LogEnd(const Playing& p, State head_state, const char* why, float t) {
+  if (!p.logged) NoteFirstVisible(p, false, false);
   if (!LogMore(logged_ends)) return;
   if (!p.logged) {
-    Log("drop %s: never played, %s at %.2f s (line %s, head %s, lip %s)",
+    Log("drop %s: never played, %s at %.2f s (line %s, head %s, lip %s; "
+        "vanilla heard %.2f s)",
         p.name.c_str(), why, t,
         p.entry->state == State::kReady     ? "ready"
         : p.entry->state == State::kPending ? "still generating"
@@ -1939,7 +2222,7 @@ void LogEnd(const Playing& p, State head_state, const char* why, float t) {
         head_state == State::kReady     ? "mapped"
         : head_state == State::kPending ? "not mapped yet"
                                         : "not mappable",
-        p.lip_seen ? "seen" : "not seen");
+        p.lip_seen ? "seen" : "not seen", WaitedHeard(p));
     return;
   }
   Log("end %s: at %.2f s (engine lip timer %.2f s), %u Direct frames, "
@@ -2126,6 +2409,8 @@ int Apply(uint8_t* fg, const Tune& tune, bool in_scene, uint8_t* actor,
   Face* face = LiveFace(fg);
   const State head_state = face ? face->head_state : State::kPending;
   const bool generated = p.entry->state == State::kReady;
+  const int waiting =
+      p.entry->state == State::kFailed ? kWaitFailed : kWaitLine;
   // A provider's line whose head cannot be mapped, or whose inference
   // failed, is declined: the provider keeps its own lips for it.
   if (ProviderLine(p) && !done &&
@@ -2141,6 +2426,9 @@ int Apply(uint8_t* fg, const Tune& tune, bool in_scene, uint8_t* actor,
   }
   // holding (t = 0) too: the engine's .lip already runs before the sound
   if (done || !generated || !enabled || head_state != State::kReady) {
+    if (!done && enabled && !p.logged)
+      NoteWait(p, now, t,
+               head_state == State::kFailed || generated ? kWaitHead : waiting);
     p.direct_frame = -1;
     if (!enabled) p.snap = true;
     bool tail = p.direct_tail > 0;
@@ -2166,10 +2454,14 @@ int Apply(uint8_t* fg, const Tune& tune, bool in_scene, uint8_t* actor,
     if (t > kLateStart) ++stats.late;
   }
   p.late = p.ready_at > kLateStart;
+  // The engine's lips give way as the pose comes in, by its transition (one
+  // mouth): a line blended in (late, or onto a face still posed) starts
+  // from the share shown now; one snapping in, or taking a face at rest on
+  // time, takes the mouth at once (AddDirect makes the same choice).
   const float mix =
-      p.late ? std::clamp((t - p.ready_at) / std::max(settings.blend_in, 1e-3f),
-                          0.f, 1.f)
-             : 1.f;
+      !p.snap && (p.late || !face->transition.resting(now))
+          ? face->transition.share(now)
+          : 1.f;
   p.last_t = t;
   ++p.direct_frames;
   p.direct_frame =
@@ -2180,12 +2472,45 @@ int Apply(uint8_t* fg, const Tune& tune, bool in_scene, uint8_t* actor,
   const std::string name = first ? p.name : std::string();
   const float ready_at = p.ready_at;
   const uint32_t frames = p.entry->line->frames;
+  // How soon it was shown, and what the face waited for until then.
+  std::string waited;
+  if (first) {
+    if (p.wait_why >= 0) NoteWait(p, now, t, p.wait_why);
+    NoteFirstVisible(p, true, p.late);
+    float all = 0;
+    for (float v : p.waited) all += v;
+    std::string causes;
+    for (int w = 0; w < kWaitWhys; ++w)
+      if (p.waited[w] > 0) {
+        char b[96];
+        snprintf(b, sizeof b, "%s %s %.2f s (%.2f heard)",
+                 causes.empty() ? "" : ",", kWaitNames[w], p.waited[w],
+                 p.waited_heard[w]);
+        causes += b;
+      }
+    const Entry& e = *p.entry;
+    const auto from_speech = [&](double at) {
+      return at > 0 ? (at - p.begun) * 1e3 : 0.;
+    };
+    char b[512];
+    snprintf(b, sizeof b,
+             "first %s: shown %.0f ms after its speech began, at %.2f s of its "
+             "clock%s; vanilla %.2f s, %.2f heard%s%s; line asked %+.0f ms, "
+             "begun %+.0f ms, generated %+.0f ms from the speech",
+             p.name.c_str(), (now - p.begun) * 1e3, t,
+             p.late ? ", blended in" : "", all, WaitedHeard(p),
+             causes.empty() ? "" : ":", causes.c_str(), from_speech(e.asked_at),
+             from_speech(e.begun_at), from_speech(e.ready_at));
+    waited = b;
+  }
   if (ProviderLine(p)) ProviderLineStarted(p.external);
   PlayFrame(fg, mix, p.tongue_phonemes, face->phonemes);
   guard.Unlock();
-  if (first && LogMore(logged_plays))
+  if (first && LogMore(logged_plays)) {
     Log("play %s: %u frames, %s clock, ready at %.2f s", name.c_str(), frames,
         lip ? "lip" : "wall", ready_at);
+    Log("%s", waited.c_str());
+  }
   return kFaceChanged | kKeepUpdating;
 }
 
@@ -2253,47 +2578,67 @@ bool RestoreKeyframe(skse::KeyframeMultiple& ex, const float* src,
   return true;
 }
 
-// Both locks held: restores the engine keyframes and drops the face.
-// Returns whether there was one.
+// Both locks held: the keyframes the plugin wrote this update go back to the
+// engine's values (only where still as it left them), so the next reset
+// shows the engine's own pose; the face no longer owns the frame.
+void GiveBack(uint8_t* fg, Face& f) {
+  auto& data = Anim(fg);
+  f.phonemes.Restore(data.phoneme3);
+  f.phonemes.RestoreModifiers(data.modifier3);
+  if (RestoreKeyframe(data.expression3, f.src, f.written))
+    data.expression3.isUpdated = true;
+  f.owned.reset();
+}
+
+// Both locks held: gives the keyframes back and drops the face. Returns
+// whether there was one.
 bool RestoreAndDropFace(uint8_t* fg) {
   auto face = faces.find(fg);
   if (face == faces.end()) return false;
-  face->second.phonemes.Restore(
-      (reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->phoneme3));
-  auto& ex = (reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->expression3);
-  if (RestoreKeyframe(ex, face->second.src, face->second.written))
-    ex.isUpdated = true;
+  GiveBack(fg, face->second);
   DropFace(fg);
   return true;
 }
 
-// Before the engine update, restore its speech and expression keyframes.
-// Phonemes and parked expressions are restored only if still as we left them.
+// Before the engine update, restore its speech and expression keyframes and
+// end the last update's ownership. Phonemes and parked expressions are
+// restored only if still as we left them.
 void RestoreFaceKeyframes(uint8_t* fg, uint64_t epoch) {
-  float src[direct::kNumExpressions], written[direct::kNumExpressions];
-  PhonemeRestore phonemes;
+  {
+    // no face, no lock taken: its animation data may be gone
+    ScopedLock guard(lock, ScopedLock::kShared);
+    if (!faces.count(fg)) return;
+  }
+  skse::ScopedFaceLock face_guard(Anim(fg).lock);
   ScopedLock guard(lock);
   auto it = faces.find(fg);
-  const bool found = it != faces.end();
-  const bool parked = found && it->second.parked;
-  if (found) {
-    phonemes = it->second.phonemes;
-    it->second.phonemes = {};
-    std::copy_n(it->second.src, direct::kNumExpressions, src);
-    std::copy_n(it->second.written, direct::kNumExpressions, written);
-  }
-  guard.Unlock();
-  if (!found) return;
-  // the face's lock is waited for without the plugin's; a load may begin
-  // meanwhile, and then the keyframe is no longer written
-  skse::ScopedFaceLock face_guard(
-      reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->lock);
-  if (!CurrentWorld(epoch)) return;
-  phonemes.Restore(
-      (reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->phoneme3));
-  RestoreKeyframe(
-      (reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->expression3), src,
-      parked ? written : nullptr);
+  // a load may have begun while the face's lock was waited for
+  if (it == faces.end() || !CurrentWorld(epoch)) return;
+  Face& f = it->second;
+  f.owned.reset();
+  std::exchange(f.phonemes, {}).Restore(Anim(fg).phoneme3);
+  RestoreKeyframe(Anim(fg).expression3, f.src, f.parked ? f.written : nullptr);
+}
+
+// Face's lock held, after the update's keyframe decisions (Apply and
+// Expressions: a ready head takes the keyframes, any other leaves them to
+// the engine): records the head they were made for (Face::owned). A speech
+// pose still easing out where no line took the keyframes (the next line is
+// still generating, or none plays) and no line-end fade holds them
+// (Face::neutral_started) crossfades with the engine's speech: the engine's
+// phonemes and modifiers are scaled by the pose's share
+// (PoseTransition::share), never shown whole under it.
+void RecordOwner(uint8_t* fg) {
+  ScopedLock guard(lock);
+  Face* f = LiveFace(fg);
+  if (!f) return;
+  f->owned = f->head_state == State::kReady ? f->head : nullptr;
+  if (!f->owned || f->phonemes.values || f->phonemes.modifiers ||
+      f->neutral_started >= 0)
+    return;
+  const float weight = f->transition.share(Now());
+  float tongue[direct::kNumPhonemes];  // an ending pose plays no tongue
+  if (weight > 0) PlayFrame(fg, weight, tongue, f->phonemes);
 }
 
 // Lock held: the face of this animation data; made when wanted and missing,
@@ -2348,7 +2693,7 @@ void SweepFaces(uint8_t* keep, double clock) {
 }
 
 // Puts a face's expression levels (lv, of the engine's scale) where they
-// play: on a mapped head on the meshes (Face::level, for AddDirect) with the
+// play: on a mapped head on the meshes (Face::level, for the morph pass) with the
 // keyframes zeroed; elsewhere (head not mappable, or still mapping) on the
 // keyframes (ex; null: the head has none), at the regions' mean scale.
 // Returns like Apply.
@@ -2514,7 +2859,7 @@ int Expressions(uint8_t* fg, float dt, const Tune& tune, bool in_scene,
       p.shown = std::fmax(p.shown, f.ownership_blend * lv[i]);
   }
   int updates = ShowExpressions(f, lv, has_ex ? &ex : nullptr);
-  // the speech pose is still easing out (AddDirect)
+  // the speech pose is still easing out (PrepareFace)
   const bool easing = f.transition.moving() && !f.transition.stale(now);
   // CHIM's audio does not keep the engine's native lip animation ticking.
   // Request the next update throughout every fade, including its final mesh
@@ -2600,19 +2945,18 @@ __declspec(noinline) bool AnimUpdateHook(uint8_t* fg, float dt, uint64_t flag) {
     const Tune tune = SnapshotTune();
     int updates = kNoUpdate;
     {
-      skse::ScopedFaceLock face_guard(
-          reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->lock);
+      skse::ScopedFaceLock face_guard(Anim(fg).lock);
       if (CurrentWorld(epoch)) {
         if (num_playing)
           updates = Apply(fg, tune, in_scene, actor, known.handle, sound,
                           playing_now);
         updates |= Expressions(fg, dt, tune, in_scene, actor, known.handle);
+        RecordOwner(fg);
       }
     }
     changed |= updates != 0;
     // "changed" makes the node reset its meshes; keep the update coming
-    if (updates & kKeepUpdating)
-      reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->unk218 = 1;
+    if (updates & kKeepUpdating) Anim(fg).unk218 = 1;
   }
   return changed;
 }
@@ -2636,46 +2980,6 @@ void TrackPartner(uint8_t* node, uint8_t* fg) {
   if (found) partner_female = IsFemale(ref);
 }
 
-// Adds the deltas (by head.shapes) to the node's dynamic face shapes, noting
-// each part's peak. Returns whether any shape received deltas.
-bool AddDeltas(uint8_t* node, const direct::Head& head,
-               const std::vector<std::vector<float>>& deltas, float* peak) {
-  bool added = false;
-  ForFaceShapes(node, [&](uint8_t* shape, const char* name, direct::Part part,
-                          bool, uint32_t nv, const float*) {
-    size_t si = 0;
-    while (si < head.shapes.size() &&
-           (head.shapes[si].nv != nv || head.shapes[si].name != name))
-      ++si;
-    if (si == head.shapes.size()) return;
-    const auto& d = deltas[si];
-    // pinned pieces count with the head's followers
-    const direct::Part mapped_part = head.shapes[si].part;
-    const int pi = mapped_part == direct::Part::kPinned
-                       ? 0
-                       : static_cast<int>(mapped_part);
-    thread_local std::vector<float> xyz;
-    xyz.resize(nv * 3);
-    float* data = Engine<LockDynamicFn, kIdLockDynamic>()(shape);
-    if (!data) {
-      Engine<UnlockDynamicFn, kIdUnlockDynamic>()(shape);
-      return;
-    }
-    added = true;
-    for (uint32_t v = 0; v < nv; ++v)
-      for (int c = 0; c < 3; ++c) {
-        const size_t j = v * 3 + c;
-        const float dv = d[j];
-        peak[pi] = std::fmax(peak[pi], std::fabs(dv));
-        xyz[j] = data[v * 4 + c] + dv;
-      }
-    Engine<UpdateDynamicFn, kIdUpdateDynamic>()(shape, xyz.data(), false);
-    NoteUnlistedWrite(shape, xyz.data(), nv);
-    Engine<UnlockDynamicFn, kIdUnlockDynamic>()(shape);
-  });
-  return added;
-}
-
 // Apply asset calibration at playback, independently of the model's sex. In
 // particular, v2.3 uses Mark for both sexes and may share a cached mapping.
 void SpeechScales(const direct::Head& head, const FaceTune& settings,
@@ -2692,155 +2996,259 @@ std::shared_ptr<Entry> PlayingEntry(uint8_t* fg) {
   return it == playing.end() ? nullptr : it->second.entry;
 }
 
-// Finds the face's mapping, then (after the engine rebuilt the shapes from
-// the base and the morphs: reset) adds the line's Direct frame and the
-// expressions to every dynamic face shape of the node. The line's model
-// selects the mapping; the face is left alone if its line changes meanwhile.
-void AddDirect(uint8_t* node, bool reset) {
-  uint8_t* fg =
-      reinterpret_cast<uint8_t*>(reinterpret_cast<RE::BSFaceGenNiNode*>(node)
-                                     ->GetRuntimeData()
-                                     .animationData.get());
-  if (!fg) return;
-  // Morph calls can arrive without an intervening animation update. Query
-  // the retained actor outside our locks before reading or applying a pose.
-  TrackPartner(node, fg);
-  if (!FaceNeedsUpdate(fg)) return;
-  const FaceActor known = FaceActorOf(fg);
-  ScopedReference reference(known.handle);
-  // The retained actor, when it is still the face's; null otherwise.
-  uint8_t* actor = reference.get() == known.actor ? reference.get() : nullptr;
+// A dynamic face shape of the node (ForFaceShapes) as one morph pass sees it.
+struct FaceShape {
+  uint8_t* shape;
+  const char* name;
+  uint32_t nv;
+  const float* base;  // its engine base vertices, else its unlisted rest
+  bool listed;        // the engine has its base vertices and resets it
+  float* data;        // its vertices while ScopedShapeLocks holds it
+};
+
+std::vector<FaceShape> FaceShapes(uint8_t* node) {
+  std::vector<FaceShape> shapes;
+  ForFaceShapes(node, [&](uint8_t* shape, const char* name, direct::Part, bool,
+                          uint32_t nv, const float* base) {
+    uint32_t nb = 0;
+    shapes.push_back(
+        {shape, name, nv, base, BaseVerts(shape, nb) == base, nullptr});
+  });
+  return shapes;
+}
+
+constexpr uint32_t kPrintSamples = 8;
+// The head's identity as the node's shapes point to it (each shape, its
+// name, vertex count, base or unlisted rest and kPrintSamples of its
+// vertices, vertex buffer and morph data), with the sex and model the
+// mapping is for: HeadKey, which reads every vertex and morph, is computed
+// again only when this changes. Never 0.
+uint64_t ShapePrint(const std::vector<FaceShape>& shapes, bool female,
+                    const direct::Model* mapping) {
+  uint64_t h = 14695981039346656037ull;
+  const auto mix = [&h](uint64_t v) { h = (h ^ v) * 1099511628211ull; };
+  const auto ptr = [&mix](const void* p) {
+    mix(reinterpret_cast<uintptr_t>(p));
+  };
+  for (const FaceShape& s : shapes) {
+    ptr(s.shape);
+    ptr(s.name);
+    mix(s.nv);
+    ptr(s.base);
+    ptr(reinterpret_cast<RE::BSDynamicTriShape*>(s.shape)
+            ->GetDynamicTrishapeRuntimeData()
+            .dynamicData);
+    ptr(Engine<MorphDataFn, kIdMorphData>()(s.shape));
+    // a few base vertices: a sculpt rewriting them in place is a new head
+    for (uint32_t k = 0; k < kPrintSamples && s.nv; ++k)
+      for (int c = 0; c < 3; ++c) {
+        uint32_t bits;
+        std::memcpy(&bits, s.base + size_t{k} * s.nv / kPrintSamples * 3 + c,
+                    sizeof bits);
+        mix(bits);
+      }
+  }
+  mix(female);
+  ptr(mapping);
+  return h | 1;
+}
+
+// For each shape of the head, the index of the node's shape of the same name
+// and vertex count (each used once). False if one has none.
+bool MatchShapes(const direct::Head& head, const std::vector<FaceShape>& shapes,
+                 std::vector<uint32_t>& match) {
+  const auto key = [](const char* name, uint32_t nv, const char* other_name,
+                      uint32_t other_nv) {
+    const int order = std::strcmp(name, other_name);
+    return order ? order < 0 : nv < other_nv;
+  };
+  std::vector<uint32_t> order(shapes.size());
+  std::iota(order.begin(), order.end(), 0u);
+  std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
+    return key(shapes[a].name, shapes[a].nv, shapes[b].name, shapes[b].nv);
+  });
+  std::vector<bool> used(shapes.size());
+  match.clear();
+  for (const auto& wanted : head.shapes) {
+    auto it = std::lower_bound(
+        order.begin(), order.end(), wanted, [&](uint32_t i, const auto& w) {
+          return key(shapes[i].name, shapes[i].nv, w.name.c_str(), w.nv);
+        });
+    while (it != order.end() && used[*it] && shapes[*it].nv == wanted.nv &&
+           wanted.name == shapes[*it].name)
+      ++it;
+    if (it == order.end() || shapes[*it].nv != wanted.nv ||
+        wanted.name != shapes[*it].name)
+      return false;
+    used[*it] = true;
+    match.push_back(*it);
+  }
+  return true;
+}
+
+// What one morph pass shows on a face the plugin animates (PrepareFace).
+struct FacePlan {
+  FacePlan() : deltas(std::move(Spare())) {}
+  ~FacePlan() { Spare() = std::move(deltas); }
+  FacePlan(const FacePlan&) = delete;
+  FacePlan& operator=(const FacePlan&) = delete;
+
+  // This update left the face's keyframes to a head (Face::owned).
+  bool owned = false;
+  // That head when its frame can be shown, with the node's shape for each of
+  // its shapes and their deltas (empty: nothing to add); null: the keyframes
+  // must go back to the engine before a reset.
+  std::shared_ptr<const direct::Head> head;
+  std::vector<uint32_t> match;
+  std::vector<std::vector<float>> deltas;
+
+ private:
+  // the deltas' storage, kept for the thread's next pass
+  static std::vector<std::vector<float>>& Spare() {
+    thread_local std::vector<std::vector<float>> spare;
+    return spare;
+  }
+};
+
+// Face's lock held, no shape lock, before the engine's pass. Drops the face
+// if its actor may no longer be animated (the keyframes go back first: never
+// even a fade-out over a scene) or its line failed; keeps the head's mapping
+// current (FindHead: a head found ready is shown from the next update, whose
+// keyframe decisions are made for it); and for a reset works out, into plan,
+// the frame of the head the face's keyframes were left to (Face::owned),
+// while it is still the face's head and its shapes are all there by name
+// and vertex count; otherwise the plan has no head and the frame goes back
+// to the engine. The line's model selects the mapping.
+void PrepareFace(uint8_t* node, uint8_t* fg, uint8_t* actor, uint32_t handle,
+                 const std::vector<FaceShape>& shapes, bool reset,
+                 FacePlan& plan) {
   const Tune base_tune = SnapshotTune();
-  if (!DialogueAllows(base_tune, known.handle, actor && IsPlayer(actor)) ||
-      (actor &&
-       (FaceExternallyOwned(actor) || !RaceAllowed(actor) || !NpcAllowed(actor)))) {
-    {
-      ScopedLock guard(lock, ScopedLock::kShared);
-      if (!faces.count(fg) && !playing.count(fg)) return;
-    }
-    // Request an engine rebuild on the next update if this call did not
-    // reset the mesh; never add even the old pose's fade-out to a scene.
-    skse::ScopedFaceLock face_guard(
-        reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->lock);
+  if (!DialogueAllows(base_tune, handle, actor && IsPlayer(actor)) ||
+      (actor && (FaceExternallyOwned(actor) || !RaceAllowed(actor) ||
+                 !NpcAllowed(actor)))) {
     ScopedLock guard(lock);
-    RestoreAndDropFace(fg);
+    const bool had_face = RestoreAndDropFace(fg);
     auto line = playing.find(fg);
     if (line != playing.end()) {
       LineLeft(fg, line->second, BFA_kAborted);
       playing.erase(line);
       Count();
+    } else if (!had_face) {
+      return;
     }
-    reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->unk218 = 1;
+    Anim(fg).unk218 = 1;
     return;
   }
   const Tune tune = NpcSharedTune(base_tune, actor);
-  if (FailedSpeech(fg)) {
-    skse::ScopedFaceLock face_guard(
-        reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->lock);
-    ScopedLock guard(lock);
-    // unless the line changed while waiting for the face lock
-    auto line = playing.find(fg);
-    if (line != playing.end() && line->second.entry->state == State::kFailed &&
-        RestoreAndDropFace(fg))
-      reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->unk218 = 1;
-    return;
-  }
-  bool enabled = false;
-  // the face's sex: its line's speaker's or the partner's, else as last known
-  bool female = false;
-  bool player = false;
   auto selection = SnapshotModel();
   std::shared_ptr<Entry> expected_entry;
+  std::shared_ptr<const direct::Head> owned;
+  // the face's sex: its line's speaker's or the partner's, else as last known
+  bool female = false, player = false, enabled = false;
+  uint64_t print_was = 0;
   {
     ScopedLock guard(lock);
+    auto it = playing.find(fg);
+    if (it != playing.end() && it->second.entry->state == State::kFailed) {
+      // confirmed silent, missing or unusable audio releases the speech pose
+      if (RestoreAndDropFace(fg)) Anim(fg).unk218 = 1;
+      return;
+    }
     Face* face = LiveFace(fg);
     if (!face) return;
-    auto it = playing.find(fg);
     if (it != playing.end())
       face->female = it->second.female;
     else if (fg == partner_fg)
       face->female = partner_female;
     female = face->female;
     player = it != playing.end() ? it->second.player : face->player;
+    enabled = EnabledFor(tune, face->player);
     expected_entry = PlayingEntry(fg);
     if (expected_entry && expected_entry->model_state)
       selection = expected_entry->model_state;
+    owned = face->owned;
+    print_was = face->head_print;
   }
+  plan.owned = owned != nullptr;
   const FaceTune settings = NpcFaceTune(tune, actor, female, player);
-  const std::string key = HeadKey(node, female, selection->mapping);
-  std::shared_ptr<const a2f::Line> line;
-  std::shared_ptr<const direct::Head> head;
-  float frame = -1;
-  float levels[direct::kNumExpressions];
-  float tongue_phonemes[direct::kNumPhonemes] = {};
-  bool late = false;
+  const uint64_t print = ShapePrint(shapes, female, selection->mapping.get());
+  const std::string key =
+      print != print_was ? HeadKey(node, female, selection->mapping) : "";
+  std::string head_key;
   State state;
+  std::shared_ptr<const direct::Head> head;
+  float levels[direct::kNumExpressions];
   {
     ScopedLock guard(lock);
     Face* face = LiveFace(fg);
     if (!face || PlayingEntry(fg) != expected_entry) return;
-    enabled = EnabledFor(tune, face->player);
-    if (face->head_key != key) {
-      face->head_key = key;
-      face->head_state = State::kPending;
-      face->head.reset();
-      // Geometry changes invalidate the mapping, not the model-space pose
-      // or expression ownership. Never apply the old mapping to new vertices.
+    if (print != print_was) {
+      face->head_print = print;
+      if (face->head_key != key) {
+        // Geometry changes invalidate the mapping, not the model-space pose
+        // or expression ownership.
+        face->head_key = key;
+        face->head_state = State::kPending;
+        face->head.reset();
+      }
     }
+    head_key = face->head_key;
     state = face->head_state;
     head = face->head;
     std::copy_n(face->level, direct::kNumExpressions, levels);
   }
   if (state == State::kPending) {
-    state = FindHead(node, key, female, head, selection->mapping);
+    state = FindHead(node, head_key, female, head, selection->mapping);
     if (state != State::kPending) {
       ScopedLock guard(lock);
       Face* face = LiveFace(fg);
-      if (!face || face->head_key != key || PlayingEntry(fg) != expected_entry)
-        return;
+      if (!face || PlayingEntry(fg) != expected_entry) return;
       face->head_state = state;
       face->head = head;
     }
   }
-  if (!reset || state != State::kReady || !head) return;
+  // A head changed since the update (geometry, sex or model) gets the
+  // engine's frame: the old mapping is never drawn on the new shapes.
+  if (!owned || !reset || owned != head ||
+      !MatchShapes(*owned, shapes, plan.match))
+    return;
+  thread_local std::vector<float> coefficients;
+  size_t tongue_start, joy_index;
+  bool speaking;
   {
     ScopedLock guard(lock);
     Face* face = LiveFace(fg);
-    if (!face || face->head_key != key || PlayingEntry(fg) != expected_entry)
-      return;
-    // A cached replacement can become ready in this very call. Sample its
-    // current speech now rather than submitting a spurious end-of-line pose.
+    if (!face || PlayingEntry(fg) != expected_entry) return;
+    std::shared_ptr<const a2f::Line> line;
+    float frame = -1;
+    float tongue_phonemes[direct::kNumPhonemes] = {};
+    bool late = false, snap = false;
     auto it = playing.find(fg);
     if (enabled && it != playing.end() && it->second.direct_frame >= 0) {
       line = it->second.entry->line;
       frame = it->second.direct_frame;
       late = it->second.late;
+      snap = it->second.snap;
       std::copy_n(it->second.tongue_phonemes, direct::kNumPhonemes,
                   tongue_phonemes);
     }
-  }
-  // at its last frame the line is over: the pose eases out from there
-  if (line && frame >= static_cast<float>(line->frames - 1)) line.reset();
-  thread_local std::vector<float> coefficients;
-  direct::Coefficients(*head, line.get(), frame, coefficients);
-  if (!line) std::fill_n(tongue_phonemes, direct::kNumPhonemes, 0.f);
-  // Fade authored tongue weights with the same line lifetime as the face.
-  const size_t tongue_start = coefficients.size();
-  coefficients.insert(coefficients.end(), tongue_phonemes,
-                      tongue_phonemes + direct::kNumPhonemes);
-  // Carry joy through the same transition as speech, including line endings.
-  const size_t joy_index = coefficients.size();
-  coefficients.push_back(
-      line ? std::clamp(line->emotion_mean[a2f::kJoy], 0.f, 1.f) : 0.f);
-  bool speaking = false;
-  {
-    ScopedLock guard(lock);
-    Face* face = LiveFace(fg);
-    if (!face || face->head_key != key || PlayingEntry(fg) != expected_entry)
-      return;
-    auto it = playing.find(fg);
-    const bool snap = line && it != playing.end() && it->second.snap;
+    // at its last frame the line is over: the pose eases out from there
+    if (line && frame >= static_cast<float>(line->frames - 1)) line.reset();
+    if (!line) {
+      snap = false;
+      std::fill_n(tongue_phonemes, direct::kNumPhonemes, 0.f);
+    }
     if (snap) it->second.snap = false;
+    direct::Coefficients(*owned, line.get(), frame, coefficients);
+    // Fade authored tongue weights with the same line lifetime as the face.
+    tongue_start = coefficients.size();
+    coefficients.insert(coefficients.end(), tongue_phonemes,
+                        tongue_phonemes + direct::kNumPhonemes);
+    // Carry joy through the same transition as speech, including line
+    // endings.
+    joy_index = coefficients.size();
+    coefficients.push_back(
+        line ? std::clamp(line->emotion_mean[a2f::kJoy], 0.f, 1.f) : 0.f);
     const int model_face = selection->mapping->FaceIndex(female);
     if (face->pose_model != selection->mapping ||
         face->pose_face != model_face) {
@@ -2848,26 +3256,33 @@ void AddDirect(uint8_t* node, bool reset) {
       face->pose_model = selection->mapping;
       face->pose_face = model_face;
     }
-    const float fade = !line  ? settings.face_out
-                       : late ? settings.blend_in
-                              : settings.face_in;
+    // A line takes a face at rest at once, its first frame being where its
+    // speech is; one it finds still posed, or reaches late (mid-word), it
+    // blends into over BlendIn. FaceFadeIn is the engine's expressions'.
+    const double now = Now();
+    const float fade = !line ? settings.face_out
+                       : late || !face->transition.resting(now)
+                           ? settings.blend_in
+                           : 0.f;
     speaking =
-        face->transition.Blend(line, Now(), fade, enabled, snap, coefficients);
+        face->transition.Blend(line, now, fade, enabled, snap, coefficients);
   }
   // a head made for smaller facial motion takes the speech scaled down
   float scales[direct::kNumRegions];
-  SpeechScales(*head, settings, female, scales);
-  thread_local std::vector<std::vector<float>> deltas;
-  if (!direct::Evaluate(*head, speaking ? coefficients.data() : nullptr, scales,
-                        levels, coefficients.data() + tongue_start,
+  SpeechScales(*owned, settings, female, scales);
+  if (!direct::Evaluate(*owned, speaking ? coefficients.data() : nullptr,
+                        scales, levels, coefficients.data() + tongue_start,
                         tune.disable_tongue ? direct::TongueMode::kModel
                                             : direct::TongueMode::kAuthored,
-                        deltas, settings.upper_lip, settings.lower_lip,
+                        plan.deltas, settings.upper_lip, settings.lower_lip,
                         settings.smile_eyes, coefficients[joy_index],
-                        LimitLowerLip(actor)))
+                        LimitLowerLip(actor))) {
+    plan.deltas.clear();  // no speech or expression: the reset is the frame
+    plan.head = owned;
     return;
+  }
   direct::UnsafeDelta unsafe;
-  if (direct::FindUnsafeDelta(deltas, unsafe)) {
+  if (direct::FindUnsafeDelta(plan.deltas, unsafe)) {
     // Never submit a partial head: skin, mouth and followers would disagree.
     // The first few always reach the log, whatever the Logging setting.
     static std::atomic<uint64_t> rejected;
@@ -2875,21 +3290,84 @@ void AddDirect(uint8_t* node, bool reset) {
     if (count <= 8 || (count & (count - 1)) == 0)
       skse::Report(
           "head %s: rejected frame %llu, shape %s (%u of %zu) vertex %u got "
-          "delta %g (limit %g); engine pose kept",
-          key.c_str(), static_cast<unsigned long long>(count),
-          head->shapes[unsafe.shape].name.c_str(), unsafe.shape,
-          head->shapes.size(), unsafe.vertex, unsafe.value, direct::kMaxDelta);
+          "delta %g (limit %g); the keyframes go back to the engine for it",
+          head_key.c_str(), static_cast<unsigned long long>(count),
+          owned->shapes[unsafe.shape].name.c_str(), unsafe.shape,
+          owned->shapes.size(), unsafe.vertex, unsafe.value,
+          direct::kMaxDelta);
     return;
   }
-  float peak[3] = {};
-  const bool added = AddDeltas(node, *head, deltas, peak);
+  plan.head = owned;
+}
+
+// Face's lock held: gives the keyframes back (GiveBack), if the face is still
+// there, and has the engine update them.
+void GiveBackFace(uint8_t* fg) {
+  ScopedLock guard(lock);
+  Face* face = LiveFace(fg);
+  if (!face) return;
+  GiveBack(fg, *face);
+  Anim(fg).unk218 = 1;
+}
+
+// Shape locks held: whether the plan's frame can be shown whole: it has a
+// head, and every shape of it is locked with vertices and has its deltas.
+bool Showable(const FacePlan& plan, const std::vector<FaceShape>& shapes) {
+  if (!plan.head) return false;
+  for (size_t i = 0; i < plan.match.size(); ++i) {
+    const FaceShape& s = shapes[plan.match[i]];
+    if (!s.data || (!plan.deltas.empty() &&
+                    plan.deltas[i].size() != size_t{s.nv} * 3))
+      return false;
+  }
+  return true;
+}
+
+// Shape locks held, after the engine's pass claimed a reset: whether it
+// reached the node's listed shapes (none still holds the plugin's last
+// write; a hook behind this one may skip the engine).
+bool ResetReached(uint8_t* node, const std::vector<FaceShape>& shapes) {
+  for (const FaceShape& s : shapes)
+    if (s.listed && s.data && written.Holds(node, s.shape, s.data, s.nv))
+      return false;
+  return true;
+}
+
+// Shape locks held, after a reset that reached the shapes, for a Showable
+// plan: adds the deltas to every shape of its head, noting the writes and
+// each part's peak.
+void WriteFace(uint8_t* node, uint8_t* fg, const FacePlan& plan,
+               const std::vector<FaceShape>& shapes) {
+  if (plan.deltas.empty()) return;
+  float peak[3] = {};  // by direct::Part
+  thread_local std::vector<float> xyz;
+  for (size_t i = 0; i < plan.match.size(); ++i) {
+    const FaceShape& s = shapes[plan.match[i]];
+    const std::vector<float>& d = plan.deltas[i];
+    // pinned pieces count with the head's followers
+    const direct::Part part = plan.head->shapes[i].part;
+    const int pi = part == direct::Part::kPinned ? 0 : static_cast<int>(part);
+    xyz.resize(size_t{s.nv} * 3);
+    for (uint32_t v = 0; v < s.nv; ++v)
+      for (int c = 0; c < 3; ++c) {
+        const size_t j = size_t{v} * 3 + c;
+        peak[pi] = std::fmax(peak[pi], std::fabs(d[j]));
+        xyz[j] = s.data[size_t{v} * 4 + c] + d[j];
+      }
+    // the ledger notes what the buffer holds after the engine's copy, and
+    // only a write that changed it: one it left as it was is a reset's too
+    const uint64_t before = WriteLedger::Hash(s.data, s.nv);
+    Engine<UpdateDynamicFn, kIdUpdateDynamic>()(s.shape, xyz.data(), false);
+    if (!s.listed) NoteUnlistedWrite(s.shape, s.nv);
+    const uint64_t after = WriteLedger::Hash(s.data, s.nv);
+    if (after != before) written.Wrote(node, s.shape, s.data, s.nv, after);
+  }
   ScopedLock guard(lock);
   auto it = playing.find(fg);
-  if (added && it != playing.end()) {
-    ++it->second.direct_adds;
-    for (int i = 0; i < 3; ++i)
-      it->second.peak[i] = std::fmax(it->second.peak[i], peak[i]);
-  }
+  if (it == playing.end()) return;
+  ++it->second.direct_adds;
+  for (int i = 0; i < 3; ++i)
+    it->second.peak[i] = std::fmax(it->second.peak[i], peak[i]);
 }
 
 // ---------------- Where the partner looks ----------------
@@ -3177,44 +3655,39 @@ void DirectGaze(uint8_t* node, uint8_t* player, uint32_t actor_handle,
   offset[1] += aim.right / a2f::kFullLookDegrees;
 }
 
-// Offsets the look morphs of the NPC speaking to the player while the
-// original morph routine consumes them, then puts them back: offsets never
-// accumulate and nothing has to be restored when the actor goes away.
-uint64_t GazeMorphs(ApplyMorphsFn orig, uint8_t* node, uint8_t force,
-                    bool& reset, uint64_t epoch) {
-  // Whichever face is drawn next gives back a head target nothing wants any
-  // more: the conversation ended, or the feature was turned off.
+// Where the NPC speaking to the player looks this frame, as look morph
+// offsets (DirectGaze): whether there is any. No lock held; takes none but
+// the plugin's. Whichever face is drawn next also gives back a head target
+// nothing wants any more.
+bool LookOffset(uint8_t* node, uint8_t* fg, uint64_t epoch,
+                float (&offset)[2]) {
+  // the conversation ended, or the feature was turned off
   if (const uint32_t holder = gaze_head_actor.load(std::memory_order_relaxed);
       holder && Now() - gaze_head_wanted_at > kGazeHeadStaleSeconds)
     QueueGazeHead(holder, 0);
-  auto* fg =
-      reinterpret_cast<uint8_t*>(reinterpret_cast<RE::BSFaceGenNiNode*>(node)
-                                     ->GetRuntimeData()
-                                     .animationData.get());
   if (!PartnerHandle()) {
     if (!gaze_scene_over.load(std::memory_order_relaxed))
       gaze_scene_over.store(true, std::memory_order_relaxed);
-    return orig(node, force);
+    return false;
   }
-  if (!fg) return orig(node, force);
+  if (!fg) return false;
   Tune tune = SnapshotTune();
   if (!CurrentWorld(epoch) || !ready || !tune.enabled || skse::IsVr())
-    return orig(node, force);
+    return false;
   // Globally off, and no NPC override can turn it on: skip the handle work.
   const bool gaze_off = !tune.conversation_gaze ||
                         (tune.gaze_strength <= 0 && !tune.gaze_behavior);
-  if (gaze_off && !NpcOverridesActive()) return orig(node, force);
+  if (gaze_off && !NpcOverridesActive()) return false;
   const FaceActor known = FaceActorOf(fg);
-  if (!known.handle || known.handle != PartnerHandle())
-    return orig(node, force);
+  if (!known.handle || known.handle != PartnerHandle()) return false;
   ScopedReference actor(known.handle);
   if (!actor.get() || actor.get() != known.actor || IsPlayer(actor.get()) ||
       FaceExternallyOwned(actor.get()) || !NpcAllowed(actor.get()))
-    return orig(node, force);
+    return false;
   tune = NpcSharedTune(std::move(tune), actor.get());
   const bool speech_gaze = tune.conversation_gaze && tune.gaze_strength > 0;
   const bool behavior = tune.conversation_gaze && tune.gaze_behavior;
-  if (!speech_gaze && !behavior) return orig(node, force);
+  if (!speech_gaze && !behavior) return false;
   // Use the priority-resolved target: scripts/packages can override dialogue.
   auto* process =
       reinterpret_cast<uint8_t*>(reinterpret_cast<RE::Actor*>(actor.get())
@@ -3222,7 +3695,7 @@ uint64_t GazeMorphs(ApplyMorphsFn orig, uint8_t* node, uint8_t force,
                                      .currentProcess);
   auto get_target =
       Engine<uint32_t* (*)(uint8_t*, uint32_t*), kIdHeadtrackTarget>();
-  if (!process || !get_target) return orig(node, force);
+  if (!process || !get_target) return false;
   uint32_t target_handle = 0;
   get_target(process, &target_handle);
   // The partner looks at the player, or at what we turned their head to.
@@ -3233,10 +3706,7 @@ uint64_t GazeMorphs(ApplyMorphsFn orig, uint8_t* node, uint8_t force,
   uint8_t* const player = on_own                                   ? PlayerRef()
                           : target.get() && IsPlayer(target.get()) ? target.get()
                                                                    : nullptr;
-  if (!player) return orig(node, force);
-  skse::ScopedFaceLock face_guard(
-      reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->lock);
-  float offset[2] = {};
+  if (!player) return false;
   a2f::GazeLine gaze_line{};
   std::shared_ptr<const std::vector<a2f::GazeBeat>> beats;
   const FaceTune face =
@@ -3274,69 +3744,102 @@ uint64_t GazeMorphs(ApplyMorphsFn orig, uint8_t* node, uint8_t force,
     DirectGaze(node, player, known.handle, gaze_line.id ? &gaze_line : nullptr,
                gaze, tune.gaze_avoid_camera, own_ref, on_own, offset);
   }
-  auto& mods = (reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->modifier3);
-  constexpr uint32_t kNeededMods = a2f::kFirstGazeMorph + a2f::kNumGazeMorphs;
-  if ((!offset[0] && !offset[1]) || !mods.values || mods.count < kNeededMods)
-    return orig(node, force);
-  float saved[a2f::kNumGazeMorphs], adjusted[a2f::kNumGazeMorphs];
-  float* const gaze = mods.values + a2f::kFirstGazeMorph;
-  std::copy_n(gaze, a2f::kNumGazeMorphs, saved);
-  std::copy_n(saved, a2f::kNumGazeMorphs, adjusted);
-  if (!a2f::OffsetGazeMorphs(adjusted, offset)) return orig(node, force);
-  float* const values = mods.values;
-  const bool updated = mods.isUpdated;
-  std::copy_n(adjusted, a2f::kNumGazeMorphs, gaze);
-  mods.isUpdated = true;
-  reset = true;
-  const uint64_t result = orig(node, 1);
-  // Restore only values no other hook changed meanwhile.
-  if (mods.values == values && mods.count >= kNeededMods) {
-    bool untouched = true;
-    for (int morph = 0; morph < a2f::kNumGazeMorphs; ++morph) {
-      if (gaze[morph] == adjusted[morph])
-        gaze[morph] = saved[morph];
-      else
-        untouched = false;
-    }
-    if (untouched) mods.isUpdated = updated;
-  }
-  // Even if this was the last eligible frame, the next pass must remove its
-  // baked eye offset. No animation value or target is left overridden.
-  reinterpret_cast<RE::BSFaceGenNiNode*>(node)->GetRuntimeData().flags |= 1;
-  reinterpret_cast<RE::BSFaceGenAnimationData*>(fg)->unk218 = 1;
-  return result;
+  return offset[0] || offset[1];
 }
 
+// Offsets the face's look morphs (LookOffset) while the engine's pass
+// consumes them, then puts them back: offsets never accumulate and nothing
+// has to be restored when the actor goes away.
+class GazeKeys {
+ public:
+  // Face's lock held: whether the offset applies to the face's look morphs.
+  // If so the pass must reset the shapes (Morph).
+  bool Prepare(uint8_t* fg, const float (&offset)[2]) {
+    auto& mods = Anim(fg).modifier3;
+    if (!mods.values || mods.count < kNeededMods) return false;
+    std::copy_n(mods.values + a2f::kFirstGazeMorph, a2f::kNumGazeMorphs,
+                saved_);
+    std::copy_n(saved_, a2f::kNumGazeMorphs, adjusted_);
+    if (!a2f::OffsetGazeMorphs(adjusted_, offset)) return false;
+    fg_ = fg;
+    return true;
+  }
+
+  // Face's lock held: the engine's pass behind this hook (orig), with the
+  // prepared offsets applied and forcing the reset, else as called.
+  uint64_t Morph(ApplyMorphsFn orig, uint8_t* node, uint8_t force) {
+    if (!fg_) return orig(node, force);
+    auto& mods = Anim(fg_).modifier3;
+    float* const values = mods.values;
+    float* const gaze = values + a2f::kFirstGazeMorph;
+    const bool updated = mods.isUpdated;
+    std::copy_n(adjusted_, a2f::kNumGazeMorphs, gaze);
+    mods.isUpdated = true;
+    const uint64_t result = orig(node, 1);
+    // Restore only values no other hook changed meanwhile.
+    if (mods.values == values && mods.count >= kNeededMods) {
+      bool untouched = true;
+      for (int morph = 0; morph < a2f::kNumGazeMorphs; ++morph) {
+        if (gaze[morph] == adjusted_[morph])
+          gaze[morph] = saved_[morph];
+        else
+          untouched = false;
+      }
+      if (untouched) mods.isUpdated = updated;
+    }
+    // Even if this was the last eligible frame, the next pass must remove
+    // its baked eye offset. No animation value or target is left overridden.
+    NodeFlags(node) |= 1;
+    Anim(fg_).unk218 = 1;
+    return result;
+  }
+
+ private:
+  static constexpr uint32_t kNeededMods =
+      a2f::kFirstGazeMorph + a2f::kNumGazeMorphs;
+  uint8_t* fg_ = nullptr;  // prepared
+  float saved_[a2f::kNumGazeMorphs], adjusted_[a2f::kNumGazeMorphs];
+};
+
 // The render thread copies each dynamic shape to the GPU under the shape's
-// lock. A copy between the engine's reset (in the original) and AddDeltas
+// lock. A copy between the engine's reset (in the original) and the deltas
 // draws that frame at base + morphs without the pose: a random one-frame
-// flicker while speaking. Hold every face shape's lock from before the
-// original until the deltas are in. BSSpinLock is re-entrant for its owning
-// thread, so the engine's own locking inside ApplyMorphs and AddDeltas nests.
+// flicker while speaking. Holds every face shape's lock, noting its vertices
+// (FaceShape::data), from before the original until the deltas are in.
+// BSSpinLock is re-entrant for its owning thread, so the engine's own
+// locking inside ApplyMorphs nests.
 class ScopedShapeLocks {
  public:
-  explicit ScopedShapeLocks(uint8_t* node) {
-    ForFaceShapes(node, [this](uint8_t* shape, const char*, direct::Part, bool,
-                               uint32_t, const float*) {
-      Engine<LockDynamicFn, kIdLockDynamic>()(shape);
-      shapes_.push_back(shape);
-    });
+  explicit ScopedShapeLocks(std::vector<FaceShape>& shapes) : shapes_(shapes) {
+    for (FaceShape& s : shapes_)
+      s.data = Engine<LockDynamicFn, kIdLockDynamic>()(s.shape);
   }
   ~ScopedShapeLocks() {
-    for (auto it = shapes_.rbegin(); it != shapes_.rend(); ++it)
-      Engine<UnlockDynamicFn, kIdUnlockDynamic>()(*it);
+    for (auto it = shapes_.rbegin(); it != shapes_.rend(); ++it) {
+      it->data = nullptr;
+      Engine<UnlockDynamicFn, kIdUnlockDynamic>()(it->shape);
+    }
   }
   ScopedShapeLocks(const ScopedShapeLocks&) = delete;
   ScopedShapeLocks& operator=(const ScopedShapeLocks&) = delete;
 
  private:
-  std::vector<uint8_t*> shapes_;
+  std::vector<FaceShape>& shapes_;
 };
 
 // Deltas are only ever added right after a reset to the base vertices (force,
-// or the node's reset flag, which the original clears). For a face the plugin
-// plays, the face's lock (first, as GazeMorphs and AddDirect take it inside)
-// and the shape locks span the original and the deltas.
+// or the node's reset flag, which the original clears) that is seen to have
+// reached the shapes (ResetReached), and only for the head the face's
+// keyframes were left to at its update (Face::owned): the shapes show either
+// the engine's pose of its keyframes or that head's whole frame. In order:
+// what needs no shape lock (the face's actor, gaze offset, the plan: no lock
+// but the face's); the face's lock, then every face shape's lock, from before
+// the original until the deltas are in, for a face the plugin plays and for
+// any node it wrote to since its last reset (a face handed back keeps the
+// span once more); inside it the keyframes go back if the frame cannot be
+// shown, the original runs (with the gaze offset), and once its reset is
+// seen to have reached the shapes the unlisted shapes are reset and the
+// deltas added.
 __declspec(noinline) uint64_t ApplyMorphsHook(uint8_t* node, uint8_t force) {
   auto orig = SiteOrig(_ReturnAddress(), &ApplyMorphsHook, kIdApplyMorphs);
   const uint64_t epoch = world_epoch;
@@ -3357,28 +3860,62 @@ __declspec(noinline) uint64_t ApplyMorphsHook(uint8_t* node, uint8_t force) {
     hidden.emplace(node);
     if (!hidden->complete()) return 0;
   }
-  const bool direct =
-      ready && (num_playing || num_faces || PartnerHandle() != partner_handle);
-  auto* fg = reinterpret_cast<RE::BSFaceGenAnimationData*>(
-      reinterpret_cast<RE::BSFaceGenNiNode*>(node)
-          ->GetRuntimeData()
-          .animationData.get());
+  uint8_t* const fg = FaceOf(node);
+  // Morph calls can arrive without an intervening animation update.
+  const bool direct = fg && ready &&
+                      (num_playing || num_faces ||
+                       PartnerHandle() != partner_handle);
+  if (direct) TrackPartner(node, fg);
+  float offset[2] = {};
+  const bool looking = LookOffset(node, fg, epoch, offset);
+  const bool ours = direct && FaceNeedsUpdate(fg);
+  const bool pending = written.Pending(node);
+  // The face's retained actor, resolved before any lock; null if the face is
+  // no longer its.
+  const FaceActor known = ours ? FaceActorOf(fg) : FaceActor{};
+  ScopedReference reference(known.handle);
+  uint8_t* const actor =
+      reference.get() == known.actor ? reference.get() : nullptr;
   std::optional<skse::ScopedFaceLock> face_guard;
+  if (fg && (ours || looking || pending)) face_guard.emplace(Anim(fg).lock);
+  GazeKeys gaze;
+  bool reset = force || (NodeFlags(node) & 1);
+  if (looking && gaze.Prepare(fg, offset)) reset = true;
+  const bool locked = reset && (ours || pending);
+  std::vector<FaceShape> shapes;
+  if (ours || locked) shapes = FaceShapes(node);
+  FacePlan plan;
+  if (ours && CurrentWorld(epoch))
+    PrepareFace(node, fg, actor, known.handle, shapes, reset, plan);
   std::optional<ScopedShapeLocks> shape_locks;
-  if (direct && fg && FaceNeedsUpdate(reinterpret_cast<uint8_t*>(fg))) {
-    face_guard.emplace(fg->lock);
-    shape_locks.emplace(node);
-  }
-  bool reset =
-      force ||
-      (reinterpret_cast<RE::BSFaceGenNiNode*>(node)->GetRuntimeData().flags &
-       1);
-  uint64_t r = GazeMorphs(orig, node, force, reset, epoch);
+  if (locked) shape_locks.emplace(shapes);
+  const bool showable = locked && Showable(plan, shapes);
+  if (locked && plan.owned && !showable) GiveBackFace(fg);
+  const uint64_t r = gaze.Morph(orig, node, force);
   hidden.reset();
-  // The engine rebuilt the shapes it has base vertices for; do the unlisted
-  // ones.
-  if (reset && CurrentWorld(epoch)) ResetUnlisted(node);
-  if (direct && CurrentWorld(epoch)) AddDirect(node, reset);
+  if (!reset || !CurrentWorld(epoch)) return r;
+  if (!locked) {
+    ResetUnlisted(node);
+    return r;
+  }
+  if (!ResetReached(node, shapes)) {
+    // Something behind this hook skipped the engine's pass: the whole head
+    // keeps the pose still there (the unlisted shapes too), nothing is added
+    // to it, and the reset is asked for again.
+    static std::atomic<uint64_t> missed;
+    const uint64_t count = ++missed;
+    if (count <= 4 || (count & (count - 1)) == 0)
+      skse::Report("face reset not done (%llu): a hook behind this one "
+                   "skipped the game's morph pass; the face keeps its last "
+                   "pose until a pass resets it",
+                   static_cast<unsigned long long>(count));
+    NodeFlags(node) |= 1;
+    if (fg) Anim(fg).unk218 = 1;
+    return r;
+  }
+  ResetUnlisted(node);
+  written.Reset(node);
+  if (showable) WriteFace(node, fg, plan, shapes);
   return r;
 }
 

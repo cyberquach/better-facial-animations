@@ -359,9 +359,11 @@ std::shared_ptr<const std::vector<float>> UnlistedRest(uint8_t* shape,
   return rest;
 }
 
-void NoteUnlistedWrite(uint8_t* shape, const float* xyz, uint32_t nv) {
-  unlisted_rest.Wrote(shape, xyz, nv);
+void NoteUnlistedWrite(uint8_t* shape, uint32_t nv) {
+  unlisted_rest.Wrote(shape, nv);
 }
+
+void ForgetUnlistedRests() { unlisted_rest.Clear(); }
 
 void ResetUnlisted(uint8_t* node) {
   if (unlisted_rest.empty()) return;
@@ -520,22 +522,59 @@ void ReadMorphs(uint8_t* shape, direct::ShapeIn& s) {
   if (!md) return;
   std::vector<float> before(static_cast<size_t>(s.nv) * 4);
   const size_t bytes = before.size() * sizeof(float);
+  // the lock holds across the applies, so no one sees a morph applied
   float* data = lock_dyn(shape);
+  if (!data) return unlock_dyn(shape);
   memcpy(before.data(), data, bytes);
-  unlock_dyn(shape);
   for (int m = 0; m < direct::kNumMorphs; ++m) {
     if (!direct::Reads(s.skin, s.part, m, s.mouth_candidate)) continue;
     apply(md, direct::kMorphIds[m].type, direct::kMorphIds[m].index, shape,
           1.f);
     std::vector<float>& out = s.morphs[m];
     out.resize(static_cast<size_t>(s.nv) * 3);
-    data = lock_dyn(shape);
     for (uint32_t i = 0; i < s.nv; ++i)
       for (int c = 0; c < 3; ++c)
         out[i * 3 + c] = data[i * 4 + c] - before[i * 4 + c];
     memcpy(data, before.data(), bytes);
-    unlock_dyn(shape);
   }
+  unlock_dyn(shape);
+}
+
+// FNV-1a over n bytes, continuing from h.
+uint64_t Fnv(uint64_t h, const void* p, size_t n) {
+  for (size_t i = 0; i < n; ++i)
+    h = (h ^ static_cast<const uint8_t*>(p)[i]) * 1099511628211ull;
+  return h;
+}
+
+// What the morphs the shape's mapping reads (ReadMorphs) do to it, mixed
+// into h: all of them applied at distinct weights to zeroed vertices in one
+// pass, so two morph sets that move the shape differently hash differently
+// wherever they are loaded. The shape is put back before its lock, held
+// across the applies, is released.
+uint64_t MorphsHash(uint64_t h, uint8_t* shape, bool skin, direct::Part part,
+                    bool mouth_candidate, uint32_t nv) {
+  void* md = Engine<MorphDataFn, kIdMorphData>()(shape);
+  const uint8_t has = md != nullptr;
+  h = Fnv(h, &has, sizeof has);
+  if (!md) return h;
+  const auto apply = Engine<ApplyMorphFn, kIdApplyMorph>();
+  thread_local std::vector<float> saved;
+  saved.resize(static_cast<size_t>(nv) * 4);
+  const size_t bytes = saved.size() * sizeof(float);
+  float* data = Engine<LockDynamicFn, kIdLockDynamic>()(shape);
+  if (data) {
+    memcpy(saved.data(), data, bytes);
+    memset(data, 0, bytes);
+    for (int m = 0; m < direct::kNumMorphs; ++m)
+      if (direct::Reads(skin, part, m, mouth_candidate))
+        apply(md, direct::kMorphIds[m].type, direct::kMorphIds[m].index,
+              shape, 1.f - m / 128.f);
+    h = Fnv(h, data, bytes);
+    memcpy(data, saved.data(), bytes);
+  }
+  Engine<UnlockDynamicFn, kIdUnlockDynamic>()(shape);
+  return h;
 }
 
 // Retained storage, including spare capacity; excludes allocator metadata.
@@ -623,9 +662,9 @@ DWORD WINAPI Mapper(void*) {
 
 // What tells one head from another: the number of shapes, the skin's
 // vertices and a hash (FNV-1a) of each shape's name, type, all base vertices,
-// morph resource and whether it is unlisted, independent of child order. With
-// a face per sex, the sex selects the model face. Empty: the node has no face
-// shapes.
+// what its morphs do (MorphsHash) and whether it is unlisted, independent of
+// child order and of where the engine keeps them. With a face per sex, the
+// sex selects the model face. Empty: the node has no face shapes.
 std::string HeadKey(uint8_t* node, bool female,
                     std::shared_ptr<const direct::Model> mapping) {
 #ifdef ENABLE_COMMONLIBSSE_TESTING
@@ -633,10 +672,7 @@ std::string HeadKey(uint8_t* node, bool female,
 #endif
   if (!mapping) mapping = SnapshotModel()->mapping;
   uint64_t h = 14695981039346656037ull;
-  auto mix = [&h](const void* p, size_t n) {
-    for (size_t i = 0; i < n; ++i)
-      h = (h ^ static_cast<const uint8_t*>(p)[i]) * 1099511628211ull;
-  };
+  auto mix = [&h](const void* p, size_t n) { h = Fnv(h, p, n); };
   std::vector<uint64_t> shape_hashes;
   uint32_t skin_nv = 0;
   ForFaceShapes(node, [&](uint8_t* shape, const char* name, direct::Part part,
@@ -652,8 +688,8 @@ std::string HeadKey(uint8_t* node, bool female,
     const bool unlisted = !BaseVerts(shape, nb);
     mix(&unlisted, sizeof unlisted);
     mix(base, static_cast<size_t>(nv) * 3 * sizeof(float));
-    const void* morphs = Engine<MorphDataFn, kIdMorphData>()(shape);
-    mix(&morphs, sizeof morphs);
+    h = MorphsHash(h, shape, skin && part == direct::Part::kHead, part,
+                   mouth_candidate, nv);
     shape_hashes.push_back(h);
     if (skin) skin_nv = std::max(skin_nv, nv);
   });

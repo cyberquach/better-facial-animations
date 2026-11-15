@@ -5,9 +5,9 @@ without having to launch Skyrim. No helper program is launched by this version.
 
 [Requirements and drivers]
 
-Shared GPU + V3 is the initial preset. V3 tries GPU inference after a save loads or a
-new game leaves the main/loading screens. Early dialogue keeps vanilla animation
-while the model warms up. A returned GPU failure can be retried with Try GPU again.
+Shared GPU + Performance is the initial preset. The face model tries GPU inference
+after a save loads or a new game leaves the main/loading screens. Early dialogue
+keeps vanilla animation while the model warms up. A returned GPU failure can be retried with Try GPU again.
 Shared GPU retries without metacommands, then conditionally through an observed
 graphics wrapper after device loss. Further shared attempts wait 2/4/8/16/30 seconds;
 sentiment retries after 30 seconds. GPU failures never automatically select CPU.
@@ -48,21 +48,30 @@ facial processing and EmotionDevice=-1 for emotion processing. Missing adapters
 report an error without selecting another GPU. The shared/independent route
 applies to both models.
 
-Model hardware estimates (additional to Skyrim, not total graphics memory):
-- V3: roughly 250 MB device allocations; budget about 300 MB with runtime.
+Model hardware estimates (VRAM additional to Skyrim, not total graphics memory;
+graph fusion off, the default):
+- V3: about 270 MB.
   Main network arithmetic: about 28 GFLOP per second of generated speech.
-- Performance: 4M-parameter Block AttnRes model, about 16 MB of weights.
-  Per-line KV state is 3 MiB; execution also needs next-state and runtime buffers.
-  Standalone RTX 4070 / Wine tests measured about 122 MiB GPU memory and
-  452 MiB host RAM after warmup, excluding Skyrim. Minimum hardware is unverified.
-- Ultra Performance: original 80,729-parameter student, lowest computation cost.
-  30 fps, no speech-driven eye movement; less detailed and less accurate than the larger student.
-- Old: roughly 100 MB device allocations; budget about 150 MB with runtime.
+- Performance: 22M-parameter Block AttnRes model (width 608), about 89 MB of weights.
+  About 185 MB, including the 7 MB per-line KV state. Minimum hardware is unverified.
+- Ultra Performance: original 80,729-parameter student, lowest computation cost;
+  a few MB. 30 fps, no speech-driven eye movement; less detailed and less accurate
+  than the larger student.
+- Old: about 100 MB at the default Batch=2.
   Main network arithmetic: about 97 GFLOP per second of generated speech.
+- Audio2Emotion: Full about 745 MB; Performance about 31 MB.
 
-All figures are rough. Local standalone RTX 4070 / Wine tests observed warmed
-process footprints of about 278 / 128 MiB for V3 / Old respectively. They exclude the
-game and graphics mods and are not exhaustive startup-peak measurements.
+GraphFusion=1 (Audio2Face) and EmotionGraphFusion=1 (Audio2Emotion) turn on
+DirectML graph fusion, as every version before 7.0 used: slightly faster, more
+VRAM. Off by default; GPU only. Fusion adds about 140 MB for V3 (5% faster),
+130 MB for Performance (13% faster), 1 MB for Ultra Performance (30% faster),
+600 MB for Full emotion (1% faster) and 20 MB for Performance emotion (8%
+faster); Legacy is unchanged.
+
+All figures are rough. VRAM was measured with DXGI after loading and warming
+each model on an RTX 5070 Ti under Windows (Old: earlier RTX 4070 tests), without
+the game or graphics mods; usage varies by system, driver and device mode, and
+these are not startup-peak measurements.
 Arithmetic estimates count multiply/add work in convolution, matrix and
 recurrent layers, not frontend/mesh/driver costs. Short lines also incur
 padding and startup context. GFLOP per second of speech is not the same as a

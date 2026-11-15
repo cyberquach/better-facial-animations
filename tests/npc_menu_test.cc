@@ -284,6 +284,19 @@ int main() {
     RenderMenu();
     CHECK(face_preview == option.name);
   }
+  // The dropdown and the ini switches both follow the one model table.
+  CHECK(kFaceOptions.size() == FaceModels().size() + 1);
+  // The default model (Performance) heads them, then the fallback (V3).
+  CHECK(kFaceOptions[1].id == a2f::kNetPerformance &&
+        kFaceOptions[1].id == Tune().SelectedModel() &&
+        kFaceOptions[2].id == FallbackFaceModel().network);
+  for (const ModelInfo& info : FaceModels()) {
+    size_t switches = 0;
+    for (const Param& p : kParams)
+      switches += info.ini_key && !strcmp(p.key, info.ini_key) && p.flag &&
+                  p.stored && p.own_control;
+    CHECK(switches == (info.selected ? 1u : 0u));
+  }
   SelectFaceOption(kFaceDisabled);
   SetSelectedModel(a2f::kNetV2);
   SelectFaceOption(a2f::kNetV2);
@@ -329,7 +342,7 @@ int main() {
   }
   std::replace(tooltip.begin(), tooltip.end(), '\n', ' ');
   CHECK(tooltip.find("AMD and NVIDIA") != std::string::npos);
-  CHECK(tooltip.find("600 MB") != std::string::npos);
+  CHECK(tooltip.find("745 MB") != std::string::npos);
   hovering = false;
   hover_target.clear();
   combo_open = false;
@@ -526,8 +539,27 @@ int main() {
   before_saves = saves;
   RenderMenu();
   CHECK(SnapshotTune().emotion_device == 2 && saves == before_saves + 1);
+  // Graph fusion: on GPU a checkbox toggles it; on CPU it is inert, a
+  // disabled checkbox or, without BeginDisabled, a label. Reset keeps it.
+  for (const char* key : {"GraphFusion", "EmotionGraphFusion"}) {
+    const Param* fusion = nullptr;
+    for (const Param& p : kParams)
+      if (!strcmp(p.key, key)) fusion = &p;
+    CHECK(fusion && !*fusion->flag);
+    click = std::string(fusion->label) + "##" + key;
+    CHECK(RenderGraphFusion(key, false) && *fusion->flag);
+    CHECK(!RenderGraphFusion(key, true) && *fusion->flag && last_item_disabled);
+    checkboxes.clear();
+    ig.BeginDisabled = nullptr;
+    CHECK(!RenderGraphFusion(key, true) && checkboxes.empty());
+    ig.BeginDisabled = BeginDisabled;
+  }
   ResetTune();
   CHECK(SnapshotTune().emotion_device == 2);
+  CHECK(SnapshotTune().face_graph_fusion &&
+        SnapshotTune().emotion_graph_fusion);
+  for (const Param& p : kParams)
+    if (strstr(p.key, "GraphFusion")) *p.flag = false;
   // Emotion GPU recovery is available even when the face model uses CPU.
   retry_tune.force_cpu = true;
   retry_tune.sentiment_analysis = true;

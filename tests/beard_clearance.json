@@ -1,0 +1,1246 @@
+{
+  "schema": 1,
+  "provenance": "Local 2026-11-14 captures (tools/face_audit/beard_capture.py) of installed FaceGen heads with the hair, beard and scar shapes and TRI morphs each NPC loads: ff/ from the profile with Faithful Faces (vanilla beard meshes), posr/ from People Of Skyrim Refined (RedDiaspora beards, braids, gashes). Speech is recorded v3 output. Limits are what the 6.1.3 attachment measures plus a margin: visible -2%, clipped +5 samples, stretched +10% (at least 5); the 6.1.2 attachment reimposed in the test must still clip at least half of what it measured.",
+  "model": {
+    "file": "A2FDirect3.bin",
+    "sha256": "8741ff3b457cdd68003f55436f15c7b13de9f3e53d498b3ffaebd789870fec3c"
+  },
+  "speech": {
+    "male": {
+      "file": "speech-male.coef",
+      "sha256": "27aef0d457652810fcfc1ead3defbf5d1c2e59045545f03e104f777bdb0e98e3"
+    },
+    "female": {
+      "file": "speech-female.coef",
+      "sha256": "b95c0fe0e1501ec9f8ca2718c8984a653fb9c7a0d23d6c2035491b33518c1d2a"
+    }
+  },
+  "heads": [
+    {
+      "file": "ff/CWFieldCOImperialHaafingar.bin",
+      "sha256": "54dcdcce94e0875ef9fdeae6ca501bb30c744f12113216fcd3cdd068712cb1a0",
+      "npc": "skyrim.esm:0844b1",
+      "editor_id": "CWFieldCOImperialHaafingar",
+      "female": false,
+      "shapes": [
+        "HumanBeard06",
+        "total"
+      ],
+      "facegen_sha256": "d09fe9460296d4d5b1553a96958d9c5e94c31db7e4fd45f5a83b8790f1d91f54",
+      "min_visible": 2795,
+      "max_clipped": 5,
+      "max_stretched": 9,
+      "min_withdrawn_clipped": 26,
+      "measured": {
+        "visible": 2852,
+        "clipped": 0,
+        "stretched": 4,
+        "withdrawn_clipped": 52
+      }
+    },
+    {
+      "file": "ff/EncBandit04Melee1HOrcM.bin",
+      "sha256": "555036c8f4d1af66c01b8bdad8075da634c44be8c677fe996679f07adc599945",
+      "npc": "skyrim.esm:039d13",
+      "editor_id": "EncBandit04Melee1HOrcM",
+      "female": false,
+      "shapes": [
+        "HumanBeard01Shaved",
+        "MarksMaleHumanoid06LeftGash",
+        "MarksMaleHumanoid06RightGashR",
+        "total"
+      ],
+      "facegen_sha256": "12bc05cd4b038316f189300249c0d62844d6af8e1c35caf8bf450749f12f849f",
+      "min_visible": 5743,
+      "max_clipped": 5,
+      "max_stretched": 9,
+      "min_withdrawn_clipped": 105,
+      "measured": {
+        "visible": 5860,
+        "clipped": 0,
+        "stretched": 4,
+        "withdrawn_clipped": 210
+      }
+    },
+    {
+      "file": "ff/Kjar.bin",
+      "sha256": "6c4e3511b8b03c001d606c58e32a1d253c94fff9cd4cd129d05d03fe4dd2ad94",
+      "npc": "skyrim.esm:013293",
+      "editor_id": "Kjar",
+      "female": false,
+      "shapes": [
+        "HumanBeard42",
+        "HumanBeardLong11_1bit",
+        "MarksMaleHumanoid05LeftGash",
+        "total"
+      ],
+      "facegen_sha256": "c8eb0405010bda6563bc7a07e781e72df14aa798be4064a13a044002c6b77e1c",
+      "min_visible": 6643,
+      "max_clipped": 5,
+      "max_stretched": 8,
+      "min_withdrawn_clipped": 54,
+      "measured": {
+        "visible": 6778,
+        "clipped": 0,
+        "stretched": 3,
+        "withdrawn_clipped": 108
+      }
+    },
+    {
+      "file": "ff/Grushnag.bin",
+      "sha256": "e25745bde13433a913df491f3ca02a0550884b5849ffbe6a0d49569b469d240d",
+      "npc": "skyrim.esm:01b1cd",
+      "editor_id": "Grushnag",
+      "female": false,
+      "shapes": [
+        "HumanBeard43",
+        "HumanBeardLong12_1bit",
+        "MarksMaleHumanoid06LeftGash",
+        "MarksMaleHumanoid06RightGashR",
+        "total"
+      ],
+      "facegen_sha256": "977d0a981318233ccc90b65ea7a8fb56939adb632013c201669f3b595fc5335b",
+      "min_visible": 8452,
+      "max_clipped": 11,
+      "max_stretched": 5,
+      "min_withdrawn_clipped": 101,
+      "measured": {
+        "visible": 8624,
+        "clipped": 6,
+        "stretched": 0,
+        "withdrawn_clipped": 203
+      }
+    },
+    {
+      "file": "ff/WEAdventurerBrawlerOrcM.bin",
+      "sha256": "32df88ddbdfdcb153c182b8641f79daf76f857207b33cc5dc877c9582f1a56c5",
+      "npc": "skyrim.esm:109a7e",
+      "editor_id": "WEAdventurerBrawlerOrcM",
+      "female": false,
+      "shapes": [
+        "HumanBeard41",
+        "HumanBeardMedium01_1bit",
+        "MarksMaleHumanoid06LeftGash",
+        "MarksMaleHumanoid06RightGashR",
+        "total"
+      ],
+      "facegen_sha256": "928552cfd626dbd812758a8065b3aaf0d8e9388f7ab52f3d31df9eee567485b6",
+      "min_visible": 6156,
+      "max_clipped": 5,
+      "max_stretched": 5,
+      "min_withdrawn_clipped": 102,
+      "measured": {
+        "visible": 6281,
+        "clipped": 0,
+        "stretched": 0,
+        "withdrawn_clipped": 205
+      }
+    },
+    {
+      "file": "ff/Burguk.bin",
+      "sha256": "d05f9f9fae1c3be9694a5f6b6f7f9b128e2d7ac6de63ebef5c6651d0ca2dc3fd",
+      "npc": "skyrim.esm:013b79",
+      "editor_id": "Burguk",
+      "female": false,
+      "shapes": [
+        "HumanBeard37",
+        "HumanBeardLong01_1bit",
+        "MarksMaleHumanoid06LeftGash",
+        "MarksMaleHumanoid06RightGashR",
+        "total"
+      ],
+      "facegen_sha256": "95f37d4491cf81edc430a5e67d921ae90da40f8ac32aedb77f64ed905bddcd6e",
+      "min_visible": 4890,
+      "max_clipped": 5,
+      "max_stretched": 8,
+      "min_withdrawn_clipped": 52,
+      "measured": {
+        "visible": 4989,
+        "clipped": 0,
+        "stretched": 3,
+        "withdrawn_clipped": 104
+      }
+    },
+    {
+      "file": "ff/Ghorbash.bin",
+      "sha256": "6d09407f27743b9a5b43ac995e82db4375adc00f76d73acef574570343f7c7ba",
+      "npc": "skyrim.esm:013b81",
+      "editor_id": "Ghorbash",
+      "female": false,
+      "shapes": [
+        "HumanBeard02",
+        "MarksMaleHumanoid07RightGash",
+        "total"
+      ],
+      "facegen_sha256": "120a5f2b43541016bb002247ef7289b9b5cd4b6611e50ff8533a58717adfa138",
+      "min_visible": 4210,
+      "max_clipped": 7,
+      "max_stretched": 6,
+      "min_withdrawn_clipped": 61,
+      "measured": {
+        "visible": 4295,
+        "clipped": 2,
+        "stretched": 1,
+        "withdrawn_clipped": 123
+      }
+    },
+    {
+      "file": "ff/Oglub.bin",
+      "sha256": "996b0326f30535afe76f417c48420e54fb575b8c64a1162643c65a882eb58354",
+      "npc": "skyrim.esm:013b80",
+      "editor_id": "Oglub",
+      "female": false,
+      "shapes": [
+        "HumanBeard03",
+        "total"
+      ],
+      "facegen_sha256": "c0de1faaa8906ccde7c4c3456167bb6ecf38e81afc3adc1141cda2c2d0361328",
+      "min_visible": 2780,
+      "max_clipped": 5,
+      "max_stretched": 6,
+      "min_withdrawn_clipped": 35,
+      "measured": {
+        "visible": 2836,
+        "clipped": 0,
+        "stretched": 1,
+        "withdrawn_clipped": 70
+      }
+    },
+    {
+      "file": "ff/MothgroBagol.bin",
+      "sha256": "0cbf8a4f8292b8b20f162f0a269736a756136799ff21538732bbbf96bc3c01ee",
+      "npc": "skyrim.esm:055a5e",
+      "editor_id": "MothgroBagol",
+      "female": false,
+      "shapes": [
+        "HumanBeard34",
+        "HumanBeardShort10_Headpart",
+        "total"
+      ],
+      "facegen_sha256": "04a5a07ab4a6b669f5a623deee1b07e59ec6456db9549dec9a4125f70aa86f2d",
+      "min_visible": 4053,
+      "max_clipped": 5,
+      "max_stretched": 5,
+      "min_withdrawn_clipped": 35,
+      "measured": {
+        "visible": 4135,
+        "clipped": 0,
+        "stretched": 0,
+        "withdrawn_clipped": 70
+      }
+    },
+    {
+      "file": "ff/EncBandit05Melee1HOrcM.bin",
+      "sha256": "b93af706b8ce2dd253b5589f7d66950381fae0f20598a684ea69ffc4f0bc664f",
+      "npc": "skyrim.esm:039d1b",
+      "editor_id": "EncBandit05Melee1HOrcM",
+      "female": false,
+      "shapes": [
+        "HumanBeard09",
+        "MarksMaleHumanoid06LeftGash",
+        "MarksMaleHumanoid06RightGashR",
+        "total"
+      ],
+      "facegen_sha256": "0d32d7fe0add7369e4e9d02814433e37f0662eadf79506f2a2640e35145c1cbe",
+      "min_visible": 4458,
+      "max_clipped": 5,
+      "max_stretched": 6,
+      "min_withdrawn_clipped": 54,
+      "measured": {
+        "visible": 4548,
+        "clipped": 0,
+        "stretched": 1,
+        "withdrawn_clipped": 108
+      }
+    },
+    {
+      "file": "ff/GadbaGroLargash.bin",
+      "sha256": "3f1bdc1896aca58825c66549a95b69721a6e37232780a550620d4d51d163287e",
+      "npc": "skyrim.esm:01b09a",
+      "editor_id": "GadbaGroLargash",
+      "female": false,
+      "shapes": [
+        "HumanBeard19",
+        "MarksMaleHumanoid02LeftGash",
+        "total"
+      ],
+      "facegen_sha256": "b5975dfe54d657bef327005a159c9d361f114d049b4de3deae82bf3f6fd834a7",
+      "min_visible": 2929,
+      "max_clipped": 5,
+      "max_stretched": 5,
+      "min_withdrawn_clipped": 64,
+      "measured": {
+        "visible": 2988,
+        "clipped": 0,
+        "stretched": 0,
+        "withdrawn_clipped": 128
+      }
+    },
+    {
+      "file": "ff/EncWarlock02TemplateBossIce.bin",
+      "sha256": "04e9f09e286913baa77c093f6dfa3215a84b9628b1caec1451ec4d7c57ba7509",
+      "npc": "skyrim.esm:0e0fc0",
+      "editor_id": "EncWarlock02TemplateBossIce",
+      "female": false,
+      "shapes": [
+        "HumanBeard34",
+        "HumanBeardShort10_Headpart",
+        "total"
+      ],
+      "facegen_sha256": "3a90676e3a32e377a91f9572c03e6a697f517f0f47ba3b3c5a67d07229d29980",
+      "min_visible": 4091,
+      "max_clipped": 32,
+      "max_stretched": 12,
+      "min_withdrawn_clipped": 20,
+      "measured": {
+        "visible": 4174,
+        "clipped": 27,
+        "stretched": 7,
+        "withdrawn_clipped": 41
+      }
+    },
+    {
+      "file": "ff/EncWarlockFire02ImperialM.bin",
+      "sha256": "827f88a5e3c5c53331f8070355b101cbb5dc70c5984d1c2152786d1a8474096c",
+      "npc": "skyrim.esm:045c69",
+      "editor_id": "EncWarlockFire02ImperialM",
+      "female": false,
+      "shapes": [
+        "HumanBeard33",
+        "MarksMaleHumanoid02LeftGash",
+        "total"
+      ],
+      "facegen_sha256": "75755ca9246c37edfdd29082e12c6221af79e4d8fc6f8f639a950568b05af512",
+      "min_visible": 3122,
+      "max_clipped": 5,
+      "max_stretched": 6,
+      "min_withdrawn_clipped": 50,
+      "measured": {
+        "visible": 3185,
+        "clipped": 0,
+        "stretched": 1,
+        "withdrawn_clipped": 101
+      }
+    },
+    {
+      "file": "ff/DLC2EncBandit04MagicDarkElf02F.bin",
+      "sha256": "e157f2377e05e2fda595f371b03c981b5e1a72e5e33922a5a6bbd1094d262afe",
+      "npc": "dragonborn.esm:01e858",
+      "editor_id": "DLC2EncBandit04MagicDarkElf02F",
+      "female": true,
+      "shapes": [
+        "HumanBeard35",
+        "HumanBeardMedium03_1bit",
+        "total"
+      ],
+      "facegen_sha256": "80ba23869448f5592c60fb063808a7bfe3d856dbd94823b8e8e45960577c2a00",
+      "min_visible": 3787,
+      "max_clipped": 5,
+      "max_stretched": 5,
+      "min_withdrawn_clipped": 19,
+      "measured": {
+        "visible": 3864,
+        "clipped": 0,
+        "stretched": 0,
+        "withdrawn_clipped": 38
+      }
+    },
+    {
+      "file": "ff/E3DemoTowerBanditMelee.bin",
+      "sha256": "89e06c3a55ea6a66411a2e35661a1e3d5728163d73792eb3336e4a8e7f8d2f0b",
+      "npc": "skyrim.esm:0e9628",
+      "editor_id": "E3DemoTowerBanditMelee",
+      "female": false,
+      "shapes": [
+        "HumanBeard01Shaved",
+        "MarksMaleHumanoid04LeftGash",
+        "MarksMaleHumanoid04RightGashR",
+        "total"
+      ],
+      "facegen_sha256": "3c74724c90e975f2aee155ec9b92f613d225b7e4f2e989de3502afabd3419c18",
+      "min_visible": 5740,
+      "max_clipped": 5,
+      "max_stretched": 5,
+      "min_withdrawn_clipped": 98,
+      "measured": {
+        "visible": 5857,
+        "clipped": 0,
+        "stretched": 0,
+        "withdrawn_clipped": 196
+      }
+    },
+    {
+      "file": "ff/EncWarlockIce03ImperialM.bin",
+      "sha256": "4f606ee2cd1f4d2eaa0ee738fbe3ea9b976f4f88ad4810eae2e312c4bf5355da",
+      "npc": "skyrim.esm:045c8a",
+      "editor_id": "EncWarlockIce03ImperialM",
+      "female": false,
+      "shapes": [
+        "HumanBeard23",
+        "HumanBeardLong17_1bit",
+        "total"
+      ],
+      "facegen_sha256": "2b03137411e78d6fe0d7b2105093b46587e53fe9de9e072b4e115d631a06209b",
+      "min_visible": 3584,
+      "max_clipped": 6,
+      "max_stretched": 7,
+      "min_withdrawn_clipped": 26,
+      "measured": {
+        "visible": 3657,
+        "clipped": 1,
+        "stretched": 2,
+        "withdrawn_clipped": 52
+      }
+    },
+    {
+      "file": "ff/EncForsworn05Melee1HBretonF01.bin",
+      "sha256": "f248af1ab2e232b1a68b627086aa47b733d7158dca71867aea3c45199963e514",
+      "npc": "skyrim.esm:04428c",
+      "editor_id": "EncForsworn05Melee1HBretonF01",
+      "female": true,
+      "shapes": [
+        "MarksFemaleHumanoid03LeftGash",
+        "total"
+      ],
+      "facegen_sha256": "279b288cd58e5e4d01c5a00d95887c96af9774d97da1d13bb60edb818a58c779",
+      "min_visible": 1599,
+      "max_clipped": 5,
+      "max_stretched": 5,
+      "min_withdrawn_clipped": 29,
+      "measured": {
+        "visible": 1631,
+        "clipped": 0,
+        "stretched": 0,
+        "withdrawn_clipped": 58
+      }
+    },
+    {
+      "file": "ff/DA05_LvlHuntersOfHircine_OrcM.bin",
+      "sha256": "95b77ddd316978a39720141ca297c83817a44e71957552fc5ab3e7830e742fa8",
+      "npc": "skyrim.esm:0ce08a",
+      "editor_id": "DA05_LvlHuntersOfHircine_OrcM",
+      "female": false,
+      "shapes": [
+        "HumanBeard29",
+        "total"
+      ],
+      "facegen_sha256": "500053619fd03d1d402841ede7e83e334e799dd6e22809e1adc29d63da666a97",
+      "min_visible": 1377,
+      "max_clipped": 5,
+      "max_stretched": 5,
+      "min_withdrawn_clipped": 31,
+      "measured": {
+        "visible": 1405,
+        "clipped": 0,
+        "stretched": 0,
+        "withdrawn_clipped": 63
+      }
+    },
+    {
+      "file": "ff/EncBandit04Boss2HOrcM.bin",
+      "sha256": "065409ad1b9d3ce7fc2d18d1106272bbfbcda2cc8eba8bf532b830d3404a3630",
+      "npc": "skyrim.esm:03def9",
+      "editor_id": "EncBandit04Boss2HOrcM",
+      "female": false,
+      "shapes": [
+        "HumanBeard41",
+        "HumanBeardMedium01_1bit",
+        "MarksMaleHumanoid07RightGash",
+        "total"
+      ],
+      "facegen_sha256": "a17b6fe3d324316b1777bfa9a069a349f1974885e2ee0a84fb0b40be00cfa854",
+      "min_visible": 4736,
+      "max_clipped": 5,
+      "max_stretched": 5,
+      "min_withdrawn_clipped": 68,
+      "measured": {
+        "visible": 4832,
+        "clipped": 0,
+        "stretched": 0,
+        "withdrawn_clipped": 136
+      }
+    },
+    {
+      "file": "ff/EncBandit03Boss2HOrcM.bin",
+      "sha256": "5739aa9273c1b2e921b83dd86bfebeaa2a33f483fbf036e9cc09fc3b0c55b1f2",
+      "npc": "skyrim.esm:03deee",
+      "editor_id": "EncBandit03Boss2HOrcM",
+      "female": false,
+      "shapes": [
+        "HumanBeard45",
+        "HumanBeardLong14_1bit",
+        "MarksMaleHumanoid07RightGash",
+        "total"
+      ],
+      "facegen_sha256": "3a6d4a18a68090de659f297b220a74f3e055d94c9bdb2adfafbfcd0b2e76bcb3",
+      "min_visible": 5874,
+      "max_clipped": 15,
+      "max_stretched": 6,
+      "min_withdrawn_clipped": 66,
+      "measured": {
+        "visible": 5993,
+        "clipped": 10,
+        "stretched": 1,
+        "withdrawn_clipped": 132
+      }
+    },
+    {
+      "file": "ff/EncBandit02Boss2HOrcM.bin",
+      "sha256": "5738a0c91310fc2d2906a6a134048bfee6d2da702a04230b39694d22c95f1ccd",
+      "npc": "skyrim.esm:03dee5",
+      "editor_id": "EncBandit02Boss2HOrcM",
+      "female": false,
+      "shapes": [
+        "HumanBeard03",
+        "MarksMaleHumanoid03LeftGash",
+        "total"
+      ],
+      "facegen_sha256": "b194f3485caba744fdfd38e24b31c9f9a1c2b0a8c27ae95026916444f638e3b3",
+      "min_visible": 4211,
+      "max_clipped": 5,
+      "max_stretched": 6,
+      "min_withdrawn_clipped": 62,
+      "measured": {
+        "visible": 4296,
+        "clipped": 0,
+        "stretched": 1,
+        "withdrawn_clipped": 125
+      }
+    },
+    {
+      "file": "ff/EncBandit01Melee1HImperialM.bin",
+      "sha256": "dbb1bf44846975e0e6a7d1ca8d7692fba0050e787e26e51de3514c7b54a19746",
+      "npc": "skyrim.esm:039cf6",
+      "editor_id": "EncBandit01Melee1HImperialM",
+      "female": false,
+      "shapes": [
+        "HumanBeard42",
+        "HumanBeardLong11_1bit",
+        "MarksMaleHumanoid04LeftGash",
+        "MarksMaleHumanoid04RightGashR",
+        "total"
+      ],
+      "facegen_sha256": "dcf7a841fb33289ed4e86d57ab455ffb84992f6d5abb77458b56ccfd7ef653a3",
+      "min_visible": 8071,
+      "max_clipped": 5,
+      "max_stretched": 8,
+      "min_withdrawn_clipped": 63,
+      "measured": {
+        "visible": 8235,
+        "clipped": 0,
+        "stretched": 3,
+        "withdrawn_clipped": 127
+      }
+    },
+    {
+      "file": "ff/Ralof.bin",
+      "sha256": "9bc36333b56706a98cce303fda24da6155af01188ac6db32e0b54bfeb0fecd6c",
+      "npc": "skyrim.esm:02bf9d",
+      "editor_id": "Ralof",
+      "female": false,
+      "shapes": [
+        "HumanBeard06",
+        "total"
+      ],
+      "facegen_sha256": "4de4650ecbcc69e3f77653f36caaa8cdf4045aee381c79310c0c0289834ff281",
+      "min_visible": 2795,
+      "max_clipped": 5,
+      "max_stretched": 8,
+      "min_withdrawn_clipped": 17,
+      "measured": {
+        "visible": 2852,
+        "clipped": 0,
+        "stretched": 3,
+        "withdrawn_clipped": 34
+      }
+    },
+    {
+      "file": "ff/Tolfdir.bin",
+      "sha256": "3c1c390e361bbb13ac16d6ce13a84d04a26115358947c1d9503feff31e31fc85",
+      "npc": "skyrim.esm:01c19e",
+      "editor_id": "Tolfdir",
+      "female": false,
+      "shapes": [
+        "HumanBeard42",
+        "HumanBeardLong11_1bit",
+        "total"
+      ],
+      "facegen_sha256": "639b791f447580bb4fa2dc779887c955cfebd74dcc00438b69ae6cede9228efb",
+      "min_visible": 5248,
+      "max_clipped": 5,
+      "max_stretched": 8,
+      "min_withdrawn_clipped": 18,
+      "measured": {
+        "visible": 5355,
+        "clipped": 0,
+        "stretched": 3,
+        "withdrawn_clipped": 37
+      }
+    },
+    {
+      "file": "ff/Galmar.bin",
+      "sha256": "cf1f1402d689d92b562de0ec04febfc52e518902fd8db5c0b1c4c584ccba17ec",
+      "npc": "skyrim.esm:014128",
+      "editor_id": "Galmar",
+      "female": false,
+      "shapes": [
+        "HumanBeard40",
+        "HumanBeardLong01_1bit",
+        "total"
+      ],
+      "facegen_sha256": "e28d939c9e11212372b0d3d4762ced1f90a24cac2193d8ca9d2f429680f943d7",
+      "min_visible": 3984,
+      "max_clipped": 5,
+      "max_stretched": 6,
+      "min_withdrawn_clipped": 17,
+      "measured": {
+        "visible": 4065,
+        "clipped": 0,
+        "stretched": 1,
+        "withdrawn_clipped": 35
+      }
+    },
+    {
+      "file": "ff/Ulfric.bin",
+      "sha256": "9b994a6c6a4d7a236e6bfbf2c61c481d2d7552cf150a30052975b76c2e376085",
+      "npc": "skyrim.esm:01414d",
+      "editor_id": "Ulfric",
+      "female": false,
+      "shapes": [
+        "HumanBeard33",
+        "MarksMaleHumanoid02LeftGash",
+        "total"
+      ],
+      "facegen_sha256": "4db954dce01285b1882823c01c1a2bf620f2e91a9b7420040b8010d83ee4b294",
+      "min_visible": 3122,
+      "max_clipped": 5,
+      "max_stretched": 10,
+      "min_withdrawn_clipped": 34,
+      "measured": {
+        "visible": 3185,
+        "clipped": 0,
+        "stretched": 5,
+        "withdrawn_clipped": 68
+      }
+    },
+    {
+      "file": "ff/Brynjolf.bin",
+      "sha256": "b08e6c62491b8ef9fb3d08e78d3ac46db8d1b326111d438e1ed43aa64522db9e",
+      "npc": "skyrim.esm:01b07d",
+      "editor_id": "Brynjolf",
+      "female": false,
+      "shapes": [
+        "HumanBeard32",
+        "MarksMaleHumanoid02LeftGash",
+        "total"
+      ],
+      "facegen_sha256": "57004a0255621a73ad9d232f53ba87645156c7cc4ab1b4b18c0434eeeb015cf2",
+      "min_visible": 3314,
+      "max_clipped": 5,
+      "max_stretched": 8,
+      "min_withdrawn_clipped": 32,
+      "measured": {
+        "visible": 3381,
+        "clipped": 0,
+        "stretched": 3,
+        "withdrawn_clipped": 65
+      }
+    },
+    {
+      "file": "ff/Mazaka.bin",
+      "sha256": "88f3d39e804f5eba2c880fce1b7c15ffb10a6543c7def3ab5a74bd4ff65a798b",
+      "npc": "skyrim.esm:013298",
+      "editor_id": "Mazaka",
+      "female": false,
+      "shapes": [
+        "KhajiitBeard01Alpha",
+        "KhajiitBeard02",
+        "total"
+      ],
+      "facegen_sha256": "4eaec79ae59bf56db9b863abc8b93f06c73ba79b7b22991bafe4f7255ce21cef",
+      "min_visible": 3598,
+      "max_clipped": 12,
+      "max_stretched": 5,
+      "min_withdrawn_clipped": 7,
+      "measured": {
+        "visible": 3671,
+        "clipped": 7,
+        "stretched": 0,
+        "withdrawn_clipped": 15
+      }
+    },
+    {
+      "file": "ff/Majhad.bin",
+      "sha256": "1811cfac1346c76c86074ae746bdda1cc21168454b008cc45d7a16eee0473a06",
+      "npc": "skyrim.esm:01b1d5",
+      "editor_id": "Majhad",
+      "female": false,
+      "shapes": [
+        "KhajiitBeard01Alpha",
+        "KhajiitBeard02",
+        "MarksMaleKhajiitScars06",
+        "total"
+      ],
+      "facegen_sha256": "71da3f4ccc56e5a19cec59d8832082aff607f85b101926df1a284e4083c3dd0e",
+      "min_visible": 5828,
+      "max_clipped": 19,
+      "max_stretched": 10,
+      "min_withdrawn_clipped": 6,
+      "measured": {
+        "visible": 5946,
+        "clipped": 14,
+        "stretched": 5,
+        "withdrawn_clipped": 12
+      }
+    },
+    {
+      "file": "posr/DLC1GaranMarethi.bin",
+      "sha256": "010d8d5bcb9a08f8195a6361ab13b042ca201745679c3ce4502b997921069043",
+      "npc": "dawnguard.esm:003364",
+      "editor_id": "DLC1GaranMarethi",
+      "female": false,
+      "shapes": [
+        "01_Hverg_HumanBeardLong04_1bit",
+        "01_Hverg_HumanBeardLong04_COtR",
+        "0HumanBeardHL",
+        "total"
+      ],
+      "facegen_sha256": "064bbe73f70c5b97907e89388d431f40762d097b3ebb5f01f8cddeefa91c32fb",
+      "min_visible": 12829,
+      "max_clipped": 5,
+      "max_stretched": 84,
+      "min_withdrawn_clipped": 0,
+      "measured": {
+        "visible": 13090,
+        "clipped": 0,
+        "stretched": 77,
+        "withdrawn_clipped": 1
+      }
+    },
+    {
+      "file": "posr/DLC1Harkon.bin",
+      "sha256": "8dad60d2027961c51d89d3b385c485395620cdd2da76074648d35a683f32cca4",
+      "npc": "dawnguard.esm:003ba7",
+      "editor_id": "DLC1Harkon",
+      "female": false,
+      "shapes": [
+        "0HumanBeardHL",
+        "HumanBeard34_COtR",
+        "HumanBeardShort10_Headpart",
+        "total"
+      ],
+      "facegen_sha256": "87ae81a86e8ebd30a5f9604022bfd24dfade3f2eef4833efade15cee4ee6cb47",
+      "min_visible": 11406,
+      "max_clipped": 23,
+      "max_stretched": 96,
+      "min_withdrawn_clipped": 1,
+      "measured": {
+        "visible": 11638,
+        "clipped": 18,
+        "stretched": 88,
+        "withdrawn_clipped": 3
+      }
+    },
+    {
+      "file": "posr/Cosnach.bin",
+      "sha256": "5ef0b8b4b2e0fee0477d2f94722f74925dcb6c206013446bd21c085a70987ff7",
+      "npc": "skyrim.esm:013390",
+      "editor_id": "Cosnach",
+      "female": false,
+      "shapes": [
+        "0Gash",
+        "0HumanBeardHL",
+        "0HumanBeardHL2",
+        "0HumanBeardHair2",
+        "total"
+      ],
+      "facegen_sha256": "768f9eb568be638351ae8bf508bf10c607db789055188c133b8246fed4f153c2",
+      "min_visible": 38854,
+      "max_clipped": 7,
+      "max_stretched": 181,
+      "min_withdrawn_clipped": 1,
+      "measured": {
+        "visible": 39646,
+        "clipped": 2,
+        "stretched": 165,
+        "withdrawn_clipped": 2
+      }
+    },
+    {
+      "file": "posr/Tsun.bin",
+      "sha256": "8d7e19d596853c3a8d6699fae46de1fb0d72ce20098030191bf07aae1d6bdf96",
+      "npc": "skyrim.esm:04f828",
+      "editor_id": "Tsun",
+      "female": false,
+      "shapes": [
+        "0HumanBeardHL",
+        "BoP_49_beard",
+        "BoP_49b_COtR",
+        "HumanBeardLong12_1bit",
+        "total"
+      ],
+      "facegen_sha256": "5616a8936f3dd9db8e9700d32b1c018642ce8079c733c8b2778aad9a6dbd8d83",
+      "min_visible": 13245,
+      "max_clipped": 16,
+      "max_stretched": 92,
+      "min_withdrawn_clipped": 8,
+      "measured": {
+        "visible": 13515,
+        "clipped": 11,
+        "stretched": 84,
+        "withdrawn_clipped": 17
+      }
+    },
+    {
+      "file": "posr/EncBandit02Melee1HRedguardM.bin",
+      "sha256": "6b19059c9d02372433c9a84358c5b102f8cc7cccb657faa7dd0a1825fb37b9a0",
+      "npc": "skyrim.esm:039d05",
+      "editor_id": "EncBandit02Melee1HRedguardM",
+      "female": false,
+      "shapes": [
+        "0Gash",
+        "HumanBeard43",
+        "HumanBeardLong12_1bit",
+        "total"
+      ],
+      "facegen_sha256": "fd5c646b3baf3f559aa5c33cea79cc3c39b50be22dec2c527f7aafebde4411f2",
+      "min_visible": 23164,
+      "max_clipped": 80,
+      "max_stretched": 134,
+      "min_withdrawn_clipped": 38,
+      "measured": {
+        "visible": 23636,
+        "clipped": 75,
+        "stretched": 122,
+        "withdrawn_clipped": 77
+      }
+    },
+    {
+      "file": "posr/Brenuin.bin",
+      "sha256": "87504cda389ce3f71b42d886f2b800420b48f9c0875ac1eee343e99a9a8e187a",
+      "npc": "skyrim.esm:013ba7",
+      "editor_id": "Brenuin",
+      "female": false,
+      "shapes": [
+        "0HumanBeardHL",
+        "0HumanBeardHL2",
+        "0HumanBeardHair2",
+        "total"
+      ],
+      "facegen_sha256": "c018ccab122b52e9975eb33cf1237115c5bb9dbf451d7bf153d5f9d1430caa6e",
+      "min_visible": 20780,
+      "max_clipped": 83,
+      "max_stretched": 194,
+      "min_withdrawn_clipped": 72,
+      "measured": {
+        "visible": 21204,
+        "clipped": 78,
+        "stretched": 177,
+        "withdrawn_clipped": 144
+      }
+    },
+    {
+      "file": "posr/Mahk.bin",
+      "sha256": "8ea5f6e981728dd150e267d26c48ae5385e0cd7be113f9fee05f57c436be5678",
+      "npc": "skyrim.esm:0c78be",
+      "editor_id": "Mahk",
+      "female": false,
+      "shapes": [
+        "00_HumanBeard29_part",
+        "00_HumanBeard37_part",
+        "0HumanBeardHL",
+        "BoP_08_beard_Orc1",
+        "HumanBeardLong15_1bit",
+        "total"
+      ],
+      "facegen_sha256": "820dd65063db7562adf0184235b14ee366265980f1fece7b6f0c8f3c28db5d38",
+      "min_visible": 31265,
+      "max_clipped": 70,
+      "max_stretched": 61,
+      "min_withdrawn_clipped": 11,
+      "measured": {
+        "visible": 31903,
+        "clipped": 65,
+        "stretched": 56,
+        "withdrawn_clipped": 22
+      }
+    },
+    {
+      "file": "posr/HirelingVorstag.bin",
+      "sha256": "fd9a55a3f76aa8a7901652fcd837b8957a3cc250bfc57f45416ad33dc935a784",
+      "npc": "skyrim.esm:0b997f",
+      "editor_id": "HirelingVorstag",
+      "female": false,
+      "shapes": [
+        "0HumanBeard",
+        "total"
+      ],
+      "facegen_sha256": "a852542faaac135363f423a28ab61cce47515b1cb49f74e6eec135dc2092accb",
+      "min_visible": 7176,
+      "max_clipped": 5,
+      "max_stretched": 61,
+      "min_withdrawn_clipped": 11,
+      "measured": {
+        "visible": 7322,
+        "clipped": 0,
+        "stretched": 56,
+        "withdrawn_clipped": 23
+      }
+    },
+    {
+      "file": "posr/DLC1Isran.bin",
+      "sha256": "0515556d34d6ec51cf31dc3c14709f96e690cab24c327c793b00f6b42b59cb92",
+      "npc": "dawnguard.esm:00336a",
+      "editor_id": "DLC1Isran",
+      "female": false,
+      "shapes": [
+        "0Gash",
+        "0HumanBeardHL",
+        "BoP_29_Isran_COtR",
+        "BoP_29_beard_Red",
+        "HumanBeardLong12_1bit",
+        "total"
+      ],
+      "facegen_sha256": "6e8a3c0c1cdb30291cbc357ad823a5484d39cd119a29e0adb1751bb48bc2fe02",
+      "min_visible": 36393,
+      "max_clipped": 12,
+      "max_stretched": 162,
+      "min_withdrawn_clipped": 5,
+      "measured": {
+        "visible": 37135,
+        "clipped": 7,
+        "stretched": 148,
+        "withdrawn_clipped": 11
+      }
+    },
+    {
+      "file": "posr/MQ305Olaf.bin",
+      "sha256": "b430d929a1e85e6c318c1fdc712df6c4eb1f1163f5222a7b73776b49bed9db6c",
+      "npc": "skyrim.esm:0f1a4a",
+      "editor_id": "MQ305Olaf",
+      "female": false,
+      "shapes": [
+        "00DZB_MaleLensBlindLeft",
+        "HirsuteBeard0110",
+        "HumanBeardLong15_1bit",
+        "HumanBeardLong17_1bit",
+        "total"
+      ],
+      "facegen_sha256": "9746fc9ac816197ee2a0ca595ec371b69a70ba6dfbec33acda87be454b6bff61",
+      "min_visible": 6434,
+      "max_clipped": 29,
+      "max_stretched": 101,
+      "min_withdrawn_clipped": 0,
+      "measured": {
+        "visible": 6565,
+        "clipped": 24,
+        "stretched": 92,
+        "withdrawn_clipped": 0
+      }
+    },
+    {
+      "file": "posr/Burguk.bin",
+      "sha256": "0812ca24b5c1ba5cbf25fb9070972f05743ffffe9faffbf92e60ef49a424249b",
+      "npc": "skyrim.esm:013b79",
+      "editor_id": "Burguk",
+      "female": false,
+      "shapes": [
+        "00_HumanBeard29_part",
+        "00_HumanBeard37_part",
+        "0HumanBeardHL",
+        "BoP_08_beard_Orc2",
+        "HumanBeardLong15_1bit",
+        "total"
+      ],
+      "facegen_sha256": "b5cc2cb3125c7b1dc06f0af31f51b4a6b7b3f34ab11f648eecbcc8e4864321dd",
+      "min_visible": 36717,
+      "max_clipped": 27,
+      "max_stretched": 22,
+      "min_withdrawn_clipped": 3,
+      "measured": {
+        "visible": 37466,
+        "clipped": 22,
+        "stretched": 17,
+        "withdrawn_clipped": 6
+      }
+    },
+    {
+      "file": "posr/DLC2WaterStoneSailor4.bin",
+      "sha256": "815ce30220c8c8488e9e222f73dd5ac8b92805542d2f5df81dc7e80672ccef5f",
+      "npc": "dragonborn.esm:02782d",
+      "editor_id": "DLC2WaterStoneSailor4",
+      "female": false,
+      "shapes": [
+        "0HumanBeardHL",
+        "0HumanBeardHair",
+        "total"
+      ],
+      "facegen_sha256": "52ef5d79af38d2eed151e67ea388d272b48ab4b320b1976856c59a8931468c5b",
+      "min_visible": 14373,
+      "max_clipped": 5,
+      "max_stretched": 103,
+      "min_withdrawn_clipped": 24,
+      "measured": {
+        "visible": 14666,
+        "clipped": 0,
+        "stretched": 94,
+        "withdrawn_clipped": 48
+      }
+    },
+    {
+      "file": "posr/EncSoldierSonsNordM02MaleNord.bin",
+      "sha256": "0eb61f62007629662ae691e3034888c9b99c22e8dd24e8184662a648db4947df",
+      "npc": "skyrim.esm:01716b",
+      "editor_id": "EncSoldierSonsNordM02MaleNord",
+      "female": false,
+      "shapes": [
+        "01_Hverg_HumanBeardLong02",
+        "01_Hverg_HumanBeardLong02_1bit",
+        "total"
+      ],
+      "facegen_sha256": "61ec92cd7de581667f3ec420196e7a8adc6980aec99235978edb03405670c363",
+      "min_visible": 4722,
+      "max_clipped": 43,
+      "max_stretched": 21,
+      "min_withdrawn_clipped": 26,
+      "measured": {
+        "visible": 4818,
+        "clipped": 38,
+        "stretched": 16,
+        "withdrawn_clipped": 52
+      }
+    },
+    {
+      "file": "posr/KharagGroShurkul.bin",
+      "sha256": "ae55e12b5e5edb88b78e74a2cd5de7af91fcf1c383107ed0697e91859a519313",
+      "npc": "skyrim.esm:013291",
+      "editor_id": "KharagGroShurkul",
+      "female": false,
+      "shapes": [
+        "00_HumanBeard29_part",
+        "00_HumanBeard37_part",
+        "0HumanBeardHL",
+        "BoP_08_beard_Orc4",
+        "HumanBeardLong15_1bit",
+        "total"
+      ],
+      "facegen_sha256": "7dbf69bd666a6e91b81e6b1cf1c5d228f096ceea3e5865a86f99951136e36836",
+      "min_visible": 35897,
+      "max_clipped": 42,
+      "max_stretched": 25,
+      "min_withdrawn_clipped": 7,
+      "measured": {
+        "visible": 36629,
+        "clipped": 37,
+        "stretched": 20,
+        "withdrawn_clipped": 14
+      }
+    },
+    {
+      "file": "posr/Odar.bin",
+      "sha256": "4ec1810d8cfc0443def0cd7509f427e7420e49e14d3ed67379fb99d5f9c51fa9",
+      "npc": "skyrim.esm:01329e",
+      "editor_id": "Odar",
+      "female": false,
+      "shapes": [
+        "HumanBeard42",
+        "HumanBeardLong11_1bit",
+        "total"
+      ],
+      "facegen_sha256": "d6f6b7b55668bb720f3b302bee7dddb6686e283c8d3f003a7597f849b16434cf",
+      "min_visible": 5104,
+      "max_clipped": 15,
+      "max_stretched": 14,
+      "min_withdrawn_clipped": 0,
+      "measured": {
+        "visible": 5208,
+        "clipped": 10,
+        "stretched": 9,
+        "withdrawn_clipped": 0
+      }
+    },
+    {
+      "file": "posr/Logrolf.bin",
+      "sha256": "9da66eb48cf73aaf0fa3f2c48817d4b4e00533b3def95de017303f27579c98c3",
+      "npc": "skyrim.esm:0133a6",
+      "editor_id": "Logrolf",
+      "female": false,
+      "shapes": [
+        "0HumanBeardHL",
+        "BoP_14_Breton_COtR",
+        "BoP_14_beard_Breton",
+        "HumanBeardLong12_1bit",
+        "total"
+      ],
+      "facegen_sha256": "edf28e66abc3c2e77fbe44028ec24aa672c015e3fde2eb5bd89bf9337f2f5980",
+      "min_visible": 43352,
+      "max_clipped": 52,
+      "max_stretched": 266,
+      "min_withdrawn_clipped": 52,
+      "measured": {
+        "visible": 44236,
+        "clipped": 47,
+        "stretched": 242,
+        "withdrawn_clipped": 105
+      }
+    },
+    {
+      "file": "posr/Ogmund.bin",
+      "sha256": "5e2d43316214bd4843314587977b9ec5798e7403d90311d02230ce39ba5790cd",
+      "npc": "skyrim.esm:0133ad",
+      "editor_id": "Ogmund",
+      "female": false,
+      "shapes": [
+        "00DZB_MaleLensBlindLeft",
+        "0Gash",
+        "0OgmundBeard",
+        "ArgisBeardBA2",
+        "ArgisBeardBA3",
+        "ArgisBeardBA5",
+        "HumanBeardLong12_1bit",
+        "total"
+      ],
+      "facegen_sha256": "39a11b53da80ef6ebaea021c8f7166e2b50529c5b34cca81071c3fccce5ac990",
+      "min_visible": 32665,
+      "max_clipped": 8,
+      "max_stretched": 209,
+      "min_withdrawn_clipped": 1,
+      "measured": {
+        "visible": 33331,
+        "clipped": 3,
+        "stretched": 190,
+        "withdrawn_clipped": 3
+      }
+    },
+    {
+      "file": "posr/Brunwulf.bin",
+      "sha256": "cc1790f686712781e7d439223f919a325540e3c18946d6c31b2195ad5ea56aef",
+      "npc": "skyrim.esm:014149",
+      "editor_id": "Brunwulf",
+      "female": false,
+      "shapes": [
+        "0000eivorbeardbraid",
+        "0000eivorbeardhl",
+        "0000eivorbeardhl2",
+        "0000eivorbeardtuff",
+        "0BrunwulfBeard",
+        "0Gash",
+        "0HumanBeardHL",
+        "total"
+      ],
+      "facegen_sha256": "9c2eb2c71a8d3294425dbee9d7b81636bfbbd49ecf0a95ebc51f7ac024af4f07",
+      "min_visible": 27419,
+      "max_clipped": 32,
+      "max_stretched": 210,
+      "min_withdrawn_clipped": 10,
+      "measured": {
+        "visible": 27978,
+        "clipped": 27,
+        "stretched": 191,
+        "withdrawn_clipped": 21
+      }
+    },
+    {
+      "file": "posr/Sinmir.bin",
+      "sha256": "29be3d1e219508aae465d0f15af293c38c51d7d78ad5510169f1cdd347dc18eb",
+      "npc": "skyrim.esm:0813b5",
+      "editor_id": "Sinmir",
+      "female": false,
+      "shapes": [
+        "04DwemerBeardLowerBraidsandSideburns_COtR",
+        "0HumanBeardHL",
+        "DwemerBeardLowerBraidsA",
+        "DwemerBeardLowerBraidsB",
+        "DwemerBeardLowerBraidsC",
+        "DwemerBeardLowerBraidsD",
+        "DwemerBeardSideburns1",
+        "DwemerBeardSideburns2",
+        "DwemerBeardSideburns3",
+        "DwemerBeardSideburns4",
+        "HumanBeardLong13_1bit",
+        "HumanBeardLong14_1bit",
+        "HumanBeardLong15_1bit",
+        "HumanBeardShort10_Headpart",
+        "total"
+      ],
+      "facegen_sha256": "c3633ad90d5ce658a142c1cdc262230ebfd4ab289bdf5b66b3ff04cfac6b397c",
+      "min_visible": 34525,
+      "max_clipped": 8,
+      "max_stretched": 121,
+      "min_withdrawn_clipped": 10,
+      "measured": {
+        "visible": 35229,
+        "clipped": 3,
+        "stretched": 110,
+        "withdrawn_clipped": 21
+      }
+    },
+    {
+      "file": "posr/Jawanan.bin",
+      "sha256": "1eeb778e0abbba306f578c512a5a9dce8c6fb254e14cf58965263f29d7ca88e9",
+      "npc": "skyrim.esm:01328e",
+      "editor_id": "Jawanan",
+      "female": false,
+      "shapes": [
+        "0HumanBeardHL",
+        "HumanBeard34_CoTR",
+        "total"
+      ],
+      "facegen_sha256": "112f7055b11455cb0eb6580f76e513478a7f8885fe49577c495718b85265a57f",
+      "min_visible": 9361,
+      "max_clipped": 11,
+      "max_stretched": 53,
+      "min_withdrawn_clipped": 3,
+      "measured": {
+        "visible": 9552,
+        "clipped": 6,
+        "stretched": 48,
+        "withdrawn_clipped": 6
+      }
+    },
+    {
+      "file": "posr/Thonjolf.bin",
+      "sha256": "fa166b5b71d80ac64911bba72d3a74db2d84b151a3060561a5b8581cabbddbbf",
+      "npc": "skyrim.esm:01c181",
+      "editor_id": "Thonjolf",
+      "female": false,
+      "shapes": [
+        "0HumanBeard",
+        "total"
+      ],
+      "facegen_sha256": "a4f74abfa0892f93aab1d88ec4d603baf02cf071c8987b091aaee2e7b43b7947",
+      "min_visible": 7190,
+      "max_clipped": 7,
+      "max_stretched": 74,
+      "min_withdrawn_clipped": 2,
+      "measured": {
+        "visible": 7336,
+        "clipped": 2,
+        "stretched": 68,
+        "withdrawn_clipped": 4
+      }
+    },
+    {
+      "file": "posr/DBTortureVictim1.bin",
+      "sha256": "a64fb5fee031a0e2ea08084b8ddeb1bc708855448ec0d34cc84df2881c390ee4",
+      "npc": "skyrim.esm:015d02",
+      "editor_id": "DBTortureVictim1",
+      "female": false,
+      "shapes": [
+        "0Gash2",
+        "total"
+      ],
+      "facegen_sha256": "82e9ae8511413c4984e760e662503055d5cbd3032d1bb32aec8529314c6ba916",
+      "min_visible": 18581,
+      "max_clipped": 7,
+      "max_stretched": 132,
+      "min_withdrawn_clipped": 1,
+      "measured": {
+        "visible": 18960,
+        "clipped": 2,
+        "stretched": 120,
+        "withdrawn_clipped": 2
+      }
+    }
+  ]
+}

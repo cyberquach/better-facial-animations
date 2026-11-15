@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -58,8 +59,7 @@ void* Open(void* ptr, const char* path, uint64_t, void*) {
   return ptr;
 }
 void Close(void*) {}
-std::vector<uint8_t> Wav(bool audible) {
-  constexpr int samples = 3200;
+std::vector<uint8_t> Wav(bool audible, int samples = 3200) {
   std::vector<uint8_t> bytes(44 + samples * 2);
   memcpy(bytes.data(), "RIFF", 4);
   auto u32 = [&](int at, uint32_t value) {
@@ -92,6 +92,7 @@ const direct::Model* mapped_with = nullptr;  // the last HeadKey's mapping
 int perf_runs = 0;
 int64_t perf_identity = -1;
 bool perf_switch = false;  // the user selects another model mid-line
+std::function<void()> perf_during;  // called in each run
 void SelectPerformance(bool on) {
   bfa::ScopedLock guard(bfa::settings_lock);
   for (const bfa::Param& p : bfa::kParams)
@@ -111,6 +112,7 @@ struct PerformanceNet : a2f::Net {
     ++perf_runs;
     perf_identity = id;
     if (perf_switch) SelectPerformance(false);
+    if (perf_during) perf_during();
     std::fill_n(motion,
                 a2f::kPerformanceHopFrames * a2f::kPerformanceChannels, 0.f);
     return true;
@@ -129,6 +131,47 @@ struct Net : a2f::Net {
     return true;
   }
 };
+// Whether the face's line has confirmed silent, missing or unusable audio
+// (the morph pass then releases the speech pose).
+bool FailedSpeech(uint8_t* face) {
+  bfa::ScopedLock guard(bfa::lock, bfa::ScopedLock::kShared);
+  auto it = bfa::playing.find(face);
+  return it != bfa::playing.end() &&
+         it->second.entry->state == bfa::State::kFailed;
+}
+
+// TestHeadRebuild's node shape: one dynamic "FemaleHead" vertex.
+std::array<uint8_t, 0x1000> head_shape{}, head_fod{};
+uint8_t* head_children[] = {head_shape.data()};
+uint8_t* head_extras[] = {head_fod.data()};
+float head_base[3] = {1, 2, 3};
+float head_buffer[4] = {1, 2, 3, 0};
+float* LockShape(uint8_t*) { return head_buffer; }
+void UnlockShape(uint8_t*) {}
+void UpdateShape(uint8_t*, const float* xyz, bool) {
+  std::copy_n(xyz, 3, head_buffer);
+}
+void* NoMorphData(uint8_t*) { return nullptr; }
+// The engine's ApplyMorphs: rebuilds the shape from its base, clears the
+// node's reset flag.
+uint64_t EngineMorphs(uint8_t* n, uint8_t) {
+  std::copy_n(head_base, 3, head_buffer);
+  bfa::Field<uint16_t>(n, skse::IsVr() ? 0x188 : 0x160) &= ~1;
+  return 0;
+}
+
+// The morph hook on the node, as the engine calls it (the plugin is ready).
+void MorphPass(uint8_t* n, bool reset) {
+  const bool was = bfa::ready.exchange(true);
+  bfa::ApplyMorphsHook(n, reset);
+  bfa::ready = was;
+}
+
+// The fixture's head key is set by the test, not computed from the node:
+// forget the face's shape print so the next pass computes the key (and its
+// mapping is seen) again.
+void Rekey(uint8_t* face) { bfa::faces.at(face).head_print = 0; }
+
 void Drain(a2f::NetKeeper& keeper) {
   while (!bfa::queue.empty()) {
     auto job = bfa::queue.front();
@@ -149,6 +192,14 @@ extern "C" uint64_t TestAddress(uint64_t id) {
     return reinterpret_cast<uint64_t>(&Lookup);
   if (id == kIdGenerateFromPath.Get())
     return reinterpret_cast<uint64_t>(&Resource);
+  if (id == kIdApplyMorphs.Get())
+    return reinterpret_cast<uint64_t>(&EngineMorphs);
+  if (id == kIdLockDynamic.Get()) return reinterpret_cast<uint64_t>(&LockShape);
+  if (id == kIdUnlockDynamic.Get())
+    return reinterpret_cast<uint64_t>(&UnlockShape);
+  if (id == kIdUpdateDynamic.Get())
+    return reinterpret_cast<uint64_t>(&UpdateShape);
+  if (id == kIdMorphData.Get()) return reinterpret_cast<uint64_t>(&NoMorphData);
   return 0;
 }
 extern "C" std::string
@@ -164,7 +215,11 @@ extern "C" bfa::State MapHead(uint8_t*, const std::string&, bool,
   head.reset();
   if (map_state == bfa::State::kReady) {
     auto mapped = std::make_shared<direct::Head>();
+    mapped->nv = 1;
+    mapped->row = {-1};
     mapped->shapes.resize(1);
+    mapped->shapes[0].name = "FemaleHead";
+    mapped->shapes[0].nv = 1;
     mapped->shapes[0].part = direct::Part::kHead;
     head = mapped;
   }
@@ -196,10 +251,34 @@ void TestHeadRebuild() {
   f.level[2] = .8f;
   faces[fg] = f;
   Count();
+  // the node's one dynamic shape, which the mapped heads are for
+  Field<uint8_t**>(node.data(), skse::IsVr() ? 0x140 : 0x118) = head_children;
+  Field<uint16_t>(node.data(), skse::IsVr() ? 0x14A : 0x122) = 1;
+  head_shape[skse::IsVr() ? 0x190 : 0x150] = 4;  // BSDynamicTriShape
+  Field<const char*>(head_shape.data(), 0x10) = FixtureString("FemaleHead");
+  Field<uint16_t>(head_shape.data(), skse::IsVr() ? 0x19A : 0x15A) = 1;
+  Field<uint32_t>(head_shape.data(), skse::IsVr() ? 0x1B0 : 0x170) = 16;
+  Field<uint8_t**>(head_shape.data(), 0x20) = head_extras;
+  Field<uint16_t>(head_shape.data(), 0x28) = 1;
+  Field<const char*>(head_fod.data(), 0x10) = FixtureString("FOD");
+  Field<const float*>(head_fod.data(), 0x18) = head_base;
+  Field<uint32_t>(head_fod.data(), 0x24) = 1;
   head_key = "rebuild-0";
-  AddDirect(node.data(), true);
-  CHECK(!playing.at(fg).snap);  // mapping became ready on this call
+  MorphPass(node.data(), true);
+  // A head found ready in a morph pass is shown from the update that leaves
+  // it the keyframes (RecordOwner), never over keyframes that update left to
+  // the engine; the line's snap is taken by the first frame shown.
+  CHECK(faces.at(fg).head_state == State::kReady && playing.at(fg).snap);
+  RecordOwner(fg);
+  MorphPass(node.data(), true);
+  CHECK(!playing.at(fg).snap);
   CHECK(faces.at(fg).level[2] == .8f);
+  // An unchanged node keeps its key without reading the head again.
+  const std::string key = faces.at(fg).head_key;
+  head_key = "unread";
+  MorphPass(node.data(), true);
+  CHECK(faces.at(fg).head_key == key);
+  head_key = key;
   const size_t dim = line->direct_dim + direct::kNumPhonemes + 1;
   auto retained = [&] {
     std::vector<float> pose(dim, 0.f);
@@ -211,13 +290,14 @@ void TestHeadRebuild() {
   for (int i = 0; i < 12; ++i) {
     auto old_head = faces.at(fg).head;
     head_key = "rebuild-" + std::to_string(i + 1);
+    Rekey(fg);
     const int before = map_calls;
-    AddDirect(node.data(), true);
+    MorphPass(node.data(), true);
     CHECK(map_calls == before + 1);
     CHECK(faces.at(fg).head != old_head);
     CHECK(faces.at(fg).level[2] == .8f);
     CHECK(std::fabs(retained() - .6f) < .01f);
-    AddDirect(node.data(), false);
+    MorphPass(node.data(), false);
     CHECK(map_calls == before + 1);
   }
   // Pending and failed replacements discard the old mapping, preserving
@@ -225,31 +305,52 @@ void TestHeadRebuild() {
   for (State state : {State::kPending, State::kFailed}) {
     map_state = state;
     head_key += "-unavailable";
-    AddDirect(node.data(), true);
+    Rekey(fg);
+    MorphPass(node.data(), true);
     CHECK(faces.at(fg).head_state == state && !faces.at(fg).head);
     CHECK(faces.at(fg).level[2] == .8f);
   }
   map_state = State::kReady;
   head_key += "-recovered";
-  AddDirect(node.data(), true);
+  Rekey(fg);
+  MorphPass(node.data(), true);
   CHECK(std::fabs(retained() - .6f) < .01f);
   // Even equal-sized coefficient vectors from different model objects
-  // must not carry a pose into an incompatible basis.
+  // must not carry a pose into an incompatible basis: the line's own pose
+  // there (.6), not one the face showed before (.9), blended from.
+  auto other = std::make_shared<a2f::Line>();
+  auto carry = [&] {
+    std::vector<float> pose(dim, .9f);
+    faces.at(fg).transition.Blend(other, Now(), 0, true, true, pose);
+  };
+  carry();
+  MorphPass(node.data(), true);
+  CHECK(std::fabs(retained() - .9f) < .01f);  // control: same basis, carried
   auto replacement = std::make_shared<ModelState>(*entry->model_state);
   auto mapping = std::make_shared<direct::Model>(*replacement->mapping);
   mapping->faces.resize(2);
   replacement->mapping = mapping;
   entry->model_state = replacement;
-  AddDirect(node.data(), true);
-  CHECK(retained() < .01f);
+  carry();
+  // A pass that finds the head changed (here its model) gives that frame to
+  // the engine; the next update leaves the keyframes to the new head.
+  MorphPass(node.data(), true);
+  RecordOwner(fg);
+  MorphPass(node.data(), true);
+  CHECK(std::fabs(retained() - .6f) < .01f);
   playing.at(fg).snap = true;
-  AddDirect(node.data(), true);
+  MorphPass(node.data(), true);
   CHECK(std::fabs(retained() - .6f) < .01f);
   // The two faces of v3 have different coefficient bases too.
   playing.at(fg).female = !playing.at(fg).female;
-  AddDirect(node.data(), true);
-  CHECK(retained() < .01f);
+  carry();
+  MorphPass(node.data(), true);
+  RecordOwner(fg);
+  MorphPass(node.data(), true);
+  CHECK(std::fabs(retained() - .6f) < .01f);
   head_key = "test head";
+  Field<uint8_t**>(node.data(), skse::IsVr() ? 0x140 : 0x118) = nullptr;
+  Field<uint16_t>(node.data(), skse::IsVr() ? 0x14A : 0x122) = 0;
   ResetPlayback(false);
 }
 void TestSilence() {
@@ -296,6 +397,64 @@ void TestReplacement(a2f::NetKeeper& keeper, const bfa::Tune& t) {
   }
 }
 
+// Mantella speaks every line from two fixed loose WAV names, rewritten for
+// each line, and mutes a line played outside the game, saving its audible
+// copy beside it as <stem>.bfa.wav.
+void TestRewrittenWav(a2f::NetKeeper& keeper, const bfa::Tune& t) {
+  using namespace bfa;
+  const std::string wav = "Sound/Voice/Mantella.esp/MaleNord/line";
+  const std::string fuz = "Sound/Voice/Skyrim.esm/MaleNord/vanilla";
+  files.clear();
+  cache.clear();
+  queue.clear();
+  files[wav + ".wav"] = Wav(true);
+  files[fuz + ".fuz"] = Wav(true);
+  // A prefetched line is spoken from its prefetch.
+  auto first = Request(wav, 0, 0, false, false, t, 42, world_epoch);
+  Drain(keeper);
+  CHECK(first->state == State::kReady && first->loose && !first->spoken);
+  CHECK(Request(wav, 0, 0, false, true, t, 42, world_epoch) == first);
+  CHECK(queue.empty());
+  // Spoken, the same name is read and generated again, prefetched or not.
+  int before = runs;
+  auto second = Request(wav, 0, 0, false, false, t, 42, world_epoch);
+  CHECK(second != first && queue.size() == 1);
+  CHECK(Request(wav, 0, 0, false, true, t, 42, world_epoch) == second);
+  Drain(keeper);
+  CHECK(second->state == State::kReady && runs > before);
+  auto third = Request(wav, 0, 0, false, true, t, 42, world_epoch);
+  CHECK(third != second && queue.size() == 1);
+  Drain(keeper);
+  // A Fuz (vanilla) line stays cached however often it is spoken.
+  auto vanilla = Request(fuz, 0, 0, false, true, t, 42, world_epoch);
+  Drain(keeper);
+  CHECK(vanilla->state == State::kReady && !vanilla->loose);
+  before = runs;
+  CHECK(Request(fuz, 0, 0, false, true, t, 42, world_epoch) == vanilla);
+  CHECK(queue.empty() && runs == before);
+  // A muted line is animated from its audible copy of the same length...
+  files[wav + ".wav"] = Wav(false);
+  files[wav + ".bfa.wav"] = Wav(true);
+  auto muted = Request(wav, 0, 0, false, true, t, 42, world_epoch);
+  Drain(keeper);
+  CHECK(muted->state == State::kReady && muted->line && runs > before);
+  // ...but not from a copy left by another line, nor a silent copy.
+  for (const auto& copy : {Wav(true, 4800), Wav(false)}) {
+    files[wav + ".bfa.wav"] = copy;
+    before = runs;
+    auto stale = Request(wav, 0, 0, false, true, t, 42, world_epoch);
+    CHECK(stale != muted);
+    Drain(keeper);
+    CHECK(stale->state == State::kFailed && !stale->line && runs == before);
+    // silent: read again next time, as any silent line
+    CHECK(std::none_of(cache.begin(), cache.end(),
+                       [&](const auto& kv) { return kv.second == stale; }));
+  }
+  files.clear();
+  cache.clear();
+  queue.clear();
+}
+
 void TestPendingMapping(const bfa::Tune& t, a2f::NetKeeper& keeper,
                         const float* phon) {
   using namespace bfa;
@@ -306,7 +465,7 @@ void TestPendingMapping(const bfa::Tune& t, a2f::NetKeeper& keeper,
   Apply(fg, t, false, actor, 42, 11, 1);
   Expressions(fg, .016f, t, false, actor, 42);
   CHECK(faces.count(fg));
-  AddDirect(node.data(), false);
+  MorphPass(node.data(), false);
   CHECK(map_calls == before_mapping + 1);
   CHECK(faces.at(fg).head_state == State::kReady);
   // Another pending update preserves that mapping and a retained pose.
@@ -319,6 +478,19 @@ void TestPendingMapping(const bfa::Tune& t, a2f::NetKeeper& keeper,
   pose[0] = 0;
   CHECK(faces.at(fg).transition.Blend(nullptr, Now(), 1, true, false, pose));
   CHECK(pose[0] > .99f);
+  {
+    // A face at rest takes a line's pose at once (PrepareFace's fade 0); one
+    // still posed is blended from (BlendIn), and a stale pose is rest again.
+    a2f::PoseTransition shown;
+    CHECK(shown.resting(Now()));
+    std::vector<float> first(2, .5f);
+    shown.Blend(std::make_shared<a2f::Line>(), Now(), 0, true, false, first);
+    CHECK(first[0] == .5f && !shown.resting(Now()));
+    std::vector<float> next(2, 0.f);
+    shown.Blend(std::make_shared<a2f::Line>(), Now(), .15f, true, false, next);
+    CHECK(next[0] == .5f);
+    CHECK(shown.resting(Now() + 1));
+  }
   for (int i = 0; i < direct::kNumPhonemes; ++i) CHECK(phon[i] == .4f);
   Drain(keeper);
   CHECK(!FailedSpeech(fg) && playing.at(fg).entry->state == State::kReady);
@@ -360,7 +532,7 @@ void TestHandoff(const bfa::Tune& t, a2f::NetKeeper& keeper,
   Drain(keeper);
   CHECK(FailedSpeech(fg));
   // Morph call before the animation update must release the old pose.
-  AddDirect(node.data(), false);
+  MorphPass(node.data(), false);
   CHECK(faces.empty() && FailedSpeech(fg) && fg[0x218]);
   for (int i = 0; i < direct::kNumExpressions; ++i)
     CHECK(expr[i] == (direct::PlaysExpression(i) ? .6f : 0.f));
@@ -381,7 +553,7 @@ void TestHandoff(const bfa::Tune& t, a2f::NetKeeper& keeper,
   playing.at(fg).voice.requested_at = Now() - 2;
   Apply(fg, t, false, actor, 42, 9, 0);
   CHECK(!FailedSpeech(fg) && playing.empty());
-  AddDirect(node.data(), false);  // the morph hook finds the partner again
+  MorphPass(node.data(), false);  // the morph hook finds the partner again
   Expressions(fg, .1f, t, false, actor, 42);
   CHECK(faces.count(fg));
 }
@@ -467,7 +639,7 @@ void TestPerformance(a2f::NetKeeper& keeper, const bfa::Tune& t) {
   Apply(fg, t, false, actor, 42, 20, 1);
   Expressions(fg, .016f, t, false, actor, 42);
   mapped_with = nullptr;
-  AddDirect(node.data(), false);
+  MorphPass(node.data(), false);
   CHECK(mapped_with == &model);
   // The worker switched to the performance model with its own mapping.
   auto perf_mapping = std::make_shared<direct::Model>();
@@ -483,7 +655,8 @@ void TestPerformance(a2f::NetKeeper& keeper, const bfa::Tune& t) {
   const Tune pt = SnapshotTune();
   CHECK(pt.SelectedModel() == a2f::kNetPerformance);
   mapped_with = nullptr;
-  AddDirect(node.data(), false);
+  Rekey(fg);
+  MorphPass(node.data(), false);
   CHECK(mapped_with == &model);  // the playing line keeps its mapping
   EndLine(pt, 20);
   const int before = runs, perf_before = perf_runs;
@@ -500,17 +673,59 @@ void TestPerformance(a2f::NetKeeper& keeper, const bfa::Tune& t) {
   Apply(fg, pt, false, actor, 42, 21, 1);
   Expressions(fg, .016f, pt, false, actor, 42);
   mapped_with = nullptr;
-  AddDirect(node.data(), false);
+  MorphPass(node.data(), false);
   CHECK(mapped_with == perf_mapping.get());
   EndLine(pt, 21);
+  // A spoken line queued while a prefetch is generated stops it between
+  // runs of the network and goes first; the prefetch is generated again,
+  // whole, after it.
+  {
+    const std::string ahead = "Sound/Voice/Skyrim.esm/ahead",
+                      spoken = "Sound/Voice/Skyrim.esm/spoken";
+    files[ahead + ".wav"] = Wav(true, 16000 * 8);
+    files[spoken + ".wav"] = Wav(true);
+    const auto prefetch =
+        Request(ahead, 0, 0, false, false, pt, 42, world_epoch);
+    CHECK(prefetch && queue.size() == 1);
+    const Job job = queue.front();
+    queue.pop_front();
+    const int first_run = perf_runs;
+    perf_during = [&] {
+      if (perf_runs - first_run == 1)
+        BeginSpeech(actor, spoken, 24, 3, 0, 0, pt, world_epoch);
+    };
+    Process(job, perf_keeper);
+    perf_during = {};
+    CHECK(perf_runs - first_run == 1);
+    CHECK(prefetch->state == State::kPending && !prefetch->line);
+    CHECK(queue.size() == 2 && queue[0].entry == playing.at(fg).entry &&
+          queue[1].entry == prefetch);
+    const auto said = playing.at(fg).entry;
+    int said_by = -1;  // the runs made when the spoken line was there
+    perf_during = [&] {
+      ScopedLock guard(lock, ScopedLock::kShared);
+      if (said_by < 0 && said->state == State::kReady)
+        said_by = perf_runs - first_run - 1;
+    };
+    Drain(perf_keeper);
+    perf_during = {};
+    CHECK(said_by == 2);  // the stopped run and its own
+    CHECK(said->state == State::kReady && prefetch->state == State::kReady &&
+          prefetch->line && prefetch->line->frames == 240);
+    CHECK(perf_runs - first_run == 1 + 1 + 3);
+    playing.clear();
+    faces.clear();
+    Count();
+  }
   const auto failures = stats.failed, lines = stats.lines;
+  const int cancel_before = perf_runs;
   perf_switch = true;
   BeginSpeech(actor, "Sound/Voice/Skyrim.esm/cancelled", 22, 3, 0, 0, pt,
               world_epoch);
   const auto cancelled = queue.front().entry;
   Drain(perf_keeper);
   perf_switch = false;
-  CHECK(perf_runs == perf_before + 2);
+  CHECK(perf_runs == cancel_before + 1);
   CHECK(cancelled->state == State::kFailed && !cancelled->line);
   CHECK(stats.failed == failures && stats.lines == lines);
   CHECK(std::none_of(cache.begin(), cache.end(), [&](const auto& e) {
@@ -640,9 +855,11 @@ void TestPlayback(uint32_t runtime, a2f::NetKeeper& keeper) {
   Field<uint8_t*>(node.data(), (skse::IsVr() ? 0x178 : 0x150)) = fg;
   Field<uint8_t*>(node.data(), (skse::IsVr() ? 0x110 : 0xF8)) = actor;
   Tune t;
+  t.SelectModel(a2f::kNetV3);  // the fixture's network (config.network)
   std::string stem;
   CHECK(VoiceStem("Data\\Sound\\Voice\\Fuz Ro Doh\\Stock_10.xwm", stem));
   TestReplacement(keeper, t);
+  TestRewrittenWav(keeper, t);
   files.clear();
   cache.clear();
   queue.clear();
@@ -851,7 +1068,7 @@ void TestPlayback(uint32_t runtime, a2f::NetKeeper& keeper) {
       source_phon.count = 0;
     }
   }
-  t = Tune();
+  t = SnapshotTune();
   Field<uint32_t>(actor, 0x14) = 0x123;
   BeginSpeech(actor, stem, 12, 2, 0, 0, t, world_epoch);
   CHECK(playing.count(fg));
@@ -865,6 +1082,7 @@ int main() {
   bfa::testing::find_head = MapHead;
   bfa::testing::address = TestAddress;
   using namespace bfa;
+  SetSelectedModel(a2f::kNetV3);  // the fixture's network (config.network)
   model.faces.resize(1);
   model.faces[0].rest.resize(a2f::kNumOut);
   a2f::NetKeeper keeper(
@@ -876,8 +1094,10 @@ int main() {
                            skse::Version(1, 6, 1170), skse::kVrRuntime}) {
     TestPlayback(runtime, keeper);
   }
-  puts("Audio fallback contracts passed: silence, missing audio, TTS retry, "
-       "handoff, failed generation, ownership fade while generating, mapping "
-       "during inference, transitions, late readiness, completion, load "
-       "cleanup and performance lines (SE/AE/VR)");
+  puts(
+      "Audio fallback contracts passed: silence, missing audio, TTS retry, "
+      "rewritten loose WAVs, muted lines' audible copies, handoff, "
+      "failed generation, ownership fade while generating, mapping "
+      "during inference, transitions, late readiness, completion, load "
+      "cleanup and performance lines (SE/AE/VR)");
 }

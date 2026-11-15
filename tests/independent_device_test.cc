@@ -1,6 +1,7 @@
 // Production factory contract without a GPU, graphics hooks or third-party DLLs.
 #include "../src/inference/ort_net.cc"
 #include <cstdlib>
+#include <utility>
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "line %d: %s\n", __LINE__, #x); std::exit(1); } } while (0)
 
@@ -308,17 +309,22 @@ void TestSessionOptions(const OrtDmlApi& dml) {
   const OrtApi* original = api;
   api = &mock;
   const int before = attachments;
-  for (bool gpu : {false, true}) {
+  // CPU; GPU with graph fusion off (the default), then on.
+  for (auto [gpu, fusion] : {std::pair{false, false}, std::pair{true, false},
+                             std::pair{true, true}}) {
     seen = {};
     {
       Session session;
       std::string error;
       CHECK(CreateSession(L"model.onnx", gpu, true, true, L"",
                           {{"batch", 1}, {"seq_len", kVoiceWindow}}, session,
-                          error));
+                          error, 0, false, fusion));
       CHECK(session.device.get() == (gpu ? &device : nullptr));
       CHECK(seen.intra == 2 && seen.inter == 1);
-      CHECK(seen.config.size() == 2);
+      const bool disabled = gpu && !fusion;
+      CHECK(seen.config.size() == (disabled ? 3u : 2u));
+      CHECK(!disabled ||
+            seen.config.at("ep.dml.disable_graph_fusion") == "1");
       CHECK(seen.config.at("session.intra_op.allow_spinning") == "0");
       CHECK(seen.config.at("session.inter_op.allow_spinning") == "0");
       CHECK(seen.sessions == 1 && seen.memories == 1);
@@ -336,7 +342,7 @@ void TestSessionOptions(const OrtDmlApi& dml) {
     CHECK(!provider_dml && !provider_queue);
     CHECK(device.refs == 1 && fake_dml.refs == 1 && queue.refs == 1);
   }
-  CHECK(attachments == before + 1 && !DeviceRedirected());
+  CHECK(attachments == before + 2 && !DeviceRedirected());
   api = original;
   puts(
       "CPU/independent sessions: bounded sleeping threads, provider, shapes "
@@ -553,7 +559,7 @@ int main() {
   CHECK(!OpenIndependentDevice(kDllDir, err));  // latch persists, never silently revived
   CHECK(err.find("GPU attempt failed") != std::string::npos);
   CHECK(!AppendIndependentProvider(L"", &dml, nullptr, &device, dml_device, err));
-  CHECK(attachments == 13 && factory.creates == creates_before + 1);
+  CHECK(attachments == 14 && factory.creates == creates_before + 1);
   CHECK(device.refs == 1 && fake_dml.refs == 1 && queue.refs == 1);
   CHECK(!device.final_releases && !fake_dml.final_releases && !queue.final_releases);
   RetryGpu();

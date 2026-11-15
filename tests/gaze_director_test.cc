@@ -507,6 +507,36 @@ void Camera() {
 
 // A ray that stops at the thing's own surface reached it; one that stops at
 // a wall in front of it did not.
+// A line ready late has its beats only once it is generated, seconds into
+// it: the moments already past move no eyes. A beat met within
+// half a second still does.
+void Late() {
+  const std::vector<GazeBeat> beats = {
+      {0, Only(kGazeNeutral), kGazeStart, 0, 1},
+      {1, Only(kGazeSad), kGazePause, 1.5f, 4.5f}};
+  GazeSettings settings = Unsettled();
+  settings.player_odds = {};
+  settings.glance_seconds = 0;
+  const std::vector<GazePoint> points;
+  int left[2] = {};
+  for (int late = 0; late < 2; ++late)
+    for (int seed = 1; seed <= 200; ++seed) {
+      GazeDirector director(seed);
+      // From 0.8 s without beats; they are there from 2 s (late) or 1.2 s.
+      const float found = late ? 2 : 1.2f;
+      bool away = false;
+      for (int frame = 0; frame < 90; ++frame) {
+        GazeLine line{1, 0.8f + frame * static_cast<float>(kFrame), 6, nullptr};
+        if (line.time >= found) line.beats = &beats;
+        away |= !director.Update(frame * kFrame, &line, kView, points, settings)
+                     .on_player;
+      }
+      left[late] += away;
+    }
+  CHECK(left[1] == 0);
+  CHECK(left[0] > 150);
+}
+
 void Sight() {
   CHECK(GazeRayReaches(1, 300, 20));
   CHECK(GazeRayReaches(0.95f, 300, 20));  // 15 short: its near side
@@ -553,6 +583,7 @@ int main() {
   Snap();
   Head();
   Camera();
+  Late();
   Sight();
   Invalid();
   puts("gaze director ok");
