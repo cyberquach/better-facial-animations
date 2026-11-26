@@ -1,7 +1,6 @@
 #include "a2f/animation/pose.h"
 
 #include <algorithm>
-#include <cmath>
 
 namespace a2f {
 
@@ -54,13 +53,6 @@ float PoseTransition::share(double now) const {
   const float weight =
       1 - Smoothstep(static_cast<float>(now - started_at_) / fade_);
   return target + weight * share_offset_;
-}
-
-bool PoseTransition::resting(double now) const {
-  if (stale(now)) return true;
-  for (float v : pose_)
-    if (std::fabs(v) > 1e-6f) return false;
-  return true;
 }
 
 }  // namespace a2f

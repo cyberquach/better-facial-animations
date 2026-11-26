@@ -317,7 +317,7 @@ void TestHeadRebuild() {
   CHECK(std::fabs(retained() - .6f) < .01f);
   // Even equal-sized coefficient vectors from different model objects
   // must not carry a pose into an incompatible basis: the line's own pose
-  // there (.6), not one the face showed before (.9), blended from.
+  // there (.6) eased in from rest, not from one the face showed before (.9).
   auto other = std::make_shared<a2f::Line>();
   auto carry = [&] {
     std::vector<float> pose(dim, .9f);
@@ -337,7 +337,7 @@ void TestHeadRebuild() {
   MorphPass(node.data(), true);
   RecordOwner(fg);
   MorphPass(node.data(), true);
-  CHECK(std::fabs(retained() - .6f) < .01f);
+  CHECK(retained() < .01f);
   playing.at(fg).snap = true;
   MorphPass(node.data(), true);
   CHECK(std::fabs(retained() - .6f) < .01f);
@@ -347,7 +347,7 @@ void TestHeadRebuild() {
   MorphPass(node.data(), true);
   RecordOwner(fg);
   MorphPass(node.data(), true);
-  CHECK(std::fabs(retained() - .6f) < .01f);
+  CHECK(retained() < .01f);
   head_key = "test head";
   Field<uint8_t**>(node.data(), skse::IsVr() ? 0x140 : 0x118) = nullptr;
   Field<uint16_t>(node.data(), skse::IsVr() ? 0x14A : 0x122) = 0;
@@ -479,17 +479,17 @@ void TestPendingMapping(const bfa::Tune& t, a2f::NetKeeper& keeper,
   CHECK(faces.at(fg).transition.Blend(nullptr, Now(), 1, true, false, pose));
   CHECK(pose[0] > .99f);
   {
-    // A face at rest takes a line's pose at once (PrepareFace's fade 0); one
-    // still posed is blended from (BlendIn), and a stale pose is rest again.
+    // The gap between the pose shown and a line's first frame eases out
+    // over the fade: from rest its first pose starts from rest, and with no
+    // fade it is shown at once.
     a2f::PoseTransition shown;
-    CHECK(shown.resting(Now()));
+    const double at = Now();
     std::vector<float> first(2, .5f);
-    shown.Blend(std::make_shared<a2f::Line>(), Now(), 0, true, false, first);
-    CHECK(first[0] == .5f && !shown.resting(Now()));
-    std::vector<float> next(2, 0.f);
-    shown.Blend(std::make_shared<a2f::Line>(), Now(), .15f, true, false, next);
+    shown.Blend(std::make_shared<a2f::Line>(), at, .5f, true, false, first);
+    CHECK(first[0] == 0.f);
+    std::vector<float> next(2, .5f);
+    shown.Blend(std::make_shared<a2f::Line>(), at, 0, true, false, next);
     CHECK(next[0] == .5f);
-    CHECK(shown.resting(Now() + 1));
   }
   for (int i = 0; i < direct::kNumPhonemes; ++i) CHECK(phon[i] == .4f);
   Drain(keeper);
