@@ -404,6 +404,11 @@ Fit FitShape(int i) {
 // the mouth's speech scale); the fade phases the test declares.
 float c_line = 0.2f, c_full = 0;
 bool easing_phase = false;
+// Until when (test clock) a line begun ready eases in: its vanilla lips are
+// gone at once and the gap to its first pose (the fixture's whole constant
+// pose) fades out over FaceFadeIn.
+double start_ease_until = 0;
+constexpr double kStartEase = 0.6;  // FaceFadeIn 0.5 s and the frames to map
 int joint_checks = 0, posed_checks = 0;
 float max_sum = 0;
 constexpr float kTolSum = 0.03f;
@@ -454,7 +459,8 @@ void ObserveAll(const char* when) {
   if (sum > 1 + kTolSum)
     Fail("%s: vanilla lips at %.3f plus the pose at %.3f: a doubled mouth",
          when, lips, pose);
-  else if (!easing_phase && sum < 1 - kTolSum)
+  else if (!easing_phase && testing::clock_offset >= start_ease_until &&
+           sum < 1 - kTolSum)
     Fail("%s: vanilla lips at %.3f plus the pose at %.3f: a neutral mouth",
          when, lips, pose);
 }
@@ -486,6 +492,7 @@ std::shared_ptr<Entry> StartLine(uint32_t frames, bool generated) {
   p.voice.requested_at = p.voice.at = Now();
   p.voice.seen = true;
   p.begun = Now();
+  if (generated) start_ease_until = testing::clock_offset + kStartEase;
   ScopedLock guard(lock);
   playing[fg] = p;
   Count();
@@ -572,6 +579,7 @@ void Begin(const char* name) {
   joint_checks = posed_checks = 0;
   max_sum = 0;
   easing_phase = false;
+  start_ease_until = 0;
   c_line = 0.2f;
   reports.clear();
   SetPotato(false);

@@ -28,8 +28,6 @@ class PoseTransition {
     moving_ = !offset_.empty();
   }
   bool stale(double now) const { return now - updated_at_ > kStaleSeconds; }
-  // Whether the pose a new line would start from is the rest pose.
-  bool resting(double now) const;
   // The plugin's share (0..1) of the mouth at now, the engine's vanilla lips
   // being the rest: 1 with a line in, 0 at rest, and in between it follows
   // the pose's transition (blended in, eased out). Blend at now on the same

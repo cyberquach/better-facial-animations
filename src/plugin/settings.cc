@@ -330,9 +330,8 @@ extern const std::vector<Param> kParams = [] {
                   "Positive = mouth shapes earlier.", Sec::kPlayback, nullptr},
                  [](FaceTune& f, size_t) { return &f.time_offset; }),
              face_param({"BlendIn", nullptr, 0, 0.5f, "Blend-in (s)",
-                         "Crossfade into a line ready after it started, or "
-                         "begun while the face still shows a pose. From "
-                         "rest a line is shown at once.",
+                         "Crossfade from vanilla lip-sync when a line is "
+                         "ready after it started.",
                          Sec::kPlayback, nullptr},
                         [](FaceTune& f, size_t) { return &f.blend_in; }),
              face_param({"DirectBrows", nullptr, 0, 3, "Brows",

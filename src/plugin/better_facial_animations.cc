@@ -2454,14 +2454,10 @@ int Apply(uint8_t* fg, const Tune& tune, bool in_scene, uint8_t* actor,
     if (t > kLateStart) ++stats.late;
   }
   p.late = p.ready_at > kLateStart;
-  // The engine's lips give way as the pose comes in, by its transition (one
-  // mouth): a line blended in (late, or onto a face still posed) starts
-  // from the share shown now; one snapping in, or taking a face at rest on
-  // time, takes the mouth at once (AddDirect makes the same choice).
-  const float mix =
-      !p.snap && (p.late || !face->transition.resting(now))
-          ? face->transition.share(now)
-          : 1.f;
+  // A line ready on time takes the mouth at once. Under one ready late
+  // (mid-word) the engine's lips give way as its pose blends in over BlendIn,
+  // by its transition (one mouth).
+  const float mix = !p.snap && p.late ? face->transition.share(now) : 1.f;
   p.last_t = t;
   ++p.direct_frames;
   p.direct_frame =
@@ -3256,16 +3252,14 @@ void PrepareFace(uint8_t* node, uint8_t* fg, uint8_t* actor, uint32_t handle,
       face->pose_model = selection->mapping;
       face->pose_face = model_face;
     }
-    // A line takes a face at rest at once, its first frame being where its
-    // speech is; one it finds still posed, or reaches late (mid-word), it
-    // blends into over BlendIn. FaceFadeIn is the engine's expressions'.
-    const double now = Now();
-    const float fade = !line ? settings.face_out
-                       : late || !face->transition.resting(now)
-                           ? settings.blend_in
-                           : 0.f;
+    // The gap between the pose shown and a line's first frame eases out
+    // over FaceFadeIn, or over BlendIn for a line reached late (mid-word);
+    // the line's own motion is whole from its first frame.
+    const float fade = !line  ? settings.face_out
+                       : late ? settings.blend_in
+                              : settings.face_in;
     speaking =
-        face->transition.Blend(line, now, fade, enabled, snap, coefficients);
+        face->transition.Blend(line, Now(), fade, enabled, snap, coefficients);
   }
   // a head made for smaller facial motion takes the speech scaled down
   float scales[direct::kNumRegions];

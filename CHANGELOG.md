@@ -1,5 +1,16 @@
 # Changelog
 
+## 7.0.1
+
+### Fixed
+
+- A line's opening expression no longer pops in. As in 6.1, the gap between
+  the face shown and a line's first frame eases out over `FaceFadeIn`, from
+  rest or from a face still posed by the line before; the line's own motion
+  is whole from its first frame. A line ready late still blends over
+  `BlendIn`. 7.0.0 showed a line at once on a face at rest and used `BlendIn`
+  on a face still posed.
+
 ## 7.0.0 (changes since 6.1.0)
 
 Major version: the default face model and the GPU memory behaviour change for
