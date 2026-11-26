@@ -528,7 +528,7 @@
         "end-of-line fade into the console (mfg/MFG Fix) keyframes read each frame; the neutral release unchanged with none set",
         "mapping before inference completes, retained mapping and pose transition, readiness through expression/morph flow",
         "performance lines through Process: identity, 30 fps 73-channel output, retained mapping after a switch, mid-line switch cancellation",
-        "a face at rest shows a line from its first frame; a face still posed blends over BlendIn; a basis change starts from the line's own pose",
+        "a line ready on time takes the mouth at once and the gap to its first pose eases out over FaceFadeIn, from rest or a face still posed; a line ready late blends over BlendIn; a basis change starts from rest",
         "a spoken line queued while a prefetch is generated stops it between runs, is generated first, and the prefetch is generated again after it"
       ]
     },
